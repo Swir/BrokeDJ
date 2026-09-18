@@ -77,6 +77,8 @@ PR #10 replaces the final hard master/cue sample clamp with a smooth allocation-
 - rendering the same state to a two-channel device never folds private cue into master;
 - summed cue output is bounded by the same smooth safety curve.
 
+Final PR #10 head `f82a0dab7dde1298690dbe326049d21190c0be90` passed exact-head GitHub Actions run `35355739490`: Linux ASan/UBSan core/progress checks succeeded; Windows x64 configure/build, full CTest, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #10 merged to `main` as `a207b89e573c6068285e24bf9748c9ecefcaaf69`.
+
 This is deterministic routing/DSP evidence only. The protection curve is **not** a transparent look-ahead limiter or true-peak limiter, and offline output routing tests do not replace physical two-output/four-output interface validation or reviewed listening.
 
 ## Audio quality hardening coverage
@@ -99,7 +101,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Seek/refill hardening and starvation/refill smoothing pass exact-head Linux + Windows CI and are merged.
 - [x] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
 - [x] Objective offline render metrics and callback heap-allocation contract pass exact-head Linux sanitizer and Windows x64 CI for PR #9.
-- [ ] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
+- [x] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.
