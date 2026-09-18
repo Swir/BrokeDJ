@@ -68,6 +68,7 @@ bool TimeStretchDeviceBridge::prepare(double newSourceSampleRate, double newDevi
     enabled = false;
     lastPath = RenderPath::fallback;
     lastOutput.fill(0.0f);
+    transitionFrom.fill(0.0f);
     clearFifo();
     ready = true;
     return true;
@@ -79,6 +80,7 @@ void TimeStretchDeviceBridge::reset() noexcept {
     audibleCursor = 0.0;
     transitionRemaining = 0;
     lastOutput.fill(0.0f);
+    transitionFrom.fill(0.0f);
     lastPath = RenderPath::fallback;
     primedForClip = false;
     rePrimeRequired = true;
@@ -87,12 +89,25 @@ void TimeStretchDeviceBridge::reset() noexcept {
 
 bool TimeStretchDeviceBridge::setPlaybackRate(double newPlaybackRate) noexcept {
     if (!ready || !sourceBridge.setPlaybackRate(newPlaybackRate)) return false;
+    if (std::abs(newPlaybackRate - playbackRate) > 1.0e-12 && primedForClip) {
+        // The FIFO may already contain processor output generated at the old
+        // ratio. Fail closed until the caller primes at the current transport
+        // position instead of emitting stale prefetched audio.
+        primedForClip = false;
+        rePrimeRequired = true;
+    }
     playbackRate = newPlaybackRate;
     return true;
 }
 
 bool TimeStretchDeviceBridge::setPitchSemitones(float semitones) noexcept {
-    return ready && sourceBridge.setPitchSemitones(semitones);
+    if (!ready || !sourceBridge.setPitchSemitones(semitones)) return false;
+    if (primedForClip) {
+        // Pitch changes can also invalidate already-prefetched processor output.
+        primedForClip = false;
+        rePrimeRequired = true;
+    }
+    return true;
 }
 
 void TimeStretchDeviceBridge::buildKernel() {
@@ -131,8 +146,8 @@ void TimeStretchDeviceBridge::clearFifo() noexcept {
     readPosition = static_cast<double>(historyFrames);
     const auto zeroCount = std::min(fifoCount, sourceFifoLeft.size());
     if (zeroCount > 0) {
-        std::fill_n(sourceFifoLeft.begin(), static_cast<std::ptrdiff_t>(zeroCount), 0.0f);
-        std::fill_n(sourceFifoRight.begin(), static_cast<std::ptrdiff_t>(zeroCount), 0.0f);
+        std::fill_n(sourceFifoLeft.begin(), zeroCount, 0.0f);
+        std::fill_n(sourceFifoRight.begin(), zeroCount, 0.0f);
     }
 }
 
@@ -169,10 +184,8 @@ bool TimeStretchDeviceBridge::fillSourceFifo(const Clip& clip, bool loop,
                              static_cast<int>(needed), nextSourceCursor)) {
         return false;
     }
-    std::copy_n(stretchScratchLeft.data(), static_cast<std::ptrdiff_t>(needed),
-                sourceFifoLeft.data() + fifoCount);
-    std::copy_n(stretchScratchRight.data(), static_cast<std::ptrdiff_t>(needed),
-                sourceFifoRight.data() + fifoCount);
+    std::copy_n(stretchScratchLeft.data(), needed, sourceFifoLeft.data() + fifoCount);
+    std::copy_n(stretchScratchRight.data(), needed, sourceFifoRight.data() + fifoCount);
     fifoCount += needed;
     sourceCursor = nextSourceCursor;
     return true;
@@ -268,8 +281,8 @@ void TimeStretchDeviceBridge::blendTransition(const float* fallbackLeft, const f
             outputLeft[frame] = fallbackL * (1.0f - progress) + outputLeft[frame] * progress;
             outputRight[frame] = fallbackR * (1.0f - progress) + outputRight[frame] * progress;
         } else {
-            outputLeft[frame] = lastOutput[0] * (1.0f - progress) + outputLeft[frame] * progress;
-            outputRight[frame] = lastOutput[1] * (1.0f - progress) + outputRight[frame] * progress;
+            outputLeft[frame] = transitionFrom[0] * (1.0f - progress) + outputLeft[frame] * progress;
+            outputRight[frame] = transitionFrom[1] * (1.0f - progress) + outputRight[frame] * progress;
         }
         --transitionRemaining;
     }
@@ -310,7 +323,10 @@ bool TimeStretchDeviceBridge::render(const Clip& clip, double cursor, bool loop,
     }
 
     if (!stretchRendered) renderFallback(fallbackLeft, fallbackRight, outputLeft, outputRight, deviceFrames);
-    if (target != lastPath) transitionRemaining = transitionFrames;
+    if (target != lastPath) {
+        transitionRemaining = transitionFrames;
+        transitionFrom = lastOutput;
+    }
     blendTransition(fallbackLeft, fallbackRight, outputLeft, outputRight, deviceFrames, target);
 
     nextCursor = target == RenderPath::stretch
