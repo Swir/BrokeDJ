@@ -45,6 +45,11 @@ if(BUILD_TESTING)
     target_link_libraries(brokedj_stream_cache_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME stream_cache COMMAND brokedj_stream_cache_tests)
     set_tests_properties(stream_cache PROPERTIES TIMEOUT 30)
+
+    add_executable(brokedj_engine_deck_source_tests tests/EngineDeckSourceTests.cpp)
+    target_link_libraries(brokedj_engine_deck_source_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME engine_deck_source COMMAND brokedj_engine_deck_source_tests)
+    set_tests_properties(engine_deck_source PROPERTIES TIMEOUT 30)
 endif()
 
 if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
@@ -152,6 +157,19 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_test(NAME deck_playback_selector_realtime
             COMMAND brokedj_deck_playback_selector_realtime_tests)
         set_tests_properties(deck_playback_selector_realtime PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_engine_keylock_source_tests
+            tests/EngineKeyLockSourceTests.cpp)
+        target_link_libraries(brokedj_engine_keylock_source_tests PRIVATE brokedj_timestretch)
+        add_test(NAME engine_keylock_source COMMAND brokedj_engine_keylock_source_tests)
+        set_tests_properties(engine_keylock_source PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_engine_keylock_source_realtime_tests
+            tests/EngineKeyLockSourceRealtimeTests.cpp)
+        target_link_libraries(brokedj_engine_keylock_source_realtime_tests PRIVATE brokedj_timestretch)
+        add_test(NAME engine_keylock_source_realtime
+            COMMAND brokedj_engine_keylock_source_realtime_tests)
+        set_tests_properties(engine_keylock_source_realtime PROPERTIES TIMEOUT 90)
     endif()
 endif()
 

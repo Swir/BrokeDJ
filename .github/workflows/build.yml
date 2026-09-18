@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build/windows/diagnostics | Out-Null
-          $log = & ctest --preset windows-release -V -R 'render_metrics|realtime_contract|time_stretch' 2>&1
+          $log = & ctest --preset windows-release -V -R 'render_metrics|realtime_contract|time_stretch|deck_playback_selector|engine_keylock_source' 2>&1
           $exitCode = $LASTEXITCODE
           $log | Tee-Object -FilePath build/windows/diagnostics/audio-metrics.txt
           if ($exitCode -ne 0) { throw "Audio diagnostics failed: $exitCode" }

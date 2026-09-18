@@ -287,10 +287,13 @@ const float* Engine::resamplerKernel(double step, double cursor) const noexcept 
     return resamplerKernels.data() + (bin * resamplerPhases + phase) * resamplerTaps;
 }
 
-void Engine::prepare(double rate) {
+void Engine::prepare(double rate, int maxAudioBlockFrames) {
     if (!std::isfinite(rate) || rate < 8000.0 || rate > 192000.0)
         throw std::invalid_argument("Output sample rate must be 8-192 kHz");
+    if (maxAudioBlockFrames <= 0 || maxAudioBlockFrames > defaultMaxAudioBlockFrames)
+        throw std::invalid_argument("Max audio block must be 1-8192 frames");
     sampleRate = rate;
+    maxBlockFrames = maxAudioBlockFrames;
     prepareResamplerKernels();
     lowCoeff = static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * 200.0 / rate));
     highCoeff = static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * 2400.0 / rate));
@@ -299,6 +302,9 @@ void Engine::prepare(double rate) {
     masterSmooth = 0.0f;
     crossSmooth = 0.5f;
     headphoneSmooth = 0.5f;
+    for (auto& scratch : sourceScratch)
+        for (auto& channel : scratch)
+            channel.assign(static_cast<std::size_t>(maxBlockFrames), 0.0f);
     for (auto& s : states) {
         for (auto& channel : s.delay) channel.assign(static_cast<std::size_t>(rate * 0.25), 0.0f);
         s.delayIndex = 0;
@@ -306,6 +312,8 @@ void Engine::prepare(double rate) {
         s.treble.fill(0.0f);
         s.lastProcessed.fill(0.0f);
         s.transitionFrom.fill(0.0f);
+        s.cursor = 0.0;
+        s.audibleCursor = 0.0;
         s.gain = 0.0f;
         s.rate = 1.0f;
         s.cue = 0.0f;
@@ -322,14 +330,21 @@ bool Engine::submit(std::size_t deck, std::unique_ptr<Clip> clip) {
     return true;
 }
 void Engine::collectRetired() noexcept { for (auto& c : clips) c.collect(); }
+bool Engine::setDeckSourceRenderer(std::size_t deck, DeckSourceRenderer* renderer) noexcept {
+    if (deck >= deckCount) return false;
+    sourceRenderers[deck] = renderer;
+    return true;
+}
 void Engine::process(float* const* output, int channels, int frames) noexcept {
     if (output == nullptr || channels <= 0 || frames <= 0) return;
     for (int c = 0; c < channels; ++c)
         if (output[c] != nullptr) std::fill_n(output[c], frames, 0.0f);
     struct Block {
         const Clip* clip{};
-        bool playing{}, loop{}, cue{};
+        bool playing{}, loop{}, cue{}, externalRendered{};
         float gain{}, rate{}, low{}, mid{}, high{}, echo{}, drive{};
+        double externalNextCursor = 0.0;
+        double externalAudibleCursor = 0.0;
     };
     std::array<Block, deckCount> blocks{};
     std::array<float, deckCount> peaks{};
@@ -338,6 +353,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         auto& control = controls[d];
         if (clips[d].adopt()) {
             state.cursor = 0.0;
+            state.audibleCursor = 0.0;
             state.gain = 0.0f;
             state.rate = 1.0f;
             state.cue = 0.0f;
@@ -374,10 +390,25 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             state.transitionFrom = state.lastProcessed;
             state.transitionRemaining = transitionSamples;
             state.cursor = std::clamp(seek, 0.0, 1.0) * static_cast<double>(b.clip->frames() - 1);
+            state.audibleCursor = state.cursor;
             if (b.clip->stream)
                 b.clip->stream->request(static_cast<std::int64_t>(state.cursor));
         } else if (b.clip && b.clip->stream) {
             b.clip->stream->request(static_cast<std::int64_t>(state.cursor));
+        }
+
+        if (b.clip && b.playing && frames <= maxBlockFrames && sourceRenderers[d] != nullptr) {
+            double nextTransport = state.cursor;
+            double nextAudible = state.cursor;
+            auto& scratch = sourceScratch[d];
+            const bool rendered = sourceRenderers[d]->render(
+                *b.clip, state.cursor, b.loop, static_cast<double>(b.rate),
+                scratch[0].data(), scratch[1].data(), frames, nextTransport, nextAudible);
+            if (rendered && std::isfinite(nextTransport) && std::isfinite(nextAudible)) {
+                b.externalRendered = true;
+                b.externalNextCursor = nextTransport;
+                b.externalAudibleCursor = nextAudible;
+            }
         }
     }
     const float crossTarget = bounded(crossfader.load(), 0.0f, 1.0f, 0.5f);
@@ -411,44 +442,50 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             std::array<float, 2> sample{};
             bool streamFrameReady = true;
             if (b.clip && b.playing) {
-                const auto lengthFrames = b.clip->frames();
-                const auto length = static_cast<double>(lengthFrames);
-                if (s.cursor >= length) {
-                    if (b.loop) {
-                        s.transitionFrom = s.lastProcessed;
-                        s.transitionRemaining = transitionSamples;
-                        s.cursor = std::fmod(s.cursor, length);
-                        if (b.clip->stream) b.clip->stream->request(static_cast<std::int64_t>(s.cursor));
-                    } else {
-                        b.playing = false;
-                        controls[d].playing.store(false, std::memory_order_relaxed);
-                        if (s.wasPlaying) {
+                if (b.externalRendered) {
+                    sample[0] = sourceScratch[d][0][static_cast<std::size_t>(frame)];
+                    sample[1] = sourceScratch[d][1][static_cast<std::size_t>(frame)];
+                } else {
+                    const auto lengthFrames = b.clip->frames();
+                    const auto length = static_cast<double>(lengthFrames);
+                    if (s.cursor >= length) {
+                        if (b.loop) {
                             s.transitionFrom = s.lastProcessed;
                             s.transitionRemaining = transitionSamples;
-                            s.wasPlaying = false;
+                            s.cursor = std::fmod(s.cursor, length);
+                            if (b.clip->stream) b.clip->stream->request(static_cast<std::int64_t>(s.cursor));
+                        } else {
+                            b.playing = false;
+                            controls[d].playing.store(false, std::memory_order_relaxed);
+                            if (s.wasPlaying) {
+                                s.transitionFrom = s.lastProcessed;
+                                s.transitionRemaining = transitionSamples;
+                                s.wasPlaying = false;
+                            }
                         }
                     }
-                }
-                if (b.playing) {
-                    const double step = b.clip->sampleRate / sampleRate * static_cast<double>(s.rate);
-                    const auto* kernel = resamplerKernel(step, s.cursor);
-                    const auto left = resample(*b.clip, 0, s.cursor, b.loop, kernel);
-                    const auto right = resample(*b.clip, 1, s.cursor, b.loop, kernel);
-                    sample[0] = left.value;
-                    sample[1] = right.value;
-                    streamFrameReady = left.ready && right.ready;
-                    if (b.clip->stream) {
-                        const auto streamFrame = static_cast<std::int64_t>(std::clamp(
-                            s.cursor, 0.0, static_cast<double>(std::max<std::int64_t>(0, lengthFrames - 1))));
-                        if (!streamFrameReady) b.clip->stream->noteStarvation(streamFrame);
-                        else if (!s.streamReady) b.clip->stream->noteRefill();
-                        if (streamFrameReady != s.streamReady) {
-                            s.transitionFrom = s.lastProcessed;
-                            s.transitionRemaining = transitionSamples;
-                            s.streamReady = streamFrameReady;
+                    if (b.playing) {
+                        const double step = b.clip->sampleRate / sampleRate * static_cast<double>(s.rate);
+                        const auto* kernel = resamplerKernel(step, s.cursor);
+                        const auto left = resample(*b.clip, 0, s.cursor, b.loop, kernel);
+                        const auto right = resample(*b.clip, 1, s.cursor, b.loop, kernel);
+                        sample[0] = left.value;
+                        sample[1] = right.value;
+                        streamFrameReady = left.ready && right.ready;
+                        if (b.clip->stream) {
+                            const auto streamFrame = static_cast<std::int64_t>(std::clamp(
+                                s.cursor, 0.0,
+                                static_cast<double>(std::max<std::int64_t>(0, lengthFrames - 1))));
+                            if (!streamFrameReady) b.clip->stream->noteStarvation(streamFrame);
+                            else if (!s.streamReady) b.clip->stream->noteRefill();
+                            if (streamFrameReady != s.streamReady) {
+                                s.transitionFrom = s.lastProcessed;
+                                s.transitionRemaining = transitionSamples;
+                                s.streamReady = streamFrameReady;
+                            }
                         }
+                        s.cursor += step;
                     }
-                    s.cursor += step;
                 }
             }
             const float transitionMix = s.transitionRemaining > 0
@@ -489,11 +526,25 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
     for (std::size_t d = 0; d < deckCount; ++d) {
         const auto* clip = blocks[d].clip;
         const auto frameCount = clip ? clip->frames() : 0;
+        if (blocks[d].externalRendered && clip) {
+            states[d].cursor = blocks[d].externalNextCursor;
+            states[d].audibleCursor = blocks[d].externalAudibleCursor;
+            if (!blocks[d].loop && states[d].cursor >= static_cast<double>(frameCount))
+                controls[d].playing.store(false, std::memory_order_relaxed);
+        } else {
+            states[d].audibleCursor = states[d].cursor;
+        }
         meters[d].duration.store(clip ? static_cast<double>(frameCount) / clip->sampleRate : 0.0);
-        meters[d].position.store(clip ? std::min(states[d].cursor, static_cast<double>(frameCount)) / clip->sampleRate : 0.0);
+        meters[d].position.store(clip
+            ? std::min(states[d].cursor, static_cast<double>(frameCount)) / clip->sampleRate
+            : 0.0);
+        meters[d].audiblePosition.store(clip
+            ? std::min(states[d].audibleCursor, static_cast<double>(frameCount)) / clip->sampleRate
+            : 0.0);
         meters[d].peak.store(peaks[d]);
         if (clip && clip->stream)
-            clip->stream->request(static_cast<std::int64_t>(std::min(states[d].cursor, static_cast<double>(frameCount - 1))));
+            clip->stream->request(static_cast<std::int64_t>(
+                std::min(states[d].cursor, static_cast<double>(frameCount - 1))));
     }
     masterPeak.store(peak);
     clipped.store(overload);
