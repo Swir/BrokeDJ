@@ -25,15 +25,15 @@ Windows 11 x64 first · Native C++ audio · No subscription, ads, or mandatory a
 | Area | Implemented in source | Validation / limits |
 |---|---|---|
 | Audio core | Four stereo decks; variable-rate playback; start/pause; seek; whole-track loop; Catmull-Rom rate conversion; smoothed transport/EQ/FX transitions | Core tests cover deterministic transport and automation behavior. Rate changes pitch; no key lock or beat grid. |
-| Mixer | Channel gain; basic three-band EQ; equal-power crossfader; master gain | A/C are assigned left, B/D right. Not yet a configurable professional mixer. |
+| Mixer | Channel gain; basic three-band EQ; equal-power crossfader; master gain; smooth master/cue output safety stage | A/C are assigned left, B/D right. The safety stage is not a transparent/look-ahead limiter; the mixer is not yet fully configurable. |
 | Effects | Fixed 250 ms feedback echo and saturation per deck | Two effects, not 40 presets disguised as effects. Beat sync and effect chains are pending. |
 | Cue | Pre-fader, post-EQ/FX stereo headphone bus | Outputs 3/4 only. Two-output devices do not receive cue mixed into master. Physical hardware validation pending. |
 | Import | Background import of local WAV, AIFF, FLAC, OGG and MP3 through JUCE. Small tracks use the in-memory path; larger tracks use a bounded background read-ahead cache with a sparse waveform preview. | Mono/stereo, 8–384 kHz. The old fixed 256 MiB decoded-whole-track ceiling is retired for the streaming path, but long-file seek/loop/slow-storage underrun behavior still needs stress and listening validation. |
 | Interface | Four deck panels, waveforms, drag/drop, audio settings and clickable `by Swir` credit | Native JUCE source; Windows CI builds and headless GUI lifecycle smoke tests, while clean-machine/manual usability qualification remains separate. |
 | Language | Polish selected for a Polish system; otherwise English | Decoder diagnostics currently fall back to English. No global translation claim. |
-| Reliability | Immutable clip handoff; deferred destruction; bounded output; shutdown cancellation; smoothed control automation; bounded stream cache for large tracks | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
+| Reliability | Immutable clip handoff; deferred destruction; smooth bounded output safety; shutdown cancellation; smoothed control automation; bounded stream cache for large tracks | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
 
-The output clamp is last-resort **sample clipping protection**, not a transparent limiter. Lower gain when the clipping warning appears. The waveform is an amplitude preview, not detected beats or musical phrases. Catmull-Rom interpolation improves development playback over the original linear reference, but it is **not** a time-stretch/key-lock engine. The large-track cache prevents full-file RAM growth; it does not yet prove dropout-free playback on every disk, codec or seek pattern.
+The master/cue safety curve leaves the normal region unchanged and progressively compresses only the top output region toward a 0.98 ceiling. It is **not** a transparent look-ahead or true-peak limiter. The clipping warning is based on the signal before this protection, so lower gain when it appears. The waveform is an amplitude preview, not detected beats or musical phrases. Catmull-Rom interpolation improves development playback over the original linear reference, but it is **not** a time-stretch/key-lock engine. The large-track cache prevents full-file RAM growth; it does not yet prove dropout-free playback on every disk, codec or seek pattern.
 
 ## Project status
 
@@ -60,6 +60,7 @@ Source of truth: [`docs/progress.json`](docs/progress.json). This number is not 
 | Improved rate conversion | Four-point Catmull-Rom interpolation for variable-rate playback while key lock remains a future milestone |
 | Bounded long-track playback | Large local tracks use a fixed-size, lock-free sample cache filled by a background reader instead of decoding the entire track into RAM |
 | Independent headphone cue | Dedicated logical outputs 3/4 when the selected interface provides four output channels |
+| Safer output ceiling | A smooth allocation-free master/cue safety curve bounds extreme output while preserving pre-protection overload diagnostics |
 | Real-time-safe core direction | No disk/network I/O, decoding, allocation or blocking mutex in the audio callback |
 | Honest validation | Core, Windows build, GUI smoke and hardware/manual gates are reported separately |
 
