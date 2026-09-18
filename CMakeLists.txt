@@ -139,6 +139,19 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_test(NAME time_stretch_engine_bridge_realtime
             COMMAND brokedj_timestretch_engine_bridge_realtime_tests)
         set_tests_properties(time_stretch_engine_bridge_realtime PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_deck_playback_selector_tests
+            tests/DeckPlaybackSelectorTests.cpp)
+        target_link_libraries(brokedj_deck_playback_selector_tests PRIVATE brokedj_timestretch)
+        add_test(NAME deck_playback_selector COMMAND brokedj_deck_playback_selector_tests)
+        set_tests_properties(deck_playback_selector PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_deck_playback_selector_realtime_tests
+            tests/DeckPlaybackSelectorRealtimeTests.cpp)
+        target_link_libraries(brokedj_deck_playback_selector_realtime_tests PRIVATE brokedj_timestretch)
+        add_test(NAME deck_playback_selector_realtime
+            COMMAND brokedj_deck_playback_selector_realtime_tests)
+        set_tests_properties(deck_playback_selector_realtime PROPERTIES TIMEOUT 90)
     endif()
 endif()
 
