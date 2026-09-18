@@ -36,6 +36,14 @@ jobs:
         run: cmake --build --preset windows-release --parallel 2
       - name: Test core
         run: ctest --preset windows-release
+      - name: Capture audio render and callback diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/windows/diagnostics | Out-Null
+          $log = & ctest --preset windows-release -V -R 'render_metrics|realtime_contract' 2>&1
+          $exitCode = $LASTEXITCODE
+          $log | Tee-Object -FilePath build/windows/diagnostics/audio-metrics.txt
+          if ($exitCode -ne 0) { throw "Audio diagnostics failed: $exitCode" }
       - name: Native GUI lifecycle smoke test (no audio hardware)
         shell: pwsh
         run: |
@@ -50,6 +58,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Staging failed' }
           git archive --format=zip --output=dist/BrokeDJ-source.zip HEAD
           Copy-Item docs/TESTING.md dist/BrokeDJ/VALIDATION.md
+          Copy-Item build/windows/diagnostics/audio-metrics.txt dist/BrokeDJ/AUDIO-DIAGNOSTICS.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BrokeDJ-0.1.0-development-windows-x64

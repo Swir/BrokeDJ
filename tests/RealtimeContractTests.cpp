@@ -37,9 +37,9 @@ void release(void* pointer) noexcept {
     std::free(pointer);
 }
 
-std::unique_ptr<broke::Clip> sineClip(int frames = 240000) {
+std::unique_ptr<broke::Clip> sineClip(int frames = 240000, double sampleRate = 48000.0) {
     auto clip = std::make_unique<broke::Clip>();
-    clip->sampleRate = 48000.0;
+    clip->sampleRate = sampleRate;
     clip->left.resize(static_cast<std::size_t>(frames));
     clip->right.resize(static_cast<std::size_t>(frames));
     for (int i = 0; i < frames; ++i) {
@@ -74,6 +74,64 @@ std::unique_ptr<broke::Clip> streamedClip() {
 void renderBlock(broke::Engine& engine, std::array<std::array<float, 256>, 4>& audio,
                  std::array<float*, 4>& out) {
     engine.process(out.data(), static_cast<int>(out.size()), static_cast<int>(audio[0].size()));
+}
+
+void benchmarkCase(const char* name, double sourceSampleRate, double outputSampleRate, float playbackRate) {
+    broke::Engine engine;
+    engine.prepare(outputSampleRate);
+    engine.crossfader = 0.0f;
+    engine.master = 0.8f;
+    check(engine.submit(0, sineClip(240000, sourceSampleRate)), "benchmark clip accepted");
+
+    std::array<std::array<float, 256>, 4> audio{};
+    std::array<float*, 4> out{};
+    for (std::size_t channel = 0; channel < out.size(); ++channel) out[channel] = audio[channel].data();
+
+    renderBlock(engine, audio, out);
+    auto& control = engine.control(0);
+    control.playing = true;
+    control.loop = true;
+    control.rate = playbackRate;
+    for (int i = 0; i < 64; ++i) renderBlock(engine, audio, out);
+
+    allocations.store(0, std::memory_order_relaxed);
+    deallocations.store(0, std::memory_order_relaxed);
+    constexpr int blocks = 800;
+    const auto started = std::chrono::steady_clock::now();
+    trackHeap.store(true, std::memory_order_seq_cst);
+    for (int block = 0; block < blocks; ++block) renderBlock(engine, audio, out);
+    trackHeap.store(false, std::memory_order_seq_cst);
+    const auto finished = std::chrono::steady_clock::now();
+
+    const auto observedAllocations = allocations.load(std::memory_order_relaxed);
+    const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
+    check(observedAllocations == 0, "benchmark callback performs no heap allocation");
+    check(observedDeallocations == 0, "benchmark callback performs no heap deallocation");
+    for (const auto& channel : audio) {
+        check(std::all_of(channel.begin(), channel.end(), [](float value) { return std::isfinite(value); }),
+              "benchmark callback output remains finite");
+    }
+
+    const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count();
+    constexpr double renderedFrames = static_cast<double>(blocks) * 256.0;
+    const double nsPerFrame = static_cast<double>(elapsedNs) / renderedFrames;
+    const double frameBudgetNs = 1.0e9 / outputSampleRate;
+    const double realtimeBudgetFraction = nsPerFrame / frameBudgetNs;
+    check(elapsedNs > 0, "benchmark elapsed time is positive");
+    check(std::isfinite(nsPerFrame) && nsPerFrame > 0.0, "benchmark ns/frame is finite and positive");
+    check(std::isfinite(realtimeBudgetFraction) && realtimeBudgetFraction > 0.0,
+          "benchmark budget fraction is finite and positive");
+
+    std::cout << "METRIC callback_case=" << name
+              << " source_hz=" << sourceSampleRate
+              << " output_hz=" << outputSampleRate
+              << " rate=" << playbackRate
+              << " blocks=" << blocks
+              << " ns_per_frame=" << nsPerFrame
+              << " realtime_budget_fraction=" << realtimeBudgetFraction
+              << " heap_allocations=" << observedAllocations
+              << " heap_deallocations=" << observedDeallocations
+              << " timing_is_diagnostic_only=1\n";
 }
 
 void run() {
@@ -144,6 +202,14 @@ void run() {
               << " elapsed_ns=" << elapsedNs
               << " ns_per_rendered_frame=" << nsPerFrame
               << " timing_is_diagnostic_only=1\n";
+
+    // Release-build CI records these timing diagnostics across representative
+    // conversion paths. They are intentionally not absolute pass/fail timing
+    // gates because shared runners do not model a user's audio hardware or load.
+    benchmarkCase("44k1_to_48k_catmull", 44100.0, 48000.0, 1.0f);
+    benchmarkCase("48k_1_5x_sinc", 48000.0, 48000.0, 1.5f);
+    benchmarkCase("96k_to_48k_sinc", 96000.0, 48000.0, 1.0f);
+    benchmarkCase("192k_to_48k_sinc", 192000.0, 48000.0, 1.0f);
 }
 } // namespace
 
