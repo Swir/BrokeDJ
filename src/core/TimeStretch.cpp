@@ -2,6 +2,10 @@
 // Copyright (c) 2026 Swir
 #include "core/TimeStretch.h"
 
+// Signalsmith Linear 0.3.1 uses std::memcpy in a header without including
+// <cstring> itself on GCC/libstdc++; provide the standard declaration before
+// including the pinned upstream headers without modifying vendored source.
+#include <cstring>
 #include <signalsmith-stretch/signalsmith-stretch.h>
 
 #include <array>
