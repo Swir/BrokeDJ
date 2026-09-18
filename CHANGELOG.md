@@ -21,6 +21,11 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Added readiness-aware streamed interpolation: an incomplete Catmull-Rom tap set is treated as unavailable instead of blending partially cached samples.
 - Added short fade-out/fade-in transitions when a streamed deck enters or exits cache starvation, reducing hard discontinuities around refill onset while keeping decoder work off the audio thread.
 - Added deterministic tests proving continuous starvation is counted as one episode and refill recovery ramps from silence instead of jumping directly to the recovered sample.
+- Split the JUCE decoder/read-ahead adapter into an independently testable target and added generated WAV/AIFF/FLAC/OGG plus original synthetic MP3 fixtures for in-memory and forced-streaming paths.
+- Added Unicode-path, invalid-file, cancellation, distant-seek and controlled slow-reader tests using the real decoder adapter.
+- Added last-request-wins preemption between read-ahead chunks so a new seek abandons stale forward work as soon as the in-flight chunk completes.
+- Sanitized non-finite decoded samples before publishing them to the stream cache.
+- Added a bounded-memory sequential waveform fallback for compressed readers that reject sparse non-monotonic preview seeks, while giving streaming playback a fresh decoder instance. This fixed the Windows MP3 forced-streaming regression exposed by the new test matrix.
 
 ### Audio quality hardening
 
@@ -36,4 +41,5 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Bounded streaming PR #4 final head `9d842feecda23ea78904a35a9f4c073533784abc` passed exact-head run `35334147477`, including Linux sanitizers and Windows x64 build, CTest, GUI smoke, staging and artifact upload, then merged as `ac9a98610a166548c3ca0e18446fc95af99cd7c9`.
 - Stream seek/refill hardening PR #5 passed exact-final-head Linux sanitizer and Windows x64 build/test/GUI-smoke validation and merged as `7cced0d18fe7d192fa983b482d2637b2204fe0f5`.
 - Starvation-history/refill-smoothing PR #6 final head `915441c73cc6bab7c58579a8343952ca9e1a9bf1` passed exact-head run `35338665653`: Linux sanitizer/core/SVG checks and Windows x64 configure/build/CTest/native no-audio GUI-smoke/staging succeeded; it merged as `58ecdb3b85b8ff395d115097776d5946bf457936`.
+- Decoder/codec-stress PR #7 implementation head `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc` passed run `35346407766` on Linux sanitizer/core/progress checks and Windows x64 build, the complete CTest set including decoder fixtures, no-audio GUI smoke, staging and artifact upload. Documentation-only checkpoint commits still require exact-final-head CI before merge.
 - The roadmap remains **1/10 = 10.0%** because these hardening packages do not close M1 hardware/manual validation or the broader M2 performance-deck scope.
