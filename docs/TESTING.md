@@ -22,7 +22,22 @@ Deterministic streaming coverage verifies:
 - cached streamed audio renders finite, non-zero output through the engine;
 - a seek into an uncached region updates the read-ahead request instead of doing callback I/O.
 
-The tests deliberately do **not** claim zero dropouts after arbitrary seeks. Cache-refill onset, slow-storage behavior, compressed-codec seeking, long-file loop edges and worker shutdown during blocked I/O still need explicit stress/listening evidence.
+## Seek/refill hardening package
+
+PR #5 extends the same test target and read-ahead implementation without changing the roadmap counter. Exact-final-head CI is required before merge.
+
+The new deterministic coverage uses a **virtual 90-minute stream** backed only by the fixed cache; it does not allocate or decode a 90-minute audio buffer. It verifies:
+
+- a non-audio `StreamCacheDiagnostics` snapshot reports the exact requested chunk, whether that region is resident and bounded forward cache coverage;
+- repeated distant seeks across the virtual long track keep requested frames in range, output finite and the playhead valid;
+- a streamed whole-track loop can wrap from the final region back to a preloaded start region while remaining in the playing state;
+- an intentionally unfilled seek target is visible as cache starvation and becomes ready after deterministic refill;
+- the background reader prioritizes the exact requested chunk before forward look-ahead after a seek;
+- chunks beyond EOF are skipped by the read-ahead scheduler instead of being counted as work, preventing a potential end-of-track busy loop.
+
+These cache diagnostics describe **read-ahead residency**, not physical audio-interface underruns. A ready requested chunk also does not prove that every Catmull-Rom neighbor, storage device, compressed codec or OS scheduling sequence is dropout-free.
+
+The tests deliberately do **not** claim zero dropouts after arbitrary seeks. Cache-refill onset, slow-storage behavior, compressed-codec seeking, long-file loop edges on real files and worker shutdown during blocked I/O still need explicit stress/listening evidence.
 
 ## Audio quality hardening coverage
 
@@ -41,10 +56,11 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Windows x64 build and native no-audio smoke mode pass on the merged baseline.
 - [x] SVG progress synchronization and no-legacy-meter check pass on the merged baseline.
 - [x] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
+- [ ] Seek/refill hardening PR #5 passes exact-final-head Linux + Windows CI and is merged.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode/stream as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio.
-- [ ] Large/long files stay memory-bounded under repeated seek/loop/load stress.
+- [ ] Large/long files stay memory-bounded under repeated seek/loop/load stress on real supported codecs/storage.
 - [ ] Minimum and large window sizes keep every control reachable.
 - [ ] Two-output and four-output physical devices have correct master/cue isolation.
 - [ ] Device change/disconnect and closing during decode/streaming recover safely.
