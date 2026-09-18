@@ -5,24 +5,26 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`
-- Latest merged package: PR `#10` — master/cue output safety protection and routing regression coverage
-- Merge commit: `a207b89e573c6068285e24bf9748c9ecefcaaf69`
-- Exact final PR head: `f82a0dab7dde1298690dbe326049d21190c0be90`
-- Final PR validation run: `35355739490` — Linux ASan/UBSan core/progress checks passed; Windows x64 configure/build/full CTest, native no-audio GUI smoke, staging and artifact upload passed
+- Latest merged package: PR `#11` — band-limited variable-rate conversion and interpolation-aware seek read-ahead
+- Merge commit: `d15fbb8187e699f200bfb79666c637614cf128c7`
+- Exact final PR head: `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032`
+- Final PR validation run: `35361883586` — Linux ASan/UBSan core/progress checks and all five core-only CTest targets passed; Windows x64 configure/build/full CTest, native no-audio GUI smoke, staging and artifact upload passed
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**
 
 ## Completed in the current validation package
 
-- Replaced the final hard master/cue output clamp with an allocation-free smooth safety curve that leaves signals at or below 0.90 linear unchanged and progressively approaches a 0.98 ceiling only in the top output region.
-- Preserved pre-protection master peak and overload reporting, so the protection curve cannot hide bad gain staging behind a falsely clean meter.
-- Added deterministic tests for below-knee transparency, bounded overloaded master output, finite protected output and summed cue-output protection.
-- Strengthened cue routing regression coverage: private cue stays on logical outputs 3/4 in four-channel mode and is never folded into a two-channel master when dedicated cue outputs are unavailable.
-- Closed stale documentation-only PR `#8` without force-updating it because newer merged work had already superseded its evidence.
+- Added a prepared 24-tap Blackman-windowed sinc kernel bank for effective source steps above one frame per output sample, reducing out-of-band energy before speed-up/downsampling while retaining Catmull-Rom for the non-downsampling path.
+- Kept kernel construction outside the realtime callback; the callback uses bounded lookup and fixed-tap multiply-accumulate work, and the existing zero-heap realtime contract remains green.
+- Added a deterministic 1.5x high-frequency render gate using an 8 kHz passband reference and a 19 kHz stopband source, with explicit RMS and stopband/passband limits rather than an unsupported listening-quality claim.
+- Changed long-track seek refill ordering so the requested chunk and both immediate neighbours are available before deeper forward prefetch, supporting the wider interpolation footprint near chunk boundaries.
+- Updated README, architecture, validation and changelog documentation without increasing roadmap completion.
 
 ## Validation state
 
-- PR #10 final head `f82a0dab7dde1298690dbe326049d21190c0be90` passed exact-head run `35355739490` on both required jobs before merge.
-- The new output stage is a bounded safety curve, **not** a transparent look-ahead limiter, true-peak limiter or mastering processor.
+- PR #11 final head `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032` passed exact-head run `35361883586` before merge.
+- Linux sanitizer/core CI passed all five core-only CTest targets, including the new high-frequency render metric and callback heap-allocation contract.
+- Windows x64 CI passed configure/build, the full CTest matrix including decoder fixtures, native no-audio GUI lifecycle smoke, staging and artifact upload.
+- The finite windowed-sinc filter bank is an anti-aliasing improvement for pitch-changing rate conversion, **not** a key-lock/time-stretch engine or proof of perceptual transparency.
 - No physical audio interface, Windows 11 clean-machine, controller, slow physical storage or reviewed listening validation was performed by this package.
 
 ## Remaining blockers / gates
@@ -30,9 +32,9 @@ This file is a durable engineering checkpoint, not a release announcement.
 1. Clean Windows 11 interactive launch, resize/import and actual audio-interface behavior still require manual verification.
 2. Two-output and four-output physical-device routing, device loss/change and real cue isolation still require hardware evidence even though routing contracts are covered offline.
 3. The automated codec matrix remains synthetic/generated; a broader real-world mono/stereo and CBR/VBR corpus, damaged/truncated variants and slow physical storage still need evidence.
-4. Objective render metrics protect current rate conversion and transport transitions, but they do not prove full-spectrum anti-alias quality, inaudibility or transparent limiting.
+4. Objective render metrics now include deterministic high-frequency anti-alias evidence, but they do not establish inaudibility, transparent limiting or production-quality key lock.
 5. Physical device callback deadlines/underruns, soak testing, time-stretch/key-lock, beat analysis/grid and the rest of M2 remain open.
 
 ## Next highest-impact step
 
-Extend objective resampler coverage toward high-frequency/alias behavior and use that evidence to choose the next production-quality tempo/key-lock path, while keeping clean Windows 11 and physical audio-hardware validation as separate release gates.
+Benchmark the fixed-tap rate-conversion callback cost across representative source/output sample-rate combinations, extend deterministic spectral fixtures beyond the 1.5x case, then choose and prototype the production time-stretch/key-lock architecture without coupling analysis work to ordinary playback.

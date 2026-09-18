@@ -81,13 +81,15 @@ Final PR #10 head `f82a0dab7dde1298690dbe326049d21190c0be90` passed exact-head G
 
 This is deterministic routing/DSP evidence only. The protection curve is **not** a transparent look-ahead limiter or true-peak limiter, and offline output routing tests do not replace physical two-output/four-output interface validation or reviewed listening.
 
-## Band-limited rate-conversion candidate
+## Band-limited rate-conversion package
 
-The current development package extends `render_metrics` with a deterministic high-frequency anti-alias gate for the new prepared windowed-sinc downsampling path. At 1.5x playback it renders an 8 kHz source as a passband reference and a 19 kHz source as an out-of-band case that would fold into the audible band without pre-decimation filtering.
+PR #11 added a prepared 24-tap Blackman-windowed sinc lookup bank for effective downsampling/speed-up while retaining Catmull-Rom interpolation when no anti-alias low-pass is required. Kernel generation happens in `prepare()` while audio is stopped; the callback performs bounded table lookup and multiply-accumulate work only.
 
-The gate requires the 8 kHz reference to retain useful RMS level, the 19 kHz stopband RMS to remain below 0.02 and the stopband/passband RMS ratio to remain below 0.10. These thresholds are implementation regression guards, not psychoacoustic transparency claims. Existing low-frequency rate/frequency-error, residual, DC, peak and transport-transition gates remain active, as does the zero-heap realtime callback contract.
+`render_metrics` now includes a deterministic high-frequency anti-alias gate. At 1.5x playback it renders an 8 kHz source as a passband reference and a 19 kHz source as an out-of-band case that would fold into the audible band without pre-decimation filtering. The gate requires the 8 kHz reference to retain useful RMS level, the 19 kHz stopband RMS to remain below 0.02 and the stopband/passband RMS ratio to remain below 0.10. These thresholds are implementation regression guards, not psychoacoustic transparency claims.
 
-The large-track worker also prioritizes the requested chunk and its two immediate neighbours before deeper forward read-ahead, because the wider interpolation kernel can need samples on both sides of a seek cursor. Actual physical-storage refill latency and hardware underruns remain unqualified.
+The large-track worker now prioritizes the requested chunk and both immediate neighbours before deeper forward read-ahead, because the wider interpolation kernel can need samples on either side of a seek cursor. Actual physical-storage refill latency and hardware underruns remain unqualified.
+
+Final PR #11 head `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032` passed exact-head GitHub Actions run `35361883586`: Linux ASan/UBSan core/progress checks and all five core-only CTest targets succeeded; Windows x64 configure/build, full CTest including decoder fixtures, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #11 merged as `d15fbb8187e699f200bfb79666c637614cf128c7`.
 
 ## Audio quality hardening coverage
 
@@ -110,7 +112,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
 - [x] Objective offline render metrics and callback heap-allocation contract pass exact-head Linux sanitizer and Windows x64 CI for PR #9.
 - [x] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
-- [ ] Band-limited rate-conversion package passes exact-head Linux sanitizer and Windows x64 CI and is merged.
+- [x] Band-limited rate-conversion package passes exact-head Linux sanitizer and Windows x64 CI and merges through PR #11.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.
