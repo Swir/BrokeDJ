@@ -13,7 +13,7 @@ The initial milestone is complete only for the repository, testable core and doc
 |---|---|---|---|
 | M0 | Repository and audio foundation | C++20 core, reproducible test command, concurrent clip handoff tests, source layout, build definitions, license/branding and explicit limitations | Complete; local core validation recorded |
 | M1 | Native development build | Windows x64 build passes; clean-machine launch; resize and import checks; device switching and four-output cue verified | Windows CI build + headless GUI smoke pass; manual clean-machine/hardware validation pending |
-| M2 | Performance decks | Validated beat/tempo/key analysis, editable grids including tempo changes, key lock, hotcues, beat loops, slip/reverse/scratch and de-clicked transitions | De-clicking, smoothed rate changes, improved interpolation, bounded long-track read-ahead, cache-readiness diagnostics and virtual long-seek/loop stress are implemented in development; milestone still open |
+| M2 | Performance decks | Validated beat/tempo/key analysis, editable grids including tempo changes, key lock, hotcues, beat loops, slip/reverse/scratch and de-clicked transitions | De-clicking, smoothed rate changes, improved interpolation, bounded long-track read-ahead, starvation/refill telemetry, refill transitions and virtual long-seek/loop stress are implemented in development; milestone still open |
 | M3 | Professional mixer and recording | Configurable routing, gain staging, EQ curves, fader laws, limiter evaluation, microphone/ducking and dropout-aware set recording | Basic source only; full milestone open |
 | M4 | Music library and sessions | SQLite migrations, search/tags/playlists/history, duplicate and moved-file handling, waveform/analysis cache, session persistence and tested backup restore | Planned |
 | M5 | Effects and VST3 | Distinct effect inventory, chains/sends, presets, XY/macros, automation smoothing, scanner isolation, license review and a tested compatibility matrix | Two built-in effects; parameter smoothing added; milestone open |
@@ -25,16 +25,18 @@ The initial milestone is complete only for the repository, testable core and doc
 ## Next implementation priorities
 
 1. Finish M1 manual validation: clean Windows 11 launch, resize/import behavior, actual audio-device switching and four-output cue on supported hardware. CI compilation alone does not close M1.
-2. Continue long-track hardening with cache-starvation event/history counters, refill-onset smoothing, real supported-codec seek/loop fixtures and slow-storage behavior; a cache-readiness snapshot is not an underrun certificate.
-3. Build deterministic render fixtures and objective resampler/transition metrics, then continue toward time-stretch/key-lock rather than treating rate interpolation as final DJ-grade tempo processing.
+2. Exercise real supported-codec long-file seek/loop fixtures for WAV/AIFF/FLAC/OGG/MP3, add slow-reader stress and validate that starvation/refill counters match intentionally delayed input.
+3. Add objective render fixtures and transition/resampler metrics, then continue toward time-stretch/key-lock rather than treating pitch-changing interpolation as final DJ-grade tempo processing.
 
 ## Audio quality and long-track hardening in progress
 
-The original linear rate converter has been replaced in development with allocation-free four-point Catmull-Rom interpolation. Play/pause/seek and whole-track loop wraparound use short de-click transitions. Playback-rate targets, headphone cue switching/level and deck EQ/echo/drive controls are smoothed rather than applying abrupt sample-to-sample jumps.
+The original linear rate converter has been replaced in development with allocation-free four-point Catmull-Rom interpolation. Play/pause/seek, whole-track loop wraparound and streamed starvation/refill boundaries use short de-click transitions. Playback-rate targets, headphone cue switching/level and deck EQ/echo/drive controls are smoothed rather than applying abrupt sample-to-sample jumps.
 
-Large tracks no longer require one decoded stereo allocation for the full file. The development path uses a fixed-size stream cache populated by a background JUCE reader, with small files retaining the simpler in-memory path. After a seek, the reader prioritizes the exact requested chunk before forward read-ahead and skips invalid chunks beyond EOF so end-of-track windows cannot create a false-work busy loop. Cache misses request the new source region and return bounded silence instead of doing I/O in the callback. A non-audio diagnostic snapshot reports requested-region residency and bounded forward coverage. Deterministic tests can exercise a virtual 90-minute stream, repeated distant seeks and a prepared loop edge without allocating full-track audio.
+Large tracks no longer require one decoded stereo allocation for the full file. The development path uses a fixed-size stream cache populated by a background JUCE reader, with small files retaining the simpler in-memory path. After a seek, the reader prioritizes the exact requested chunk before forward read-ahead and skips invalid chunks beyond EOF so end-of-track windows cannot create a false-work busy loop. Cache misses request the new source region and return bounded silence instead of doing I/O in the callback. A streamed interpolation frame is emitted only when the full stereo Catmull-Rom tap set is available; partial tap sets are treated as starvation rather than mixed with implicit zeros.
 
-This still does **not** prove transparent DSP, zero dropouts on real storage/codecs, key lock, zero clicks on every transition, or professional live readiness. Real-file stress, refill-onset behavior and reviewed listening evidence remain open.
+Lock-free diagnostics track failed cache reads, the latest missed frame and collapsed starvation/refill episodes. Continuous missing data counts as one starvation episode until a complete interpolation frame becomes readable again. The same prepared transition window fades toward silence on starvation and fades recovered audio back in. Deterministic tests exercise a virtual 90-minute stream, repeated distant seeks, whole-track loop wrap and intentional starvation/refill recovery without allocating full-track audio.
+
+This still does **not** prove transparent DSP, zero dropouts on real storage/codecs, key lock, zero clicks on every transition, or professional live readiness. Real-file stress, slow-storage behavior and reviewed listening evidence remain open.
 
 ## Effects scope
 
