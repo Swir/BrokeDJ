@@ -65,7 +65,8 @@ public:
     bool prime(const std::atomic<bool>& cancelled) {
         cache->request(0);
         for (int i = 0; i < primeChunks; ++i) {
-            if (cancelled.load() || !fillChunk(i)) return !cancelled.load();
+            if (cancelled.load()) return false;
+            if (!fillChunk(i)) return false;
         }
         return true;
     }
