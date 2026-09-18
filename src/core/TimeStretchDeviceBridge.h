@@ -99,6 +99,7 @@ private:
     std::vector<float> stretchScratchRight;
     std::vector<float> kernels;
     std::array<float, 2> lastOutput{};
+    std::array<float, 2> transitionFrom{};
     double sourceRate = 0.0;
     double deviceRate = 0.0;
     double sourcePerDevice = 1.0;
