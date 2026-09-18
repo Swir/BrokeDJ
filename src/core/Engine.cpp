@@ -13,6 +13,7 @@ static_assert(std::atomic<double>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
 static_assert(std::atomic<std::size_t>::is_always_lock_free);
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(std::atomic<Clip*>::is_always_lock_free);
 namespace {
 float bounded(float x, float lo, float hi, float fallback = 0.0f) noexcept {
@@ -20,43 +21,54 @@ float bounded(float x, float lo, float hi, float fallback = 0.0f) noexcept {
 }
 float clean(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 
-float point(const Clip& clip, int channel, std::int64_t index, bool loop) noexcept {
+struct ReadPoint final {
+    float value = 0.0f;
+    bool ready = false;
+};
+
+ReadPoint point(const Clip& clip, int channel, std::int64_t index, bool loop) noexcept {
     const auto size = clip.frames();
-    if (size <= 0) return 0.0f;
+    if (size <= 0) return {};
     if (loop) {
         index %= size;
         if (index < 0) index += size;
     } else {
         index = std::clamp<std::int64_t>(index, 0, size - 1);
     }
-    if (clip.stream) return clean(clip.stream->sample(channel, index));
+    if (clip.stream) {
+        float value = 0.0f;
+        const bool ready = clip.stream->trySample(channel, index, value);
+        return {clean(value), ready};
+    }
     const auto& data = channel == 0 ? clip.left : clip.right;
-    return clean(data[static_cast<std::size_t>(index)]);
+    return {clean(data[static_cast<std::size_t>(index)]), true};
 }
 
 // Four-point Catmull-Rom interpolation. It materially reduces the staircase/
 // image energy of the original linear development resampler while keeping the
 // callback allocation-free. A future key-lock/time-stretch stage remains separate.
-float resample(const Clip& clip, int channel, double cursor, bool loop) noexcept {
-    if (clip.frames() <= 0 || !std::isfinite(cursor)) return 0.0f;
+ReadPoint resample(const Clip& clip, int channel, double cursor, bool loop) noexcept {
+    if (clip.frames() <= 0 || !std::isfinite(cursor)) return {};
     if (clip.frames() < 4) {
         const auto i = static_cast<std::int64_t>(std::floor(cursor));
         const auto f = static_cast<float>(cursor - static_cast<double>(i));
-        const float a = point(clip, channel, i, loop);
-        const float b = point(clip, channel, i + 1, loop);
-        return clean(a + (b - a) * f);
+        const auto a = point(clip, channel, i, loop);
+        const auto b = point(clip, channel, i + 1, loop);
+        if (!a.ready || !b.ready) return {};
+        return {clean(a.value + (b.value - a.value) * f), true};
     }
     const auto i = static_cast<std::int64_t>(std::floor(cursor));
     const float t = static_cast<float>(cursor - static_cast<double>(i));
-    const float p0 = point(clip, channel, i - 1, loop);
-    const float p1 = point(clip, channel, i, loop);
-    const float p2 = point(clip, channel, i + 1, loop);
-    const float p3 = point(clip, channel, i + 2, loop);
+    const auto p0 = point(clip, channel, i - 1, loop);
+    const auto p1 = point(clip, channel, i, loop);
+    const auto p2 = point(clip, channel, i + 1, loop);
+    const auto p3 = point(clip, channel, i + 2, loop);
+    if (!p0.ready || !p1.ready || !p2.ready || !p3.ready) return {};
     const float t2 = t * t;
     const float t3 = t2 * t;
-    return clean(0.5f * ((2.0f * p1) + (-p0 + p2) * t
-        + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2
-        + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3));
+    return {clean(0.5f * ((2.0f * p1.value) + (-p0.value + p2.value) * t
+        + (2.0f * p0.value - 5.0f * p1.value + 4.0f * p2.value - p3.value) * t2
+        + (-p0.value + 3.0f * p1.value - 3.0f * p2.value + p3.value) * t3)), true};
 }
 }
 
@@ -101,28 +113,60 @@ void StreamCache::publishChunk(std::int64_t chunkIndex, const float* leftData, c
     slot.chunk.store(chunkIndex, std::memory_order_release);
 }
 
-float StreamCache::sample(int channel, std::int64_t frame) const noexcept {
-    if (frame < 0 || frame >= total || (channel != 0 && channel != 1)) return 0.0f;
+void StreamCache::noteReadMiss(std::int64_t frame) const noexcept {
+    lastMissFrame.store(frame, std::memory_order_relaxed);
+    readMisses.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool StreamCache::trySample(int channel, std::int64_t frame, float& value) const noexcept {
+    value = 0.0f;
+    if (frame < 0 || frame >= total || (channel != 0 && channel != 1)) return false;
     const auto chunkIndex = frame / static_cast<std::int64_t>(chunkFrames);
     const auto offset = static_cast<std::size_t>(frame % static_cast<std::int64_t>(chunkFrames));
     const auto& slot = slots[slotFor(chunkIndex)];
     if (slot.chunk.load(std::memory_order_acquire) != chunkIndex) {
+        noteReadMiss(frame);
         request(frame);
-        return 0.0f;
+        return false;
     }
     const auto valid = slot.validFrames.load(std::memory_order_acquire);
-    if (offset >= valid) return 0.0f;
-    const float value = (channel == 0 ? slot.left[offset] : slot.right[offset]).load(std::memory_order_relaxed);
-    if (slot.chunk.load(std::memory_order_acquire) != chunkIndex) {
+    if (offset >= valid) {
+        noteReadMiss(frame);
         request(frame);
-        return 0.0f;
+        return false;
     }
-    return clean(value);
+    value = (channel == 0 ? slot.left[offset] : slot.right[offset]).load(std::memory_order_relaxed);
+    if (slot.chunk.load(std::memory_order_acquire) != chunkIndex) {
+        value = 0.0f;
+        noteReadMiss(frame);
+        request(frame);
+        return false;
+    }
+    value = clean(value);
+    return true;
+}
+
+float StreamCache::sample(int channel, std::int64_t frame) const noexcept {
+    float value = 0.0f;
+    static_cast<void>(trySample(channel, frame, value));
+    return value;
 }
 
 void StreamCache::request(std::int64_t frame) const noexcept {
     if (total <= 0) return;
     requested.store(std::clamp<std::int64_t>(frame, 0, total - 1), std::memory_order_relaxed);
+}
+
+void StreamCache::noteStarvation(std::int64_t frame) const noexcept {
+    if (total <= 0) return;
+    lastMissFrame.store(std::clamp<std::int64_t>(frame, 0, total - 1), std::memory_order_relaxed);
+    if (!starving.exchange(true, std::memory_order_acq_rel))
+        starvationEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
+void StreamCache::noteRefill() const noexcept {
+    if (starving.exchange(false, std::memory_order_acq_rel))
+        refillEvents.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::int64_t Clip::frames() const noexcept {
@@ -181,6 +225,7 @@ void Engine::prepare(double rate) {
         s.echo = s.drive = 0.0f;
         s.transitionRemaining = 0;
         s.wasPlaying = false;
+        s.streamReady = true;
     }
 }
 bool Engine::submit(std::size_t deck, std::unique_ptr<Clip> clip) {
@@ -217,8 +262,12 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             for (auto& channel : state.delay) std::fill(channel.begin(), channel.end(), 0.0f);
             state.delayIndex = 0;
             control.playing.store(false, std::memory_order_relaxed);
-            if (const auto* adopted = clips[d].current(); adopted && adopted->stream)
-                adopted->stream->request(0);
+            if (const auto* adopted = clips[d].current(); adopted) {
+                state.streamReady = !adopted->stream;
+                if (adopted->stream) adopted->stream->request(0);
+            } else {
+                state.streamReady = true;
+            }
         }
         auto& b = blocks[d];
         b.clip = clips[d].current();
@@ -272,6 +321,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             s.echo += smoothing * (b.echo - s.echo);
             s.drive += smoothing * (b.drive - s.drive);
             std::array<float, 2> sample{};
+            bool streamFrameReady = true;
             if (b.clip && b.playing) {
                 const auto lengthFrames = b.clip->frames();
                 const auto length = static_cast<double>(lengthFrames);
@@ -292,8 +342,22 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                     }
                 }
                 if (b.playing) {
-                    sample[0] = resample(*b.clip, 0, s.cursor, b.loop);
-                    sample[1] = resample(*b.clip, 1, s.cursor, b.loop);
+                    const auto left = resample(*b.clip, 0, s.cursor, b.loop);
+                    const auto right = resample(*b.clip, 1, s.cursor, b.loop);
+                    sample[0] = left.value;
+                    sample[1] = right.value;
+                    streamFrameReady = left.ready && right.ready;
+                    if (b.clip->stream) {
+                        const auto streamFrame = static_cast<std::int64_t>(std::clamp(
+                            s.cursor, 0.0, static_cast<double>(std::max<std::int64_t>(0, lengthFrames - 1))));
+                        if (!streamFrameReady) b.clip->stream->noteStarvation(streamFrame);
+                        else if (!s.streamReady) b.clip->stream->noteRefill();
+                        if (streamFrameReady != s.streamReady) {
+                            s.transitionFrom = s.lastProcessed;
+                            s.transitionRemaining = transitionSamples;
+                            s.streamReady = streamFrameReady;
+                        }
+                    }
                     s.cursor += b.clip->sampleRate / sampleRate * s.rate;
                 }
             }
