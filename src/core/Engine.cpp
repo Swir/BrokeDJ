@@ -90,6 +90,7 @@ void Engine::prepare(double rate) {
     transitionSamples = std::max(1, static_cast<int>(std::lround(rate * 0.005)));
     masterSmooth = 0.0f;
     crossSmooth = 0.5f;
+    headphoneSmooth = 0.5f;
     for (auto& s : states) {
         for (auto& channel : s.delay) channel.assign(static_cast<std::size_t>(rate * 0.25), 0.0f);
         s.delayIndex = 0;
@@ -98,6 +99,8 @@ void Engine::prepare(double rate) {
         s.lastProcessed.fill(0.0f);
         s.transitionFrom.fill(0.0f);
         s.gain = 0.0f;
+        s.rate = 1.0f;
+        s.cue = 0.0f;
         s.low = s.mid = s.high = 1.0f;
         s.echo = s.drive = 0.0f;
         s.transitionRemaining = 0;
@@ -127,6 +130,8 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         if (clips[d].adopt()) {
             state.cursor = 0.0;
             state.gain = 0.0f;
+            state.rate = 1.0f;
+            state.cue = 0.0f;
             state.bass.fill(0.0f);
             state.treble.fill(0.0f);
             state.lastProcessed.fill(0.0f);
@@ -159,12 +164,13 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
     }
     const float crossTarget = bounded(crossfader.load(), 0.0f, 1.0f, 0.5f);
     const float masterTarget = bounded(master.load(), 0.0f, 1.0f);
-    const float cueLevel = bounded(headphoneLevel.load(), 0.0f, 1.0f);
+    const float headphoneTarget = bounded(headphoneLevel.load(), 0.0f, 1.0f);
     float peak = 0.0f;
     bool overload = false;
     for (int frame = 0; frame < frames; ++frame) {
         crossSmooth += smoothing * (crossTarget - crossSmooth);
         masterSmooth += smoothing * (masterTarget - masterSmooth);
+        headphoneSmooth += smoothing * (headphoneTarget - headphoneSmooth);
         const float leftFade = std::cos(crossSmooth * std::numbers::pi_v<float> * 0.5f);
         const float rightFade = std::sin(crossSmooth * std::numbers::pi_v<float> * 0.5f);
         std::array<float, 2> mix{}, cueMix{};
@@ -177,6 +183,8 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 s.wasPlaying = b.playing;
             }
             s.gain += smoothing * (b.gain - s.gain);
+            s.rate += smoothing * (b.rate - s.rate);
+            s.cue += smoothing * ((b.cue ? 1.0f : 0.0f) - s.cue);
             s.low += smoothing * (b.low - s.low);
             s.mid += smoothing * (b.mid - s.mid);
             s.high += smoothing * (b.high - s.high);
@@ -186,8 +194,11 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             if (b.clip && b.playing) {
                 const auto length = static_cast<double>(b.clip->left.size());
                 if (s.cursor >= length) {
-                    if (b.loop) s.cursor = std::fmod(s.cursor, length);
-                    else {
+                    if (b.loop) {
+                        s.transitionFrom = s.lastProcessed;
+                        s.transitionRemaining = transitionSamples;
+                        s.cursor = std::fmod(s.cursor, length);
+                    } else {
                         b.playing = false;
                         controls[d].playing.store(false, std::memory_order_relaxed);
                         if (s.wasPlaying) {
@@ -200,7 +211,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 if (b.playing) {
                     sample[0] = resample(b.clip->left, s.cursor, b.loop);
                     sample[1] = resample(b.clip->right, s.cursor, b.loop);
-                    s.cursor += b.clip->sampleRate / sampleRate * b.rate;
+                    s.cursor += b.clip->sampleRate / sampleRate * s.rate;
                 }
             }
             const float transitionMix = s.transitionRemaining > 0
@@ -221,7 +232,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 if (s.transitionRemaining > 0)
                     x = s.transitionFrom[c] * (1.0f - transitionMix) + x * transitionMix;
                 s.lastProcessed[c] = x;
-                if (b.cue) cueMix[c] += x * cueLevel; // pre-fader, post-EQ/FX
+                if (s.cue > 0.0001f) cueMix[c] += x * headphoneSmooth * s.cue; // pre-fader, post-EQ/FX
                 x *= s.gain;
                 peaks[d] = std::max(peaks[d], std::abs(x));
                 mix[c] += x * ((d % 2 == 0) ? leftFade : rightFade);
