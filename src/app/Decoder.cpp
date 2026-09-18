@@ -177,13 +177,29 @@ DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancel
         const bool useStreaming = reader->lengthInSamples > thresholdBytes / bytesPerStereoFrame;
 
         if (useStreaming) {
-            const auto sourceRate = reader->sampleRate;
-            const auto sourceFrames = reader->lengthInSamples;
-            const auto sourceChannels = static_cast<int>(reader->numChannels);
             if (!buildSparsePeaks(*reader, cancelled, result.peaks)) {
                 result.error = cancelled.load() ? "Import cancelled." : "Read error while building waveform preview.";
                 return result;
             }
+            if (cancelled.load()) {
+                result.error = "Import cancelled.";
+                return result;
+            }
+
+            // Waveform extraction deliberately performs many non-monotonic seeks.
+            // Some compressed-format readers keep decoder state that is not a safe
+            // starting point for a subsequent rewind/prime. Reopen the same file so
+            // streaming begins from a fresh decoder instance independent of preview
+            // generation. This also isolates future preview changes from playback.
+            reader.reset(formats.createReaderFor(file));
+            if (!reader || !validReader(*reader)) {
+                result.error = "Cannot reopen the audio decoder for streaming playback.";
+                return result;
+            }
+
+            const auto sourceRate = reader->sampleRate;
+            const auto sourceFrames = reader->lengthInSamples;
+            const auto sourceChannels = static_cast<int>(reader->numChannels);
             auto cache = std::make_shared<broke::StreamCache>(sourceFrames);
             auto source = std::make_shared<StreamingTrack>(std::move(reader), sourceChannels, cache,
                                                            options.readAheadDelayMs);
