@@ -52,12 +52,12 @@ public:
     EngineKeyLockDeckOwner& operator=(const EngineKeyLockDeckOwner&) = delete;
 
     // Must not race render(). It does not prime a clip; it only establishes the
-    // bounded device-side limits later used by stage().
+    // bounded device-side limits later used by stage(). Invalid requests leave
+    // the current stopped-audio configuration untouched.
     [[nodiscard]] bool configureDevice(double newDeviceSampleRate,
                                        int newMaxDeviceFrames,
                                        double newMaxPlaybackRate = 4.0,
                                        bool newSplitComputation = true) noexcept {
-        resetWhenAudioStopped();
         if (!std::isfinite(newDeviceSampleRate)
             || newDeviceSampleRate < 8000.0 || newDeviceSampleRate > 192000.0
             || newMaxDeviceFrames <= 0 || newMaxDeviceFrames > defaultMaxAudioBlockFrames
@@ -65,6 +65,7 @@ public:
             || newMaxPlaybackRate < 0.5 || newMaxPlaybackRate > 8.0) {
             return false;
         }
+        resetWhenAudioStopped();
         deviceSampleRate = newDeviceSampleRate;
         maxDeviceFrames = newMaxDeviceFrames;
         maxPlaybackRate = newMaxPlaybackRate;
@@ -107,8 +108,8 @@ public:
 
         // A callback that loaded an older active index before the previous
         // publication may publish its hazard after our first check. It cannot
-        // use the slot after its active-index validation, but returning busy
-        // here keeps the ownership rule conservative and easy to audit.
+        // dereference the slot after its active-index validation fails, but we
+        // still refuse publication while the slot is visibly protected.
         if (hazardSlot.load(std::memory_order_acquire) == target)
             return StageStatus::busy;
         if (!candidate.stage(clip, cursor, loop, controls))
@@ -130,11 +131,14 @@ public:
     }
 
     // Audio must already be stopped. This is the only operation that mutates
-    // both slots directly.
+    // both slots directly. Avoid touching an unprepared processor instance so
+    // construction/failed-configuration teardown remains trivially safe.
     void resetWhenAudioStopped() noexcept {
         activeSlot.store(-1, std::memory_order_release);
         hazardSlot.store(-1, std::memory_order_release);
-        for (auto& slot : slots) slot.disarm();
+        for (auto& slot : slots) {
+            if (slot.prepared()) slot.disarm();
+        }
         configuredFlag = false;
         deviceSampleRate = 0.0;
         maxDeviceFrames = 0;
