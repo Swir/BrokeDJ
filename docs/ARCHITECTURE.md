@@ -14,6 +14,12 @@ Per deck: in-memory clip **or** bounded stream cache -> hybrid variable-rate con
 
 The rate converter uses four-point Catmull-Rom interpolation when the effective source step does not require downsampling. When the step exceeds one source frame per output sample, it switches to a prepared 24-tap Blackman-windowed sinc kernel selected from a finite cutoff/phase lookup bank. The bank is allocated and normalized by `prepare()` while audio is stopped; the callback only performs bounded lookup and multiply-accumulate work. Its cutoff follows the source/output/rate step so energy above the output Nyquist region is reduced before decimation. This remains pitch-changing resampling, not time-stretch or key lock.
 
+### Optional M2 time-stretch research path
+
+`TimeStretchPrototype` is a JUCE-independent, opt-in adapter around pinned Signalsmith Stretch/Linear sources. It is compiled only when `BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON` and is deliberately **not** connected to `Engine` or the application transport. Its `prepare()` performs configuration outside the callback and establishes explicit maximum input/output block sizes; processing rejects invalid or oversized blocks. Deterministic tests cover time ratio, independent pitch shift, reported latency, reset/seek behavior and a warmed zero-heap processing contract. See [`TIME_STRETCH_PROTOTYPE.md`](TIME_STRETCH_PROTOTYPE.md).
+
+Before this path can replace or supplement production playback, the deck needs a bounded source/output clock and buffering design, latency compensation, seek/loop/load reset semantics, de-clicked enable/bypass transitions, failure fallback and explicit Windows 11 music-domain listening/CPU/underrun evidence. Until those gates are met, the existing pitch-changing rate converter remains the production fallback.
+
 A/C belong to the left crossfader group and B/D to the right. Cue reaches output indices 2 and 3 only if at least four channels are available. It is never automatically mixed into the master. Output safety protection is not a look-ahead or true-peak limiter.
 
 ## Real-time callback boundaries

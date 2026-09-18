@@ -101,9 +101,17 @@ PR #12 expanded the objective spectral baseline across representative source/out
 
 The Windows workflow repeats the two diagnostic targets verbosely after the full CTest pass and stores their output as `AUDIO-DIAGNOSTICS.txt` in the development artifact. Final PR #12 head `1747ed8d10f3f2151752bd1bf55963b9c17917b2` passed exact-head run `35364173494`: Linux ASan/UBSan + all five core-only CTest targets succeeded; Windows x64 configure/build/full CTest, diagnostic replay, native no-audio GUI lifecycle smoke, staging and artifact upload succeeded. PR #12 merged as `77ff9bca772b6b035f7c8ce76a1317789c485f26`.
 
+## Time-stretch / key-lock prototype package
+
+PR #13 introduces an **opt-in research target**, not a production deck feature. The JUCE-independent `TimeStretchPrototype` wraps immutable pinned Signalsmith Stretch/Linear sources behind explicit prepared input/output bounds. Ordinary `Engine` playback is unchanged and the existing pitch-changing hybrid resampler remains the fallback.
+
+The prototype test package checks invalid/bounded input handling, reported input/output latency, seek-preroll length and reset behavior. A deterministic 1.25x time-ratio fixture must keep a 440 Hz source within ±5 Hz instead of shifting it toward the 550 Hz result expected from simple pitch-changing resampling. A separate +12-semitone fixture must render near 880 Hz. The realtime test warms the processor, then requires zero heap allocations and deallocations while processing 600 bounded 1.25x blocks with periodic pitch changes.
+
+Linux ASan/UBSan run `35367465361` on head `0532a05d2c9cc13fa4b51a701ce4a308caf88ea7` passed all seven core-only CTest targets after an initial GCC integration failure was diagnosed and fixed by providing the standard `<cstring>` declaration before the pinned upstream headers. Windows x64 validation for the final documentation head is still required before merge. No listening, hardware latency, physical output or live-deck integration claim is made from these tests.
+
 ## Audio quality hardening coverage
 
-`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements, including multi-rate high-frequency passband/stopband evidence for downsampling. `brokedj_realtime_contract_tests` adds zero-heap callback coverage plus path-specific diagnostic cost measurements. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
+`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements, including multi-rate high-frequency passband/stopband evidence for downsampling. `brokedj_realtime_contract_tests` adds zero-heap callback coverage plus path-specific diagnostic cost measurements. The optional time-stretch tests separately validate bounded prototype behavior without changing ordinary playback. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
 
 ## Existing core coverage
 
@@ -111,7 +119,7 @@ Empty silence; invalid clip/deck/device-rate rejection; stereo playback; playhea
 
 ## What automated checks do not certify
 
-Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. The hybrid rate converter remains pitch-changing resampling, not key lock/time stretch; its finite windowed-sinc anti-alias matrix does not prove ideal reconstruction or inaudibility on arbitrary music. Shared-runner callback-cost measurements are diagnostics, not physical-device deadline/underrun evidence. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
+Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. The production hybrid rate converter remains pitch-changing resampling; the optional time-stretch prototype is not integrated into deck playback and does not establish professional key lock. Shared-runner callback-cost measurements are diagnostics, not physical-device deadline/underrun evidence. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
 
 ## Native acceptance checklist
 
@@ -124,6 +132,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
 - [x] Band-limited rate-conversion package passes exact-head Linux sanitizer and Windows x64 CI and merges through PR #11.
 - [x] Multi-rate spectral matrix, per-path zero-heap callback diagnostics and retained Windows artifact evidence pass exact-head CI and merge through PR #12.
+- [ ] Optional time-stretch/key-lock prototype passes exact-final-head Linux sanitizer + Windows x64 CI; this remains separate from live deck integration/listening qualification.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.

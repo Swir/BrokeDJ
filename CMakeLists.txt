@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 option(BROKEDJ_BUILD_APP "Build the native JUCE application" ON)
 option(BROKEDJ_SANITIZE "Enable address and undefined-behavior sanitizers" OFF)
+option(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE "Build the opt-in Signalsmith time-stretch/key-lock prototype and tests" OFF)
 include(CTest)
 add_library(brokedj_core STATIC src/core/Engine.cpp)
 target_include_directories(brokedj_core PUBLIC src)
@@ -45,6 +46,50 @@ if(BUILD_TESTING)
     add_test(NAME stream_cache COMMAND brokedj_stream_cache_tests)
     set_tests_properties(stream_cache PROPERTIES TIMEOUT 30)
 endif()
+
+if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
+    include(FetchContent)
+    # Signalsmith Linear 0.3.1. Resolve the upstream release tag to an immutable commit.
+    FetchContent_Declare(signalsmith_linear
+        GIT_REPOSITORY https://github.com/Signalsmith-Audio/linear.git
+        GIT_TAG 5668673560146a9cfe38c25315071e3fd68c8317
+        GIT_PROGRESS TRUE)
+    FetchContent_MakeAvailable(signalsmith_linear)
+
+    # Signalsmith Stretch 1.3.2-era main checkpoint. This remains an opt-in
+    # research dependency until BrokeDJ's M2 quality/realtime gates are met.
+    FetchContent_Declare(signalsmith_stretch
+        GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+        GIT_TAG 57b93f4e9206a089a45387eaa39bdc9f310d3308
+        GIT_PROGRESS TRUE)
+    FetchContent_MakeAvailable(signalsmith_stretch)
+
+    add_library(brokedj_timestretch STATIC src/core/TimeStretch.cpp)
+    target_include_directories(brokedj_timestretch PUBLIC src)
+    target_link_libraries(brokedj_timestretch PRIVATE signalsmith-stretch)
+    if(MSVC)
+        target_compile_options(brokedj_timestretch PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(brokedj_timestretch PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    endif()
+    if(BROKEDJ_SANITIZE AND NOT MSVC)
+        target_compile_options(brokedj_timestretch PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(brokedj_timestretch PUBLIC -fsanitize=address,undefined)
+    endif()
+
+    if(BUILD_TESTING)
+        add_executable(brokedj_timestretch_tests tests/TimeStretchTests.cpp)
+        target_link_libraries(brokedj_timestretch_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch COMMAND brokedj_timestretch_tests)
+        set_tests_properties(time_stretch PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_timestretch_realtime_tests tests/TimeStretchRealtimeTests.cpp)
+        target_link_libraries(brokedj_timestretch_realtime_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch_realtime COMMAND brokedj_timestretch_realtime_tests)
+        set_tests_properties(time_stretch_realtime PROPERTIES TIMEOUT 60)
+    endif()
+endif()
+
 if(BROKEDJ_BUILD_APP)
     include(FetchContent)
     # JUCE 9.0.2, released 2026-09-07. Immutable upstream commit, not a floating branch.

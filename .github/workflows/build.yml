@@ -19,7 +19,7 @@ jobs:
       - name: Check generated progress
         run: python3 scripts/update_progress.py --check
       - name: Configure
-        run: cmake -S . -B build/core -DBROKEDJ_BUILD_APP=OFF -DBROKEDJ_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S . -B build/core -DBROKEDJ_BUILD_APP=OFF -DBROKEDJ_SANITIZE=ON -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON -DCMAKE_BUILD_TYPE=Debug
       - name: Build
         run: cmake --build build/core --parallel 2
       - name: Test
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Configure
-        run: cmake --preset windows
+        run: cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
       - name: Build
         run: cmake --build --preset windows-release --parallel 2
       - name: Test core
@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build/windows/diagnostics | Out-Null
-          $log = & ctest --preset windows-release -V -R 'render_metrics|realtime_contract' 2>&1
+          $log = & ctest --preset windows-release -V -R 'render_metrics|realtime_contract|time_stretch' 2>&1
           $exitCode = $LASTEXITCODE
           $log | Tee-Object -FilePath build/windows/diagnostics/audio-metrics.txt
           if ($exitCode -ne 0) { throw "Audio diagnostics failed: $exitCode" }
