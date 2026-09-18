@@ -24,6 +24,8 @@ Track adoption clears already allocated delay buffers. This is bounded but can s
 
 Stream-cache diagnostics use lock-free counters only. A failed cache tap increments a read-miss counter and stores the last missed frame. The engine collapses repeated failed taps into a single starvation episode and records one refill event when a complete interpolation frame becomes readable again. No audio-thread logging, heap activity or blocking synchronization is introduced.
 
+The JUCE-independent `realtime_contract` test instruments heap allocation in its own executable and stresses 1,200 callback blocks with in-memory and streamed decks plus transport and control automation. The measured window must observe zero allocations and zero deallocations. It also reports elapsed callback cost as diagnostic evidence, but shared CI runner timing is intentionally not a release threshold and does not replace device-specific callback-deadline/underrun measurements.
+
 ## Bounded long-track streaming
 
 Small tracks whose decoded stereo float payload is at most 64 MiB use the simple in-memory path. Larger supported local files use `StreamCache`: 32 fixed slots of 4096 stereo frames. Sample cells and publication metadata are atomic so the audio callback never locks while a background reader refills a slot.
@@ -38,7 +40,9 @@ This architecture bounds sample-cache memory independently of track duration and
 
 ## Quality validation boundary
 
-Deterministic tests cover transport transitions, finite output during aggressive controls, stream-cache publication/miss/seek behavior, starvation episode accounting and refill-onset smoothing. The streaming fixture can model a 90-minute track without allocating full-track audio, exercise repeated distant seeks, a prepared whole-track loop edge and intentional starvation/refill recovery. Automated render checks support implementation confidence but do not replace reviewed listening tests on representative material and real output devices.
+Deterministic tests cover transport transitions, finite output during aggressive controls, stream-cache publication/miss/seek behavior, starvation episode accounting and refill-onset smoothing. The streaming fixture can model a 90-minute track without allocating full-track audio, exercise repeated distant seeks, a prepared whole-track loop edge and intentional starvation/refill recovery.
+
+The `render_metrics` target adds reproducible numeric evidence for the current pitch-changing rate converter and transition system: rate/frequency error, residual RMS ratio, DC, output level/peak and maximum adjacent-sample transition delta are gated on deterministic fixtures. Those numbers are regression baselines for this implementation, not proof of perceptual transparency, full-band anti-alias performance or professional key lock. Automated render checks support implementation confidence but do not replace reviewed listening tests on representative material and real output devices.
 
 ## Planned extension boundaries
 
