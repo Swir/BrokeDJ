@@ -92,6 +92,11 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         target_link_libraries(brokedj_timestretch_realtime_tests PRIVATE brokedj_timestretch)
         add_test(NAME time_stretch_realtime COMMAND brokedj_timestretch_realtime_tests)
         set_tests_properties(time_stretch_realtime PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_timestretch_deck_realtime_tests tests/TimeStretchDeckRealtimeTests.cpp)
+        target_link_libraries(brokedj_timestretch_deck_realtime_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch_deck_realtime COMMAND brokedj_timestretch_deck_realtime_tests)
+        set_tests_properties(time_stretch_deck_realtime PROPERTIES TIMEOUT 60)
     endif()
 endif()
 
