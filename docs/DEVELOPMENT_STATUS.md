@@ -5,9 +5,10 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`
-- Active development branch: `feature/stream-underrun-diagnostics`
-- Pull request: `#5` — open; exact-final-head CI required before merge
-- Current development head before this status commit: `88fac0331d4e443ecf08e49e2816406938cec605`
+- Seek/refill hardening pull request: `#5` — merged
+- Final PR head: `70e9143d2e1897a57c5174102f1a8dcb32c96fe6`
+- Exact-final-head GitHub Actions run: `35336109555` — Linux ASan/UBSan core/SVG checks and Windows x64 configure/build/CTest/native no-audio GUI-smoke/staging passed
+- Merge commit: `7cced0d18fe7d192fa983b482d2637b2204fe0f5`
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**
 
 ## Completed in the seek/refill hardening package
@@ -20,18 +21,18 @@ This file is a durable engineering checkpoint, not a release announcement.
 
 ## Validation state
 
-- An earlier PR #5 head passed the Linux ASan/UBSan core job before documentation and read-ahead scheduling hardening were added.
-- The final branch head still requires the complete Linux sanitizer + Windows x64 build/CTest/native no-audio GUI-smoke workflow before merge.
+- Exact-final-head PR CI passed before merge on both required jobs.
+- The automated Windows job built the native x64 app, ran the complete CTest set including the expanded stream-cache target, completed the no-audio GUI lifecycle smoke test, staged the development build/source and uploaded the artifact.
 - No physical audio interface, Windows 11 clean-machine, slow-storage or reviewed listening validation was performed by this package.
 
 ## Remaining blockers / gates
 
 1. Clean Windows 11 interactive launch, resize/import and actual audio interface behavior still require manual verification.
 2. Long-file behavior still needs real WAV/FLAC/OGG/MP3 seek/loop, slow-storage and reviewed listening evidence.
-3. Cache-starvation event/history counters and refill-onset smoothing remain open; the new snapshot is current-state observability, not an underrun certificate.
+3. Cache-starvation event/history counters and refill-onset smoothing remain open; the current snapshot is state observability, not an underrun certificate.
 4. Objective render fixtures and reviewed listening tests are needed before stronger sound-quality claims.
 5. Time-stretch/key-lock, beat analysis/grid and the rest of M2 remain open.
 
 ## Next highest-impact step
 
-After exact-final-head CI passes and PR #5 is merged, add cache-starvation event/history accounting plus refill-onset smoothing, then exercise real supported-codec seek/loop fixtures before moving deeper into beat/key processing.
+Add cache-starvation event/history accounting plus refill-onset smoothing, then exercise real supported-codec seek/loop fixtures before moving deeper into beat/key processing.
