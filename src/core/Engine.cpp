@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 #include <stdexcept>
 
@@ -16,6 +17,43 @@ float bounded(float x, float lo, float hi, float fallback = 0.0f) noexcept {
     return std::isfinite(x) ? std::clamp(x, lo, hi) : fallback;
 }
 float clean(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
+
+float point(const std::vector<float>& data, std::int64_t index, bool loop) noexcept {
+    const auto size = static_cast<std::int64_t>(data.size());
+    if (size <= 0) return 0.0f;
+    if (loop) {
+        index %= size;
+        if (index < 0) index += size;
+    } else {
+        index = std::clamp<std::int64_t>(index, 0, size - 1);
+    }
+    return clean(data[static_cast<std::size_t>(index)]);
+}
+
+// Four-point Catmull-Rom interpolation. It materially reduces the staircase/
+// image energy of the original linear development resampler while keeping the
+// callback allocation-free. A future key-lock/time-stretch stage remains separate.
+float resample(const std::vector<float>& data, double cursor, bool loop) noexcept {
+    if (data.empty() || !std::isfinite(cursor)) return 0.0f;
+    if (data.size() < 4) {
+        const auto i = static_cast<std::int64_t>(std::floor(cursor));
+        const auto f = static_cast<float>(cursor - static_cast<double>(i));
+        const float a = point(data, i, loop);
+        const float b = point(data, i + 1, loop);
+        return clean(a + (b - a) * f);
+    }
+    const auto i = static_cast<std::int64_t>(std::floor(cursor));
+    const float t = static_cast<float>(cursor - static_cast<double>(i));
+    const float p0 = point(data, i - 1, loop);
+    const float p1 = point(data, i, loop);
+    const float p2 = point(data, i + 1, loop);
+    const float p3 = point(data, i + 2, loop);
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    return clean(0.5f * ((2.0f * p1) + (-p0 + p2) * t
+        + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2
+        + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3));
+}
 }
 bool Clip::valid() const noexcept {
     return std::isfinite(sampleRate) && sampleRate >= 8000.0 && sampleRate <= 384000.0
@@ -49,13 +87,21 @@ void Engine::prepare(double rate) {
     lowCoeff = static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * 200.0 / rate));
     highCoeff = static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * 2400.0 / rate));
     smoothing = static_cast<float>(1.0 - std::exp(-1.0 / (rate * 0.005)));
+    transitionSamples = std::max(1, static_cast<int>(std::lround(rate * 0.005)));
     masterSmooth = 0.0f;
+    crossSmooth = 0.5f;
     for (auto& s : states) {
         for (auto& channel : s.delay) channel.assign(static_cast<std::size_t>(rate * 0.25), 0.0f);
         s.delayIndex = 0;
         s.bass.fill(0.0f);
         s.treble.fill(0.0f);
+        s.lastProcessed.fill(0.0f);
+        s.transitionFrom.fill(0.0f);
         s.gain = 0.0f;
+        s.low = s.mid = s.high = 1.0f;
+        s.echo = s.drive = 0.0f;
+        s.transitionRemaining = 0;
+        s.wasPlaying = false;
     }
 }
 bool Engine::submit(std::size_t deck, std::unique_ptr<Clip> clip) {
@@ -83,6 +129,10 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             state.gain = 0.0f;
             state.bass.fill(0.0f);
             state.treble.fill(0.0f);
+            state.lastProcessed.fill(0.0f);
+            state.transitionFrom.fill(0.0f);
+            state.transitionRemaining = 0;
+            state.wasPlaying = false;
             for (auto& channel : state.delay) std::fill(channel.begin(), channel.end(), 0.0f);
             state.delayIndex = 0;
             // Loading a replacement track is deliberately stopped, never auto-played.
@@ -101,8 +151,11 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         b.echo = bounded(control.echo.load(), 0.0f, 0.7f);
         b.drive = bounded(control.drive.load(), 0.0f, 6.0f);
         const auto seek = control.seek.exchange(-1.0, std::memory_order_relaxed);
-        if (b.clip && std::isfinite(seek) && seek >= 0.0)
+        if (b.clip && std::isfinite(seek) && seek >= 0.0) {
+            state.transitionFrom = state.lastProcessed;
+            state.transitionRemaining = transitionSamples;
             state.cursor = std::clamp(seek, 0.0, 1.0) * static_cast<double>(b.clip->left.size() - 1);
+        }
     }
     const float crossTarget = bounded(crossfader.load(), 0.0f, 1.0f, 0.5f);
     const float masterTarget = bounded(master.load(), 0.0f, 1.0f);
@@ -118,6 +171,17 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         for (std::size_t d = 0; d < deckCount; ++d) {
             auto& s = states[d];
             auto& b = blocks[d];
+            if (b.playing != s.wasPlaying) {
+                s.transitionFrom = s.lastProcessed;
+                s.transitionRemaining = transitionSamples;
+                s.wasPlaying = b.playing;
+            }
+            s.gain += smoothing * (b.gain - s.gain);
+            s.low += smoothing * (b.low - s.low);
+            s.mid += smoothing * (b.mid - s.mid);
+            s.high += smoothing * (b.high - s.high);
+            s.echo += smoothing * (b.echo - s.echo);
+            s.drive += smoothing * (b.drive - s.drive);
             std::array<float, 2> sample{};
             if (b.clip && b.playing) {
                 const auto length = static_cast<double>(b.clip->left.size());
@@ -126,35 +190,43 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                     else {
                         b.playing = false;
                         controls[d].playing.store(false, std::memory_order_relaxed);
+                        if (s.wasPlaying) {
+                            s.transitionFrom = s.lastProcessed;
+                            s.transitionRemaining = transitionSamples;
+                            s.wasPlaying = false;
+                        }
                     }
                 }
                 if (b.playing) {
-                    const auto i = static_cast<std::size_t>(s.cursor);
-                    const auto j = i + 1 < b.clip->left.size() ? i + 1 : (b.loop ? 0 : i);
-                    const auto f = static_cast<float>(s.cursor - static_cast<double>(i));
-                    sample[0] = clean(b.clip->left[i]) * (1.0f - f) + clean(b.clip->left[j]) * f;
-                    sample[1] = clean(b.clip->right[i]) * (1.0f - f) + clean(b.clip->right[j]) * f;
+                    sample[0] = resample(b.clip->left, s.cursor, b.loop);
+                    sample[1] = resample(b.clip->right, s.cursor, b.loop);
                     s.cursor += b.clip->sampleRate / sampleRate * b.rate;
                 }
             }
-            s.gain += smoothing * (b.gain - s.gain);
+            const float transitionMix = s.transitionRemaining > 0
+                ? 1.0f - static_cast<float>(s.transitionRemaining) / static_cast<float>(transitionSamples)
+                : 1.0f;
             for (std::size_t c = 0; c < 2; ++c) {
                 const float in = bounded(sample[c], -16.0f, 16.0f);
                 s.bass[c] += lowCoeff * (in - s.bass[c]);
                 s.treble[c] += highCoeff * (in - s.treble[c]);
-                float x = s.bass[c] * b.low + (s.treble[c] - s.bass[c]) * b.mid + (in - s.treble[c]) * b.high;
-                if (b.drive > 0.001f) x = std::tanh(x * (1.0f + b.drive)) / std::tanh(1.0f + b.drive);
+                float x = s.bass[c] * s.low + (s.treble[c] - s.bass[c]) * s.mid + (in - s.treble[c]) * s.high;
+                if (s.drive > 0.001f) x = std::tanh(x * (1.0f + s.drive)) / std::tanh(1.0f + s.drive);
                 if (!s.delay[c].empty()) {
                     const float delayed = s.delay[c][s.delayIndex];
                     s.delay[c][s.delayIndex] = clean(x + delayed * 0.35f);
-                    x = x * (1.0f - b.echo) + delayed * b.echo;
+                    x = x * (1.0f - s.echo) + delayed * s.echo;
                 }
                 x = clean(x);
+                if (s.transitionRemaining > 0)
+                    x = s.transitionFrom[c] * (1.0f - transitionMix) + x * transitionMix;
+                s.lastProcessed[c] = x;
                 if (b.cue) cueMix[c] += x * cueLevel; // pre-fader, post-EQ/FX
                 x *= s.gain;
                 peaks[d] = std::max(peaks[d], std::abs(x));
                 mix[c] += x * ((d % 2 == 0) ? leftFade : rightFade);
             }
+            if (s.transitionRemaining > 0) --s.transitionRemaining;
             if (!s.delay[0].empty()) s.delayIndex = (s.delayIndex + 1) % s.delay[0].size();
         }
         for (int c = 0; c < 2; ++c) {
