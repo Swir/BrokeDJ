@@ -26,6 +26,17 @@ public:
         stretch
     };
 
+    enum class FallbackReason {
+        none,
+        disabled,
+        unprimed,
+        cursorDiscontinuity,
+        clipChanged,
+        loopModeChanged,
+        sourceRateMismatch,
+        stretchFailure
+    };
+
     [[nodiscard]] bool prepare(double sourceSampleRate, double deviceSampleRate,
                                int maxDeviceFrames, double maxPlaybackRate = 4.0,
                                bool splitComputation = true);
@@ -33,20 +44,13 @@ public:
 
     [[nodiscard]] bool setPlaybackRate(double playbackRate) noexcept;
     [[nodiscard]] bool setPitchSemitones(float semitones) noexcept;
-    void setEnabled(bool shouldEnable) noexcept {
-        if (!shouldEnable && enabled) {
-            // A bypassed device block advances the production transport while
-            // the research FIFO stops. Require explicit off-callback re-prime
-            // before re-enabling so stale prefetched stretch audio cannot leak.
-            primedForClip = false;
-            rePrimeRequired = true;
-        }
-        enabled = shouldEnable;
-    }
+    void setEnabled(bool shouldEnable) noexcept;
 
     // Must be called after load/seek/loop-style discontinuities before the
     // stretch path can be selected again. It resets the source-rate FIFO and
-    // fractional device resampler clock.
+    // fractional device resampler clock and binds the prepared state to this
+    // exact immutable Clip plus loop mode. render() fails back if either changes
+    // without an explicit off-callback prime().
     [[nodiscard]] bool prime(const Clip& clip, double cursor, bool loop) noexcept;
 
     // fallbackLeft/right and fallbackNextCursor describe the production path
@@ -64,9 +68,12 @@ public:
     [[nodiscard]] bool primed() const noexcept { return primedForClip; }
     [[nodiscard]] bool needsPrime() const noexcept { return rePrimeRequired; }
     [[nodiscard]] RenderPath lastRenderPath() const noexcept { return lastPath; }
+    [[nodiscard]] FallbackReason lastFallbackReason() const noexcept { return fallbackReason; }
     [[nodiscard]] double sourceSampleRate() const noexcept { return sourceRate; }
     [[nodiscard]] double deviceSampleRate() const noexcept { return deviceRate; }
     [[nodiscard]] double sourceFramesPerDeviceFrame() const noexcept { return sourcePerDevice; }
+    [[nodiscard]] double playbackRateValue() const noexcept { return playbackRate; }
+    [[nodiscard]] float pitchSemitonesValue() const noexcept { return pitchSemitones; }
     [[nodiscard]] int maxDeviceFrames() const noexcept { return maxDevice; }
     [[nodiscard]] int sourceInputLatencyFrames() const noexcept {
         return sourceBridge.inputLatencyFrames();
@@ -94,6 +101,7 @@ private:
                                        bool loop, int deviceFrames) const noexcept;
     void buildKernel();
     void clearFifo() noexcept;
+    void invalidatePrime(FallbackReason reason) noexcept;
     void compactFifo(double nextReadPosition) noexcept;
     void renderFallback(const float* fallbackLeft, const float* fallbackRight,
                         float* outputLeft, float* outputRight, int deviceFrames) noexcept;
@@ -109,6 +117,7 @@ private:
     std::vector<float> kernels;
     std::array<float, 2> lastOutput{};
     std::array<float, 2> transitionFrom{};
+    const Clip* primedClip = nullptr;
     double sourceRate = 0.0;
     double deviceRate = 0.0;
     double sourcePerDevice = 1.0;
@@ -121,11 +130,14 @@ private:
     int maxStretchOutput = 0;
     int transitionFrames = 1;
     int transitionRemaining = 0;
+    float pitchSemitones = 0.0f;
     bool ready = false;
     bool enabled = false;
     bool primedForClip = false;
+    bool primedLoop = false;
     bool rePrimeRequired = true;
     RenderPath lastPath = RenderPath::fallback;
+    FallbackReason fallbackReason = FallbackReason::unprimed;
 };
 
 } // namespace broke
