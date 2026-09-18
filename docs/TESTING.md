@@ -1,20 +1,23 @@
 # Validation record
 
-## Verified baseline: 2026-09-18
+## Verified automation: 2026-09-18
 
-Previous `main` commit `c16bc227ebb33316b4c551750b7f12bbcd63f88d` completed GitHub Actions workflow run `35316793560` successfully. That run included:
+Audio-quality hardening PR #1 was verified at exact head `a3f29da6e753e9f27b00356ccebe5644101d1a27` by GitHub Actions run `35328799488`, then merged to `main` as `977ad6a16de0837666208d6b8b1a9459191a7f17`.
+
+That successful run included:
 
 - Linux x64 core configure/build/test with AddressSanitizer and UndefinedBehaviorSanitizer enabled;
+- generated SVG progress synchronization plus legacy character-meter rejection;
 - Windows Server 2022 / MSVC x64 configure and Release build of the JUCE application;
-- core CTest on Windows;
+- core and audio-quality CTest on Windows;
 - native GUI lifecycle smoke mode with a 30-second timeout and no required audio hardware;
-- staged development files and corresponding source artifact.
+- staged development files and corresponding source artifact upload.
 
 The original core suite reported **438 assertions/checks**. Four hundred are repeated publication operations in the concurrent handoff stress scenario; they are not 400 different feature tests.
 
-## Audio quality hardening branch
+## Audio quality hardening coverage
 
-The development branch adds a second deterministic CTest executable, `brokedj_quality_tests`. Offline compilation of the modified JUCE-independent core and this test executable succeeded, and the quality suite passed **10 checks** covering:
+The merged code adds a second deterministic CTest executable, `brokedj_quality_tests`. Offline compilation of the modified JUCE-independent core and this test executable succeeded before PR publication, and exact-head CI later passed the complete CTest set. The dedicated quality suite contains **10 checks** covering:
 
 - playback reaches a stable level before transition tests;
 - pause starts near the prior processed sample and decays instead of hard-cutting;
@@ -33,8 +36,8 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 
 ## Native acceptance checklist
 
-- [x] Windows x64 build and native no-audio smoke mode pass in CI on the verified baseline.
-- [ ] Exact-head CI passes for the current audio-quality branch.
+- [x] Windows x64 build and native no-audio smoke mode pass in CI on the merged audio-quality package.
+- [x] Exact-head PR CI passed before merge for the audio-quality package.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode as expected.
 - [ ] Invalid, truncated, Unicode-path and oversized files fail clearly without losing working audio.
