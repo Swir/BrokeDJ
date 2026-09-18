@@ -5,6 +5,7 @@
 #include "core/DeckPlaybackSelector.h"
 #include "core/Engine.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace broke {
