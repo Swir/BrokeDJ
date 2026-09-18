@@ -36,11 +36,6 @@ public:
                             maxPlaybackRate, splitComputation)) {
             return false;
         }
-        if (!std::isfinite(deviceSampleRate) || deviceSampleRate <= 0.0
-            || maxDeviceFrames <= 0) {
-            return false;
-        }
-        outputRate = deviceSampleRate;
         maxFrames = maxDeviceFrames;
         transitionFrames = std::max(1, static_cast<int>(std::lround(deviceSampleRate * 0.005)));
         transitionRemaining = 0;
@@ -59,11 +54,12 @@ public:
 
     // Transactional lifecycle handoff. The caller owns serialization and must
     // invoke this outside the audio callback. A failed stage leaves key lock
-    // disarmed and the underlying bridge fail-closed to fallback.
+    // disarmed and the underlying bridge fail-closed to fallback while keeping
+    // the last valid rate/pitch metadata for the deterministic fallback path.
     [[nodiscard]] bool stage(const Clip& clip, double cursor, bool loop,
                              const ControlSnapshot& controls) noexcept {
         if (!ready || !bridge.configureAndPrime(clip, cursor, loop, controls)) {
-            stagedControls = {};
+            stagedControls.enabled = false;
             keyLockArmed = false;
             return false;
         }
@@ -133,7 +129,7 @@ public:
 
     [[nodiscard]] bool prepared() const noexcept { return ready && bridge.prepared(); }
     [[nodiscard]] bool armed() const noexcept { return keyLockArmed; }
-    [[nodiscard]] bool needsStage() const noexcept { return bridge.needsPrime(); }
+    [[nodiscard]] bool needsStage() const noexcept { return keyLockArmed && bridge.needsPrime(); }
     [[nodiscard]] RenderPath lastRenderPath() const noexcept { return lastPathValue; }
     [[nodiscard]] FallbackReason lastFallbackReason() const noexcept { return lastReasonValue; }
     [[nodiscard]] const ControlSnapshot& controls() const noexcept { return stagedControls; }
@@ -153,7 +149,6 @@ private:
     ControlSnapshot stagedControls{};
     std::array<float, 2> transitionFrom{};
     std::array<float, 2> lastOutput{};
-    double outputRate = 0.0;
     double lastTransport = 0.0;
     double lastAudible = 0.0;
     int maxFrames = 0;
