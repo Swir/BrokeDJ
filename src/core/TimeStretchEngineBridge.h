@@ -23,13 +23,19 @@ namespace broke {
 // production transport on failure, and expose an algorithm-latency-compensated
 // audible cursor for future deck/sync scheduling.
 //
-// prepare() is the only allocating operation. prime() is an off-callback
-// discontinuity operation. render() is bounded and performs no resize, file I/O,
-// decoding, logging or blocking synchronization.
+// prepare() is the only allocating operation. configureAndPrime()/prime() are
+// off-callback discontinuity operations. render() is bounded and performs no
+// resize, file I/O, decoding, logging or blocking synchronization.
 class TimeStretchEngineBridge final {
 public:
     using RenderPath = TimeStretchDeviceBridge::RenderPath;
     using FallbackReason = TimeStretchDeviceBridge::FallbackReason;
+
+    struct ControlSnapshot final {
+        double playbackRate = 1.0;
+        float pitchSemitones = 0.0f;
+        bool enabled = false;
+    };
 
     [[nodiscard]] bool prepare(double sourceSampleRate, double deviceSampleRate,
                                int maxDeviceFrames, double maxPlaybackRate = 4.0,
@@ -47,6 +53,7 @@ public:
         outputRate = deviceSampleRate;
         maxDevice = maxDeviceFrames;
         playbackRate = 1.0;
+        pitchSemitones = 0.0f;
         fallbackLeft.assign(static_cast<std::size_t>(maxDeviceFrames), 0.0f);
         fallbackRight.assign(static_cast<std::size_t>(maxDeviceFrames), 0.0f);
         kernels.assign(cutoffBins * phases * taps, 0.0f);
@@ -64,13 +71,51 @@ public:
     }
 
     [[nodiscard]] bool setPitchSemitones(float semitones) noexcept {
-        return ready && bridge.setPitchSemitones(semitones);
+        if (!ready || !bridge.setPitchSemitones(semitones)) return false;
+        pitchSemitones = semitones;
+        return true;
     }
 
     void setEnabled(bool enabled) noexcept { bridge.setEnabled(enabled); }
 
     [[nodiscard]] bool prime(const Clip& clip, double cursor, bool loop) noexcept {
         return ready && bridge.prime(clip, cursor, loop);
+    }
+
+    // Transactional off-callback control/discontinuity handoff intended for the
+    // future production Engine owner. Controls are validated before any state is
+    // changed. A valid snapshot first disables and resets stale prefetched audio,
+    // applies rate/pitch, then primes at the exact immutable Clip/cursor/loop
+    // identity before enabling stretch. A disabled snapshot intentionally stays
+    // unprimed so bypassed transport can never later resume stale FIFO content.
+    // Invalid snapshots fail closed by disabling/resetting the bridge.
+    [[nodiscard]] bool configureAndPrime(const Clip& clip, double cursor, bool loop,
+                                         const ControlSnapshot& controls) noexcept {
+        const bool validControls = std::isfinite(controls.playbackRate)
+            && controls.playbackRate >= minPlaybackRate
+            && controls.playbackRate <= maxPlaybackRate
+            && std::isfinite(controls.pitchSemitones)
+            && controls.pitchSemitones >= minPitchSemitones
+            && controls.pitchSemitones <= maxPitchSemitones;
+        if (!ready || !clip.valid() || !std::isfinite(cursor) || !validControls) {
+            bridge.setEnabled(false);
+            bridge.reset();
+            return false;
+        }
+
+        bridge.setEnabled(false);
+        bridge.reset();
+        if (!bridge.setPlaybackRate(controls.playbackRate)
+            || !bridge.setPitchSemitones(controls.pitchSemitones)) {
+            bridge.reset();
+            return false;
+        }
+        playbackRate = controls.playbackRate;
+        pitchSemitones = controls.pitchSemitones;
+        if (!controls.enabled) return true;
+        if (!bridge.prime(clip, cursor, loop)) return false;
+        bridge.setEnabled(true);
+        return true;
     }
 
     // Renders one future Engine source block. The production-style fallback is
@@ -90,12 +135,22 @@ public:
         }
 
         double fallbackNext = cursor;
-        renderProductionFallback(clip, cursor, loop, deviceFrames, fallbackNext);
+        bool fallbackStreamAttempted = false;
+        bool fallbackStreamReady = true;
+        std::int64_t fallbackDiagnosticFrame = 0;
+        renderProductionFallback(clip, cursor, loop, deviceFrames, fallbackNext,
+                                 fallbackStreamAttempted, fallbackStreamReady,
+                                 fallbackDiagnosticFrame);
         double next = cursor;
         if (!bridge.render(clip, cursor, loop,
                            fallbackLeft.data(), fallbackRight.data(), fallbackNext,
                            outputLeft, outputRight, deviceFrames, next)) {
             return false;
+        }
+        if (clip.stream && bridge.lastRenderPath() == RenderPath::fallback
+            && fallbackStreamAttempted) {
+            if (fallbackStreamReady) clip.stream->noteRefill();
+            else clip.stream->noteStarvation(fallbackDiagnosticFrame);
         }
         nextTransportCursor = next;
         nextAudibleCursor = bridge.lastRenderPath() == RenderPath::stretch
@@ -115,6 +170,7 @@ public:
         return bridge.reportedDeviceOutputLatencyFrames();
     }
     [[nodiscard]] double playbackRateValue() const noexcept { return playbackRate; }
+    [[nodiscard]] float pitchSemitonesValue() const noexcept { return pitchSemitones; }
     [[nodiscard]] double deviceSampleRate() const noexcept { return outputRate; }
 
     [[nodiscard]] double latencyCompensatedCursor(const Clip& clip,
@@ -138,6 +194,10 @@ private:
     static constexpr std::size_t phases = 128;
     static constexpr std::size_t cutoffBins = 64;
     static constexpr float minCutoff = 0.06f;
+    static constexpr double minPlaybackRate = 0.25;
+    static constexpr double maxPlaybackRate = 4.0;
+    static constexpr float minPitchSemitones = -24.0f;
+    static constexpr float maxPitchSemitones = 24.0f;
 
     [[nodiscard]] static float finite(float value) noexcept {
         return std::isfinite(value) ? value : 0.0f;
@@ -220,10 +280,16 @@ private:
     }
 
     void renderProductionFallback(const Clip& clip, double cursor, bool loop,
-                                  int deviceFrames, double& nextCursor) noexcept {
+                                  int deviceFrames, double& nextCursor,
+                                  bool& streamAttempted, bool& streamReady,
+                                  std::int64_t& diagnosticFrame) noexcept {
         const double length = static_cast<double>(clip.frames());
         const double step = clip.sampleRate / outputRate * playbackRate;
         double position = normalizeCursor(clip, cursor, loop);
+        streamAttempted = false;
+        streamReady = true;
+        diagnosticFrame = static_cast<std::int64_t>(std::clamp(
+            position, 0.0, static_cast<double>(std::max<std::int64_t>(0, clip.frames() - 1))));
         for (int frame = 0; frame < deviceFrames; ++frame) {
             if (!loop && position >= length) {
                 fallbackLeft[static_cast<std::size_t>(frame)] = 0.0f;
@@ -235,6 +301,15 @@ private:
             const auto right = resample(clip, 1, position, loop, selectedKernel);
             fallbackLeft[static_cast<std::size_t>(frame)] = left.value;
             fallbackRight[static_cast<std::size_t>(frame)] = right.value;
+            if (clip.stream) {
+                streamAttempted = true;
+                if (!left.ready || !right.ready) {
+                    streamReady = false;
+                    diagnosticFrame = static_cast<std::int64_t>(std::clamp(
+                        position, 0.0,
+                        static_cast<double>(std::max<std::int64_t>(0, clip.frames() - 1))));
+                }
+            }
             position += step;
             position = normalizeCursor(clip, position, loop);
         }
@@ -297,6 +372,7 @@ private:
     std::vector<float> kernels;
     double outputRate = 0.0;
     double playbackRate = 1.0;
+    float pitchSemitones = 0.0f;
     int maxDevice = 0;
     bool ready = false;
 };
