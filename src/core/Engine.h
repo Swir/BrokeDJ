@@ -15,6 +15,7 @@ inline constexpr std::size_t resamplerTaps = 24;
 inline constexpr std::size_t resamplerPhases = 128;
 inline constexpr std::size_t resamplerCutoffBins = 64;
 inline constexpr float resamplerMinCutoff = 0.06f;
+inline constexpr int defaultMaxAudioBlockFrames = 8192;
 
 struct StreamCacheDiagnostics final {
     std::int64_t requestedFrame = 0;
@@ -113,6 +114,23 @@ struct Clip final {
     [[nodiscard]] bool valid() const noexcept;
 };
 
+// Optional raw deck-source boundary. Implementations may supply one complete
+// source block (for example, a qualified key-lock path) before Engine applies
+// its existing per-deck EQ/FX/gain/cue/meter and master routing. The pointer is
+// non-owning and must be installed/removed only while audio is stopped. render()
+// is called on the realtime thread and therefore must be bounded, allocation-
+// free, non-blocking and free of I/O/decoding/logging. Returning false asks
+// Engine to use its built-in production rate converter immediately.
+class DeckSourceRenderer {
+public:
+    virtual ~DeckSourceRenderer() = default;
+    [[nodiscard]] virtual bool render(const Clip& clip, double cursor, bool loop,
+                                      double playbackRate,
+                                      float* outputLeft, float* outputRight,
+                                      int deviceFrames, double& nextTransportCursor,
+                                      double& nextAudibleCursor) noexcept = 0;
+};
+
 // UI -> audio controls. Seek is a last-request-wins normalized mailbox.
 struct Controls final {
     std::atomic<bool> playing{false}, loop{false}, headphone{false};
@@ -122,7 +140,7 @@ struct Controls final {
     std::atomic<double> seek{-1.0};
 };
 struct Meter final {
-    std::atomic<double> position{0.0}, duration{0.0};
+    std::atomic<double> position{0.0}, audiblePosition{0.0}, duration{0.0};
     std::atomic<float> peak{0.0f};
 };
 
@@ -149,22 +167,28 @@ public:
     Engine() = default;
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
-    // Call only while audio is stopped. Allocates fixed-delay buffers and the
-    // immutable windowed-sinc lookup table used by the callback.
-    void prepare(double outputSampleRate);
+    // Call only while audio is stopped. Allocates fixed-delay buffers, external
+    // deck-source scratch blocks and the immutable windowed-sinc lookup table
+    // used by the callback.
+    void prepare(double outputSampleRate, int maxAudioBlockFrames = defaultMaxAudioBlockFrames);
     [[nodiscard]] bool submit(std::size_t deck, std::unique_ptr<Clip> clip);
     void collectRetired() noexcept;
+    // Non-owning provider lifecycle. Call only while audio is stopped and keep
+    // renderer alive until it is cleared after audio has stopped again.
+    [[nodiscard]] bool setDeckSourceRenderer(std::size_t deck, DeckSourceRenderer* renderer) noexcept;
     // Layout: master L/R, optional headphone L/R. Other channels are cleared.
     // The output pointers may be null. No resizing/allocation in this method.
     void process(float* const* output, int channels, int frames) noexcept;
     Controls& control(std::size_t deck) { return controls.at(deck); }
     const Meter& meter(std::size_t deck) const { return meters.at(deck); }
+    [[nodiscard]] int preparedMaxAudioBlockFrames() const noexcept { return maxBlockFrames; }
     std::atomic<float> crossfader{0.5f}, master{0.5f}, headphoneLevel{0.5f};
     std::atomic<float> masterPeak{0.0f};
     std::atomic<bool> clipped{false};
 private:
     struct State {
         double cursor = 0.0;
+        double audibleCursor = 0.0;
         float gain = 0.0f, rate = 1.0f, cue = 0.0f;
         float low = 1.0f, mid = 1.0f, high = 1.0f;
         float echo = 0.0f, drive = 0.0f;
@@ -183,10 +207,13 @@ private:
     std::array<Meter, deckCount> meters;
     std::array<ClipMailbox, deckCount> clips;
     std::array<State, deckCount> states;
+    std::array<DeckSourceRenderer*, deckCount> sourceRenderers{};
+    std::array<std::array<std::vector<float>, 2>, deckCount> sourceScratch;
     std::vector<float> resamplerKernels;
     double sampleRate = 44100.0;
     float lowCoeff = 0.0f, highCoeff = 0.0f, smoothing = 0.0f;
     float masterSmooth = 0.0f, crossSmooth = 0.5f, headphoneSmooth = 0.5f;
     int transitionSamples = 1;
+    int maxBlockFrames = 0;
 };
 } // namespace broke
