@@ -2,33 +2,43 @@
 
 This file is a durable engineering checkpoint, not a release announcement.
 
-## Current workstream
+## Current checkpoint
 
-- Branch: `feat/audio-quality-hardening`
-- Base: `main` at `c16bc227ebb33316b4c551750b7f12bbcd63f88d`
-- Scope: variable-rate playback quality, transport/control de-clicking, deterministic quality tests, README PRO v2 and SVG-only progress migration
+- Default branch: `main`
+- Merged audio-quality package: PR #1 → `977ad6a16de0837666208d6b8b1a9459191a7f17`
+- Verified PR head before merge: `a3f29da6e753e9f27b00356ccebe5644101d1a27`
+- GitHub Actions run: `35328799488` — Linux sanitizer/core checks and Windows x64 development build/smoke completed successfully
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**
 
-## Verified before this branch
+## Completed in the audio-quality package
 
-- `main` workflow run 35316793560 completed successfully on 2026-09-18.
-- That workflow built the Windows x64 JUCE application, ran core tests, completed the no-audio GUI lifecycle smoke test, staged a development build and uploaded an artifact.
-- M1 is still open because clean-machine interactive use, resize/import checks, device switching, real multi-output cue, disconnect recovery and soak testing are separate manual/hardware gates.
+- Replaced the original linear development resampler with allocation-free four-point Catmull-Rom variable-rate interpolation.
+- Added short de-click transitions around play/pause/seek discontinuities.
+- Added per-sample smoothing for EQ, echo and drive targets.
+- Added deterministic `brokedj_quality_tests` alongside the existing core suite.
+- Migrated README/roadmap presentation to SWIR README PRO v2 with SVG-only progress assets and a deterministic no-legacy-meter check.
 
-## Local/offline validation for this workstream
+## Verified automation evidence
 
-- C++20 compilation of the modified JUCE-independent core succeeded with GCC warning flags.
-- New deterministic quality test executable passed 10 checks covering pause de-clicking, seek transition behavior and finite output under EQ/FX automation.
-- GitHub exact-head pull-request CI is still required before merge.
+Workflow run `35328799488` completed successfully for exact PR head `a3f29da6e753e9f27b00356ccebe5644101d1a27`:
+
+- Linux core configure/build/test with ASan/UBSan: pass.
+- Generated SVG progress check and legacy-meter check: pass.
+- Windows Server 2022 / MSVC x64 configure + Release build: pass.
+- Windows core + quality CTest: pass.
+- Native GUI lifecycle smoke mode without audio hardware: pass.
+- Development staging/source packaging + artifact upload: pass.
+
+The generated Windows development artifact is evidence of a successful build pipeline, not a public release or live-performance qualification.
 
 ## Remaining blockers / gates
 
-1. Exact-head PR CI for Linux sanitizer/core tests and Windows x64 native build/smoke.
-2. Clean Windows 11 interactive launch and resize/import verification.
-3. Actual audio interface validation for two-output and four-output cue routing, device switching/disconnect and buffer/sample-rate changes.
-4. Streaming/read-ahead architecture to remove the 256 MiB decoded-whole-track limitation.
-5. Objective render fixtures and later listening tests before broader sound-quality claims.
+1. Clean Windows 11 interactive launch, resize and real import behavior still require manual verification.
+2. Actual audio interface testing is still required for two-output/four-output routing, cue isolation, device switching/disconnect and buffer/sample-rate changes.
+3. Streaming/read-ahead architecture is needed to remove the 256 MiB decoded-whole-track limitation.
+4. Objective render fixtures and reviewed listening tests are needed before stronger sound-quality claims.
+5. Time-stretch/key-lock, beat analysis/grid and the rest of M2 remain open; Catmull-Rom rate conversion is not a substitute.
 
 ## Next highest-impact step
 
-After the current branch is green and merged, prioritize bounded streaming/read-ahead playback plus cancellation-safe long-file loading. Do not start VST3, stems or large effect inventory work ahead of this playback foundation.
+Prioritize bounded streaming/read-ahead playback with cancellation-safe long-file loading and deterministic cache behavior. Do not start VST3, stems or the large effects inventory ahead of this playback foundation.
