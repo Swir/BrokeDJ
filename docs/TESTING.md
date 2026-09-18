@@ -49,7 +49,7 @@ Coverage includes:
 
 The first two Windows PR runs exposed an MP3 forced-streaming regression that Linux core/sanitizer checks could not reveal. The failing path was kept red and unmerged. The decoder now treats waveform generation and streaming playback as independent reader lifetimes; if a compressed reader rejects the sparse non-monotonic preview pattern, waveform construction falls back to a bounded-memory sequential pass on a fresh reader instead of rejecting an otherwise playable file.
 
-Implementation head `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc` passed GitHub Actions run `35346407766`: Linux sanitizer/core/progress checks succeeded and Windows Server 2022 / MSVC x64 completed the native build, all CTest targets including the decoder matrix, no-audio GUI lifecycle smoke, staging and artifact upload. Documentation-only checkpoint commits still require a fresh exact-final-head run before PR #7 may merge.
+Implementation head `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc` first passed GitHub Actions run `35346407766`. After documentation was synchronized, exact-final-head `5a0c745ca41be608691ab60d82a1afecc5b9105b` passed run `35347079672`: Linux sanitizer/core/progress checks succeeded and Windows Server 2022 / MSVC x64 completed the native build, all CTest targets including the decoder matrix, no-audio GUI lifecycle smoke, staging and artifact upload. PR #7 then merged to `main` as `99ea0a22e929d62f3c1245ceeb24f9803ccc6616`.
 
 This fixture matrix is stronger automated codec evidence, but it is not a claim that every real-world file is qualified. Multi-minute source material, mono variants, CBR/VBR MP3 diversity, damaged/truncated files, slow physical storage and reviewed listening remain separate gates.
 
@@ -71,7 +71,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] SVG progress synchronization and no-legacy-meter check pass on the merged baseline.
 - [x] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
 - [x] Seek/refill hardening and starvation/refill smoothing pass exact-head Linux + Windows CI and are merged.
-- [ ] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
+- [x] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode/stream as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio.
