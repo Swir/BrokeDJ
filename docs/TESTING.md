@@ -115,7 +115,7 @@ PR #16 added `TimeStretchDeviceBridge`: stretched source-rate output is converte
 
 PR #17 hardens that prefetch boundary before any Engine hookup. A prime is bound to the exact immutable `Clip` and loop mode; clip replacement, loop-mode changes, cursor jumps, incompatible source rates and actual rate/pitch changes fail closed to the caller-provided production path and require explicit re-prime. A bounded `FallbackReason` makes the selected fallback cause testable without adding callback logging. Re-applying unchanged rate/pitch snapshots is idempotent.
 
-PR #17 deterministic coverage verifies control-change, clip-replacement, loop-mode, cursor-discontinuity and source-rate fallback decisions plus preservation of the caller's production transport. The warmed 600-block device-rate realtime contract now re-applies unchanged playback-rate/pitch snapshots on every measured block and still requires zero heap allocations/deallocations. PR #17 remains unmerged until exact-final-head Linux + Windows validation passes; none of this is evidence of production Engine integration, listening quality or physical-device reliability.
+PR #17 deterministic coverage verifies control-change, clip-replacement, loop-mode, cursor-discontinuity and source-rate fallback decisions plus preservation of the caller's production transport. The warmed 600-block device-rate realtime contract re-applies unchanged playback-rate/pitch snapshots on every measured block and retains zero heap allocations/deallocations. Final head `689fc096c04eeeea889a0d81b32e940b2837e995` passed exact-head run `35379038363`: Linux ASan/UBSan + full optional time-stretch CTest and Windows x64 configure/build/full CTest/audio-diagnostics/native no-audio GUI smoke/staging/artifact upload all succeeded. PR #17 merged as `6b8449932c23ab2e6aafc3ab4bcbcc1e62a42615`. This remains research evidence, not production Engine integration, listening quality or physical-device reliability.
 
 ## Audio quality hardening coverage
 
@@ -142,7 +142,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Multi-rate spectral matrix, per-path zero-heap callback diagnostics and retained Windows artifact evidence pass exact-head CI and merge through PR #12.
 - [x] Optional time-stretch processor/deck/source bridge passes exact-head Linux sanitizer + Windows x64 CI through PR #15; it remains separate from live deck integration/listening qualification.
 - [x] Device-rate key-lock research bridge passes exact-final-head Linux sanitizer + Windows x64 CI and merges through PR #16; production Engine integration remains a separate gate.
-- [ ] Clip/loop/control discontinuity hardening passes exact-final-head Linux sanitizer + Windows x64 CI and merges through PR #17.
+- [x] Clip/loop/control discontinuity hardening passes exact-final-head Linux sanitizer + Windows x64 CI and merges through PR #17.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.
