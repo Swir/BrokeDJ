@@ -15,6 +15,7 @@ constexpr int absoluteFrameBound = 65536;
 
 bool TimeStretchDeckAdapter::prepare(double newSampleRate, int newMaxOutputFrames,
                                      double newMaxPlaybackRate, bool splitComputation) {
+    ready = false;
     if (!std::isfinite(newSampleRate) || newSampleRate < 8000.0 || newSampleRate > 384000.0
         || newMaxOutputFrames <= 0 || newMaxOutputFrames > absoluteFrameBound
         || !std::isfinite(newMaxPlaybackRate)
@@ -28,9 +29,33 @@ bool TimeStretchDeckAdapter::prepare(double newSampleRate, int newMaxOutputFrame
     if (!std::isfinite(worstInput) || worstInput > static_cast<double>(absoluteFrameBound)) {
         return false;
     }
-    const int newMaxInputFrames = static_cast<int>(worstInput);
+
+    // Signalsmith's discontinuity history is configuration/sample-rate dependent
+    // and can be longer than the next realtime block's worst-case input demand.
+    // Configure once to discover that requirement, then widen the off-callback
+    // prepared input capacity if needed. This keeps every later prime/render
+    // bounded without guessing a sample-rate-specific preroll constant.
+    int newMaxInputFrames = static_cast<int>(worstInput);
     if (!processor.prepare(newSampleRate, newMaxInputFrames, newMaxOutputFrames, splitComputation)) {
         return false;
+    }
+
+    int seekFrames = processor.seekLengthFrames();
+    if (seekFrames <= 0 || seekFrames > absoluteFrameBound) {
+        processor.reset();
+        return false;
+    }
+    if (seekFrames > newMaxInputFrames) {
+        newMaxInputFrames = seekFrames;
+        if (!processor.prepare(newSampleRate, newMaxInputFrames,
+                               newMaxOutputFrames, splitComputation)) {
+            return false;
+        }
+        seekFrames = processor.seekLengthFrames();
+        if (seekFrames <= 0 || seekFrames > newMaxInputFrames) {
+            processor.reset();
+            return false;
+        }
     }
 
     sampleRate = newSampleRate;
