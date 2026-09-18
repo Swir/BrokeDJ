@@ -4,6 +4,7 @@
 
 #include "core/TimeStretchSourceBridge.h"
 
+#include <array>
 #include <cstddef>
 #include <vector>
 
@@ -97,6 +98,7 @@ private:
     std::vector<float> stretchScratchLeft;
     std::vector<float> stretchScratchRight;
     std::vector<float> kernels;
+    std::array<float, 2> lastOutput{};
     double sourceRate = 0.0;
     double deviceRate = 0.0;
     double sourcePerDevice = 1.0;
