@@ -33,6 +33,10 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Added short de-click transitions around play/pause/seek discontinuities and whole-track loop wraparound.
 - Added per-sample smoothing for playback-rate changes, headphone cue switching/level, EQ, echo and drive controls.
 - Added deterministic quality checks for loop continuity, cue fade-out and rate-slew convergence.
+- Added objective offline render metrics for pitch-changing rate conversion: frequency error, residual RMS ratio, DC, RMS and peak are checked at 0.75x, 1.0x and 1.25x.
+- Added deterministic maximum adjacent-sample-delta gates for seek, pause and whole-track loop transitions.
+- Added a callback heap contract stress test covering in-memory and streamed decks plus seek/rate/EQ/FX/cue/crossfader automation; allocation and deallocation counts must remain zero during the measured callback window.
+- Added diagnostic callback elapsed-time reporting without turning shared CI runner timing into a release/performance threshold.
 - Migrated roadmap presentation to the SWIR SVG-only progress system and README presentation to SWIR README PRO v2.
 
 ### Validation status
@@ -41,5 +45,6 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Bounded streaming PR #4 final head `9d842feecda23ea78904a35a9f4c073533784abc` passed exact-head run `35334147477`, including Linux sanitizers and Windows x64 build, CTest, GUI smoke, staging and artifact upload, then merged as `ac9a98610a166548c3ca0e18446fc95af99cd7c9`.
 - Stream seek/refill hardening PR #5 passed exact-final-head Linux sanitizer and Windows x64 build/test/GUI-smoke validation and merged as `7cced0d18fe7d192fa983b482d2637b2204fe0f5`.
 - Starvation-history/refill-smoothing PR #6 final head `915441c73cc6bab7c58579a8343952ca9e1a9bf1` passed exact-head run `35338665653`: Linux sanitizer/core/SVG checks and Windows x64 configure/build/CTest/native no-audio GUI-smoke/staging succeeded; it merged as `58ecdb3b85b8ff395d115097776d5946bf457936`.
-- Decoder/codec-stress PR #7 implementation head `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc` passed run `35346407766` on Linux sanitizer/core/progress checks and Windows x64 build, the complete CTest set including decoder fixtures, no-audio GUI smoke, staging and artifact upload. Documentation-only checkpoint commits still require exact-final-head CI before merge.
+- Decoder/codec-stress PR #7 passed exact-final-head validation and merged to `main` as `99ea0a22e929d62f3c1245ceeb24f9803ccc6616` after the Windows-only MP3 forced-streaming regression was fixed.
+- Objective-render/realtime-contract PR #9 implementation head `9ed8f5ae828602c3897e56ef29018ffed926f924` passed run `35349145885`: Linux ASan/UBSan + all five core-only CTest targets succeeded, and Windows x64 configure/build, the full CTest matrix including decoder fixtures, native no-audio GUI smoke, staging and artifact upload succeeded. Documentation checkpoint commits still require a fresh exact-final-head run before merge.
 - The roadmap remains **1/10 = 10.0%** because these hardening packages do not close M1 hardware/manual validation or the broader M2 performance-deck scope.

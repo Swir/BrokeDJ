@@ -13,7 +13,7 @@ The initial milestone is complete only for the repository, testable core and doc
 |---|---|---|---|
 | M0 | Repository and audio foundation | C++20 core, reproducible test command, concurrent clip handoff tests, source layout, build definitions, license/branding and explicit limitations | Complete; local core validation recorded |
 | M1 | Native development build | Windows x64 build passes; clean-machine launch; resize and import checks; device switching and four-output cue verified | Windows CI build + headless GUI smoke pass; manual clean-machine/hardware validation pending |
-| M2 | Performance decks | Validated beat/tempo/key analysis, editable grids including tempo changes, key lock, hotcues, beat loops, slip/reverse/scratch and de-clicked transitions | De-clicking, smoothed rate changes, improved interpolation, bounded long-track read-ahead, starvation/refill telemetry, refill transitions and virtual long-seek/loop stress are implemented in development; milestone still open |
+| M2 | Performance decks | Validated beat/tempo/key analysis, editable grids including tempo changes, key lock, hotcues, beat loops, slip/reverse/scratch and de-clicked transitions | De-clicking, smoothed rate changes, Catmull-Rom interpolation, bounded long-track read-ahead, codec stress, starvation/refill telemetry and objective render/real-time contract tests are implemented in development; milestone still open |
 | M3 | Professional mixer and recording | Configurable routing, gain staging, EQ curves, fader laws, limiter evaluation, microphone/ducking and dropout-aware set recording | Basic source only; full milestone open |
 | M4 | Music library and sessions | SQLite migrations, search/tags/playlists/history, duplicate and moved-file handling, waveform/analysis cache, session persistence and tested backup restore | Planned |
 | M5 | Effects and VST3 | Distinct effect inventory, chains/sends, presets, XY/macros, automation smoothing, scanner isolation, license review and a tested compatibility matrix | Two built-in effects; parameter smoothing added; milestone open |
@@ -25,8 +25,8 @@ The initial milestone is complete only for the repository, testable core and doc
 ## Next implementation priorities
 
 1. Finish M1 manual validation: clean Windows 11 launch, resize/import behavior, actual audio-device switching and four-output cue on supported hardware. CI compilation alone does not close M1.
-2. Exercise real supported-codec long-file seek/loop fixtures for WAV/AIFF/FLAC/OGG/MP3, add slow-reader stress and validate that starvation/refill counters match intentionally delayed input.
-3. Add objective render fixtures and transition/resampler metrics, then continue toward time-stretch/key-lock rather than treating pitch-changing interpolation as final DJ-grade tempo processing.
+2. Expand long-file evidence beyond generated fixtures: broader mono/stereo WAV/AIFF/FLAC/OGG and CBR/VBR MP3 varieties, damaged/truncated cases and slow physical storage while preserving bounded memory and cancellation behavior.
+3. Extend the new objective render baseline with high-frequency/alias measurements and use the results to harden rate conversion before selecting and integrating the time-stretch/key-lock path. Do not treat pitch-changing interpolation as final DJ-grade tempo processing.
 
 ## Audio quality and long-track hardening in progress
 
@@ -36,7 +36,9 @@ Large tracks no longer require one decoded stereo allocation for the full file. 
 
 Lock-free diagnostics track failed cache reads, the latest missed frame and collapsed starvation/refill episodes. Continuous missing data counts as one starvation episode until a complete interpolation frame becomes readable again. The same prepared transition window fades toward silence on starvation and fades recovered audio back in. Deterministic tests exercise a virtual 90-minute stream, repeated distant seeks, whole-track loop wrap and intentional starvation/refill recovery without allocating full-track audio.
 
-This still does **not** prove transparent DSP, zero dropouts on real storage/codecs, key lock, zero clicks on every transition, or professional live readiness. Real-file stress, slow-storage behavior and reviewed listening evidence remain open.
+The decoder/read-ahead adapter is separately testable with generated WAV/AIFF/FLAC/OGG data plus an original synthetic MP3 fixture, forced-streaming coverage, Unicode paths, invalid files, cancellation and controlled slow-reader behavior. Objective offline render tests now measure rate-conversion frequency error/residual/DC/level and adjacent-sample transition deltas; a separate stress target verifies zero heap allocation/deallocation during the tested audio-callback window. Shared-runner callback timing is diagnostic only, not a performance certification.
+
+This still does **not** prove transparent DSP, zero dropouts on real storage/codecs, key lock, zero clicks on every transition, or professional live readiness. Real-file stress, slow-storage behavior, full-spectrum resampling analysis and reviewed listening evidence remain open.
 
 ## Effects scope
 

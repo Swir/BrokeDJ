@@ -30,6 +30,16 @@ if(BUILD_TESTING)
     add_test(NAME quality COMMAND brokedj_quality_tests)
     set_tests_properties(quality PROPERTIES TIMEOUT 30)
 
+    add_executable(brokedj_render_metrics_tests tests/RenderMetricsTests.cpp)
+    target_link_libraries(brokedj_render_metrics_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME render_metrics COMMAND brokedj_render_metrics_tests)
+    set_tests_properties(render_metrics PROPERTIES TIMEOUT 30)
+
+    add_executable(brokedj_realtime_contract_tests tests/RealtimeContractTests.cpp)
+    target_link_libraries(brokedj_realtime_contract_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME realtime_contract COMMAND brokedj_realtime_contract_tests)
+    set_tests_properties(realtime_contract PROPERTIES TIMEOUT 30)
+
     add_executable(brokedj_stream_cache_tests tests/StreamCacheTests.cpp)
     target_link_libraries(brokedj_stream_cache_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME stream_cache COMMAND brokedj_stream_cache_tests)

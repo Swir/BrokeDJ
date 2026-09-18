@@ -5,37 +5,35 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`
-- Active development branch: `feat/decoder-codec-stress`
-- Pull request: `#7` — codec streaming/read-ahead hardening; merge remains gated on exact-final-head CI
-- Latest implementation head validated before documentation-only checkpoint updates: `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc`
-- Validation run: `35346407766` — Linux ASan/UBSan core/SVG checks and Windows x64 configure/build/CTest/native no-audio GUI-smoke/staging passed
+- Active development branch: `feat/render-metrics-rt-contract`
+- Pull request: `#9` — objective offline render metrics plus real-time callback heap contract
+- Latest implementation head validated before documentation-only checkpoint updates: `9ed8f5ae828602c3897e56ef29018ffed926f924`
+- Validation run: `35349145885` — Linux ASan/UBSan + all five core-only CTest targets passed; Windows x64 configure/build/full CTest including decoder fixtures/native no-audio GUI smoke/staging passed
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**
 
-## Completed in the codec streaming stress package
+## Completed in the current validation package
 
-- Split the JUCE decoder/read-ahead adapter into its own testable target without changing production decode defaults.
-- Added original deterministic WAV, AIFF, FLAC and OGG fixtures plus an embedded original synthetic MP3 fixture; tests exercise both in-memory and forced-streaming decode paths.
-- Added Unicode-path coverage, distant streamed seeks, invalid-file handling and import cancellation checks.
-- Added a controlled slow-reader mode used only by tests, plus last-request-wins read-ahead preemption so a new seek does not wait for an obsolete forward window.
-- Sanitized non-finite streamed samples before publishing cache chunks.
-- Fixed a Windows MP3 streaming regression exposed by the new tests: waveform generation now falls back from unsupported sparse seek patterns to a bounded-memory sequential pass on a fresh decoder, and playback/cache priming always receives another fresh decoder instance.
-- Preserved the real-time boundary: the audio callback still performs no file I/O, decode work, allocation, logging or blocking synchronization.
+- Added deterministic offline render metrics for 0.75x, 1.0x and 1.25x pitch-changing rate conversion, including frequency error, residual RMS ratio, DC, RMS and peak checks.
+- Added numeric maximum adjacent-sample-delta gates for seek, pause and whole-track loop transitions instead of relying only on qualitative assertions.
+- Added a dedicated callback heap contract test that stresses in-memory and streamed playback plus repeated seek/rate/EQ/FX/cue/crossfader changes while requiring zero heap allocations and deallocations during the measured callback window.
+- Added diagnostic callback elapsed-time reporting without using shared CI runner timing as a release/performance threshold.
+- Kept production DSP unchanged in this package; the work strengthens regression evidence rather than inflating the roadmap.
 
 ## Validation state
 
-- Initial PR #7 Windows CI exposed a real MP3 forced-streaming failure while Linux sanitizer/core checks remained green; the PR was not merged.
-- After hardening preview/decoder separation, run `35346407766` passed both required jobs: Linux sanitizer/core/progress checks and Windows x64 build, all CTest targets including decoder fixtures, no-audio GUI smoke, staging and artifact upload.
-- Documentation-only checkpoint updates still require a fresh exact-final-head PR run before merge.
+- The first render-metrics run failed because its step fixture was only 4096 frames and crossed the polarity boundary before the intended steady-state measurement. The fixture was corrected to keep the measurement window valid; audio thresholds were not weakened.
+- Implementation head `9ed8f5ae828602c3897e56ef29018ffed926f924` passed run `35349145885` on both required jobs.
+- Documentation-only checkpoint updates after that implementation head still require a fresh exact-final-head run before PR #9 may merge.
 - No physical audio interface, Windows 11 clean-machine, controller, slow physical storage or reviewed listening validation was performed by this package.
 
 ## Remaining blockers / gates
 
-1. Clean Windows 11 interactive launch, resize/import and actual audio interface behavior still require manual verification.
-2. The automated codec matrix is deterministic and exercises real JUCE codec readers, but multi-minute real-world files, CBR/VBR MP3 varieties, damaged/truncated variants and slow physical storage still need broader stress evidence.
-3. The starvation/refill counters are cache/playback diagnostics, not physical device underrun counters.
-4. Objective render fixtures and reviewed listening tests are needed before stronger sound-quality claims.
+1. Clean Windows 11 interactive launch, resize/import and actual audio-interface behavior still require manual verification.
+2. The automated codec matrix remains synthetic/generated; a broader real-world mono/stereo and CBR/VBR corpus, damaged/truncated variants and slow physical storage still need evidence.
+3. Objective render metrics now protect current rate conversion and transport transitions, but they do not prove transparency, anti-aliasing quality across the full spectrum or inaudibility.
+4. The callback contract now enforces zero observed heap allocation/deallocation in the tested stress path, but physical device callback deadlines and underruns still require hardware evidence.
 5. Time-stretch/key-lock, beat analysis/grid and the rest of M2 remain open.
 
 ## Next highest-impact step
 
-Finish PR #7 on an exact-final-head green run, then add objective offline render metrics for resampling/transport transitions and expand the codec corpus without weakening the separate Windows 11/audio-hardware gate.
+Finish PR #9 on an exact-final-head green run, then extend objective resampler coverage toward high-frequency/alias behavior and use that evidence to choose the next production-quality tempo/key-lock path without weakening the separate Windows 11/audio-hardware gate.
