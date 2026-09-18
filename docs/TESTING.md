@@ -12,8 +12,6 @@ PR #4 added a fixed-size stream cache to the JUCE-independent core and a backgro
 
 The final PR head `9d842feecda23ea78904a35a9f4c073533784abc` passed GitHub Actions run `35334147477`: Linux sanitizer/core tests and SVG checks succeeded; Windows Server 2022 / MSVC x64 configure/build, all CTest targets including streaming cache, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #4 was then merged to `main` as `ac9a98610a166548c3ca0e18446fc95af99cd7c9`.
 
-Before publication, JUCE-independent C++20 compilation also passed locally and `brokedj_stream_cache_tests` reported **11/11 streaming-cache checks**.
-
 Deterministic streaming coverage verifies:
 
 - a cache miss produces bounded silence and requests the missing source region;
@@ -47,15 +45,28 @@ Coverage includes:
 - starvation/refill diagnostics under intentionally delayed background input;
 - non-finite streamed sample sanitization before cache publication.
 
-The first two Windows PR runs exposed an MP3 forced-streaming regression that Linux core/sanitizer checks could not reveal. The failing path was kept red and unmerged. The decoder now treats waveform generation and streaming playback as independent reader lifetimes; if a compressed reader rejects the sparse non-monotonic preview pattern, waveform construction falls back to a bounded-memory sequential pass on a fresh reader instead of rejecting an otherwise playable file.
+The first Windows PR runs exposed an MP3 forced-streaming regression that Linux core/sanitizer checks could not reveal. The decoder now treats waveform generation and streaming playback as independent reader lifetimes; if a compressed reader rejects the sparse non-monotonic preview pattern, waveform construction falls back to a bounded-memory sequential pass on a fresh reader instead of rejecting an otherwise playable file.
 
-Implementation head `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc` passed GitHub Actions run `35346407766`: Linux sanitizer/core/progress checks succeeded and Windows Server 2022 / MSVC x64 completed the native build, all CTest targets including the decoder matrix, no-audio GUI lifecycle smoke, staging and artifact upload. Documentation-only checkpoint commits still require a fresh exact-final-head run before PR #7 may merge.
+PR #7 passed its exact-final-head gate and merged to `main` as `99ea0a22e929d62f3c1245ceeb24f9803ccc6616`.
 
 This fixture matrix is stronger automated codec evidence, but it is not a claim that every real-world file is qualified. Multi-minute source material, mono variants, CBR/VBR MP3 diversity, damaged/truncated files, slow physical storage and reviewed listening remain separate gates.
 
+## Objective render and real-time contract package
+
+PR #9 adds two JUCE-independent CTest targets without changing production DSP:
+
+- `render_metrics` renders deterministic tones at 0.75x, 1.0x and 1.25x and checks measured frequency error, fundamental residual RMS ratio, DC, RMS and output peak. It also measures maximum adjacent-sample deltas across seek, pause and whole-track loop transitions.
+- `realtime_contract` instruments heap allocation in its own test executable and drives 1,200 callback blocks with in-memory and stream-backed decks while repeatedly changing seek, rate, EQ, echo, drive, cue and crossfader controls. Heap allocations and deallocations must both remain zero during the measured callback window. It reports elapsed callback cost as diagnostic data only; shared-runner timing is not a release threshold.
+
+The first render-metrics run correctly failed because the step fixture was too short and had already crossed its polarity boundary before the measurement window. The fixture was corrected without weakening the audio thresholds.
+
+Implementation head `9ed8f5ae828602c3897e56ef29018ffed926f924` passed GitHub Actions run `35349145885`: Linux ASan/UBSan build plus all five core-only CTest targets succeeded; Windows Server 2022 / MSVC x64 configure/build, the full CTest matrix including decoder fixtures, native no-audio GUI lifecycle smoke, staging and artifact upload also succeeded. Documentation-only checkpoint commits after that implementation head require their own exact-final-head run before merge.
+
+These objective checks are regression gates for the current implementation. They do **not** establish inaudibility, transparent time-stretch, true-peak limiting, device latency or professional live readiness.
+
 ## Audio quality hardening coverage
 
-`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity and control automation. These tests support short transport/cue transitions and smoothing. They do **not** prove inaudibility on every file, buffer size, device or loudspeaker chain.
+`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity and control automation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
 
 ## Existing core coverage
 
@@ -71,16 +82,17 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] SVG progress synchronization and no-legacy-meter check pass on the merged baseline.
 - [x] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
 - [x] Seek/refill hardening and starvation/refill smoothing pass exact-head Linux + Windows CI and are merged.
-- [ ] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
+- [x] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
+- [x] Objective offline render metrics and callback heap-allocation contract pass Linux sanitizer and Windows x64 CI on PR #9 implementation head.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
-- [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode/stream as expected.
-- [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio.
+- [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
+- [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.
 - [ ] Large/long files stay memory-bounded under repeated seek/loop/load stress on real supported codecs/storage.
 - [ ] Minimum and large window sizes keep every control reachable.
 - [ ] Two-output and four-output physical devices have correct master/cue isolation.
 - [ ] Device change/disconnect and closing during decode/streaming recover safely.
 - [ ] Sample-rate/buffer changes are exercised without invalid output or transport corruption.
 - [ ] Long-running simultaneous playback and repeated loading pass an agreed soak test.
-- [ ] Transport/seek/loop/cue/cache transitions receive deterministic metrics plus reviewed listening checks on representative fixtures.
+- [ ] Transport/seek/loop/cue/cache transitions receive reviewed listening checks on representative fixtures and hardware.
 
 Use original/generated or appropriately licensed audio fixtures only. Report commit, OS, device/driver, sample rate, buffer size, reproduction steps and a reviewed/redacted log. Do not mark a release gate complete based only on a scheduled run, screenshot or compile result.
