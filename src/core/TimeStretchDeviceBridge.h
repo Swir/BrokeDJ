@@ -33,7 +33,16 @@ public:
 
     [[nodiscard]] bool setPlaybackRate(double playbackRate) noexcept;
     [[nodiscard]] bool setPitchSemitones(float semitones) noexcept;
-    void setEnabled(bool shouldEnable) noexcept { enabled = shouldEnable; }
+    void setEnabled(bool shouldEnable) noexcept {
+        if (!shouldEnable && enabled) {
+            // A bypassed device block advances the production transport while
+            // the research FIFO stops. Require explicit off-callback re-prime
+            // before re-enabling so stale prefetched stretch audio cannot leak.
+            primedForClip = false;
+            rePrimeRequired = true;
+        }
+        enabled = shouldEnable;
+    }
 
     // Must be called after load/seek/loop-style discontinuities before the
     // stretch path can be selected again. It resets the source-rate FIFO and
