@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "core/Engine.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -100,6 +102,7 @@ void run() {
 
     allocations.store(0, std::memory_order_relaxed);
     deallocations.store(0, std::memory_order_relaxed);
+    const auto started = std::chrono::steady_clock::now();
     trackHeap.store(true, std::memory_order_seq_cst);
     for (int block = 0; block < 1200; ++block) {
         if ((block % 37) == 0) {
@@ -122,6 +125,7 @@ void run() {
         renderBlock(engine, audio, out);
     }
     trackHeap.store(false, std::memory_order_seq_cst);
+    const auto finished = std::chrono::steady_clock::now();
 
     const auto observedAllocations = allocations.load(std::memory_order_relaxed);
     const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
@@ -132,8 +136,14 @@ void run() {
               "callback output remains finite after stress");
     }
 
+    const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count();
+    constexpr double renderedFrames = 1200.0 * 256.0;
+    const double nsPerFrame = static_cast<double>(elapsedNs) / renderedFrames;
     std::cout << "METRIC realtime_blocks=1200 heap_allocations=" << observedAllocations
-              << " heap_deallocations=" << observedDeallocations << '\n';
+              << " heap_deallocations=" << observedDeallocations
+              << " elapsed_ns=" << elapsedNs
+              << " ns_per_rendered_frame=" << nsPerFrame
+              << " timing_is_diagnostic_only=1\n";
 }
 } // namespace
 
