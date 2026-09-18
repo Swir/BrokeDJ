@@ -37,7 +37,7 @@ std::unique_ptr<broke::Clip> sineClip(double frequency, float amplitude = 0.25f,
     return clip;
 }
 
-std::unique_ptr<broke::Clip> stepClip(int frames = 4096) {
+std::unique_ptr<broke::Clip> stepClip(int frames = 48000) {
     auto clip = std::make_unique<broke::Clip>();
     clip->sampleRate = outputRate;
     clip->left.assign(static_cast<std::size_t>(frames), 1.0f);
