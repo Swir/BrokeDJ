@@ -15,9 +15,14 @@ inline constexpr std::size_t deckCount = 4;
 struct StreamCacheDiagnostics final {
     std::int64_t requestedFrame = 0;
     std::int64_t requestedChunk = 0;
+    std::int64_t lastMissFrame = -1;
     std::size_t readyChunks = 0;
     std::size_t inspectedChunks = 0;
+    std::uint64_t readMisses = 0;
+    std::uint64_t starvationEvents = 0;
+    std::uint64_t refillEvents = 0;
     bool requestedRegionReady = false;
+    bool starving = false;
 };
 
 // Bounded, lock-free read-ahead cache shared by a background decoder and the
@@ -36,16 +41,23 @@ public:
     [[nodiscard]] bool hasChunk(std::int64_t chunkIndex) const noexcept;
     void publishChunk(std::int64_t chunkIndex, const float* left, const float* right,
                       std::size_t frames) noexcept;
+    [[nodiscard]] bool trySample(int channel, std::int64_t frame, float& value) const noexcept;
     [[nodiscard]] float sample(int channel, std::int64_t frame) const noexcept;
     void request(std::int64_t frame) const noexcept;
     [[nodiscard]] std::int64_t requestedFrame() const noexcept {
         return requested.load(std::memory_order_relaxed);
     }
     // Non-audio diagnostic snapshot. It reports whether the exact transport
-    // request is resident plus bounded forward cache coverage; it does not
-    // claim that a hardware underrun occurred.
+    // request is resident plus bounded forward cache coverage and lock-free
+    // read-starvation history. These counters describe cache misses/recovery,
+    // not physical audio-device underruns.
     [[nodiscard]] StreamCacheDiagnostics diagnostics(std::size_t lookAheadChunks = 12) const noexcept {
         StreamCacheDiagnostics result;
+        result.readMisses = readMisses.load(std::memory_order_relaxed);
+        result.starvationEvents = starvationEvents.load(std::memory_order_relaxed);
+        result.refillEvents = refillEvents.load(std::memory_order_relaxed);
+        result.lastMissFrame = lastMissFrame.load(std::memory_order_relaxed);
+        result.starving = starving.load(std::memory_order_relaxed);
         if (total <= 0) return result;
         result.requestedFrame = requestedFrame();
         result.requestedChunk = result.requestedFrame / static_cast<std::int64_t>(chunkFrames);
@@ -70,9 +82,15 @@ private:
         std::unique_ptr<std::atomic<float>[]> right;
     };
     [[nodiscard]] static std::size_t slotFor(std::int64_t chunkIndex) noexcept;
+    void noteMiss(std::int64_t frame) const noexcept;
     std::array<Slot, slotCount> slots;
     std::int64_t total = 0;
     mutable std::atomic<std::int64_t> requested{0};
+    mutable std::atomic<std::int64_t> lastMissFrame{-1};
+    mutable std::atomic<std::uint64_t> readMisses{0};
+    mutable std::atomic<std::uint64_t> starvationEvents{0};
+    mutable std::atomic<std::uint64_t> refillEvents{0};
+    mutable std::atomic<bool> starving{false};
 };
 
 struct Clip final {
@@ -146,6 +164,7 @@ private:
         std::array<float, 2> lastProcessed{}, transitionFrom{};
         int transitionRemaining = 0;
         bool wasPlaying = false;
+        bool streamReady = true;
     };
     std::array<Controls, deckCount> controls;
     std::array<Meter, deckCount> meters;
