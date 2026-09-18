@@ -33,9 +33,23 @@ ctest --test-dir build/core --output-on-failure
 
 The sanitizer switch applies to GCC/Clang; MSVC uses the ordinary core tests here. Thread stress plus ASan/UBSan does not replace a ThreadSanitizer run or hardware validation.
 
+## Opt-in time-stretch/key-lock prototype
+
+The M2 research adapter is deliberately disabled by default so ordinary BrokeDJ playback remains independent of the experimental dependency. To build its deterministic ratio/pitch/seek and realtime-contract tests:
+
+```sh
+cmake -S . -B build/timestretch -DBROKEDJ_BUILD_APP=OFF -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build/timestretch --parallel 2
+ctest --test-dir build/timestretch --output-on-failure -R time_stretch
+```
+
+This fetches Signalsmith Stretch at commit `57b93f4e9206a089a45387eaa39bdc9f310d3308` and Signalsmith Linear at commit `5668673560146a9cfe38c25315071e3fd68c8317`. Passing these tests does not make key lock a production deck feature; see [`TIME_STRETCH_PROTOTYPE.md`](TIME_STRETCH_PROTOTYPE.md).
+
 ## Reproducible dependency / offline configuration
 
 JUCE 9.0.2 is pinned to `72782788ce18c2d4d760b28e0921d6ffc6431102`. CMake fetches it automatically. To prepare offline, clone the upstream repository on a connected machine, check out that exact commit and transfer the entire checkout. Pass `-DFETCHCONTENT_SOURCE_DIR_JUCE=/path/to/JUCE` when configuring. CMake/MSVC/SDK are build prerequisites and are not installed by the app.
+
+For an offline build of the optional time-stretch prototype, also prepare the exact Signalsmith Stretch and Signalsmith Linear commits listed above and pass `-DFETCHCONTENT_SOURCE_DIR_SIGNALSMITH_STRETCH=/path/to/signalsmith-stretch` and `-DFETCHCONTENT_SOURCE_DIR_SIGNALSMITH_LINEAR=/path/to/linear`. The normal build does not need these two source trees while `BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=OFF`.
 
 ## Smoke mode
 
