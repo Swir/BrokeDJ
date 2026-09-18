@@ -85,15 +85,25 @@ This is deterministic routing/DSP evidence only. The protection curve is **not**
 
 PR #11 added a prepared 24-tap Blackman-windowed sinc lookup bank for effective downsampling/speed-up while retaining Catmull-Rom interpolation when no anti-alias low-pass is required. Kernel generation happens in `prepare()` while audio is stopped; the callback performs bounded table lookup and multiply-accumulate work only.
 
-`render_metrics` now includes a deterministic high-frequency anti-alias gate. At 1.5x playback it renders an 8 kHz source as a passband reference and a 19 kHz source as an out-of-band case that would fold into the audible band without pre-decimation filtering. The gate requires the 8 kHz reference to retain useful RMS level, the 19 kHz stopband RMS to remain below 0.02 and the stopband/passband RMS ratio to remain below 0.10. These thresholds are implementation regression guards, not psychoacoustic transparency claims.
+`render_metrics` added a deterministic high-frequency anti-alias gate. At 1.5x playback it renders an 8 kHz source as a passband reference and a 19 kHz source as an out-of-band case that would fold into the audible band without pre-decimation filtering. The gate requires the 8 kHz reference to retain useful RMS level, the 19 kHz stopband RMS to remain below 0.02 and the stopband/passband RMS ratio to remain below 0.10. These thresholds are implementation regression guards, not psychoacoustic transparency claims.
 
 The large-track worker now prioritizes the requested chunk and both immediate neighbours before deeper forward read-ahead, because the wider interpolation kernel can need samples on either side of a seek cursor. Actual physical-storage refill latency and hardware underruns remain unqualified.
 
 Final PR #11 head `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032` passed exact-head GitHub Actions run `35361883586`: Linux ASan/UBSan core/progress checks and all five core-only CTest targets succeeded; Windows x64 configure/build, full CTest including decoder fixtures, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #11 merged as `d15fbb8187e699f200bfb79666c637614cf128c7`.
 
+## Multi-rate resampler matrix and callback diagnostics package
+
+PR #12 expanded the objective spectral baseline across representative source/output-rate paths and made callback-cost evidence persist with the Windows development artifact. Production DSP topology is unchanged from PR #11.
+
+`render_metrics` now gates four deterministic anti-alias cases: 48 kHz at 1.5x, 44.1→48 kHz at 1.5x, 96→48 kHz at 1.0x and 192→48 kHz at 1.0x. On the exact-head Windows run the observed stopband/passband RMS ratios were `0.021501`, `0.066392`, `0.023641` and `0.000041` respectively; every case stayed inside its explicit regression threshold.
+
+`realtime_contract` now separately exercises a 44.1→48 kHz Catmull-Rom path plus 48 kHz 1.5x, 96→48 kHz and 192→48 kHz fixed-tap sinc paths. All measured windows retained zero heap allocations/deallocations. The Windows shared runner reported `357.714 ns/frame` for the Catmull-Rom case and `933.840`, `893.594` and `887.588 ns/frame` for the three sinc cases. These numbers are **diagnostic only**: they are not latency, underrun or supported-hardware guarantees and are not used as absolute CI performance thresholds.
+
+The Windows workflow repeats the two diagnostic targets verbosely after the full CTest pass and stores their output as `AUDIO-DIAGNOSTICS.txt` in the development artifact. Final PR #12 head `1747ed8d10f3f2151752bd1bf55963b9c17917b2` passed exact-head run `35364173494`: Linux ASan/UBSan + all five core-only CTest targets succeeded; Windows x64 configure/build/full CTest, diagnostic replay, native no-audio GUI lifecycle smoke, staging and artifact upload succeeded. PR #12 merged as `77ff9bca772b6b035f7c8ce76a1317789c485f26`.
+
 ## Audio quality hardening coverage
 
-`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements, including high-frequency passband/stopband evidence for downsampling. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
+`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements, including multi-rate high-frequency passband/stopband evidence for downsampling. `brokedj_realtime_contract_tests` adds zero-heap callback coverage plus path-specific diagnostic cost measurements. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
 
 ## Existing core coverage
 
@@ -101,7 +111,7 @@ Empty silence; invalid clip/deck/device-rate rejection; stereo playback; playhea
 
 ## What automated checks do not certify
 
-Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. The hybrid rate converter remains pitch-changing resampling, not key lock/time stretch; its finite windowed-sinc anti-alias gate does not prove ideal reconstruction or inaudibility on arbitrary music. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
+Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. The hybrid rate converter remains pitch-changing resampling, not key lock/time stretch; its finite windowed-sinc anti-alias matrix does not prove ideal reconstruction or inaudibility on arbitrary music. Shared-runner callback-cost measurements are diagnostics, not physical-device deadline/underrun evidence. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
 
 ## Native acceptance checklist
 
@@ -113,6 +123,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Objective offline render metrics and callback heap-allocation contract pass exact-head Linux sanitizer and Windows x64 CI for PR #9.
 - [x] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
 - [x] Band-limited rate-conversion package passes exact-head Linux sanitizer and Windows x64 CI and merges through PR #11.
+- [x] Multi-rate spectral matrix, per-path zero-heap callback diagnostics and retained Windows artifact evidence pass exact-head CI and merge through PR #12.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.
