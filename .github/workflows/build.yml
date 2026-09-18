@@ -1,0 +1,58 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    name: Core / sanitizers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check generated progress
+        run: python3 scripts/update_progress.py --check
+      - name: Configure
+        run: cmake -S . -B build/core -DBROKEDJ_BUILD_APP=OFF -DBROKEDJ_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build/core --parallel 2
+      - name: Test
+        run: ctest --test-dir build/core --output-on-failure
+  windows:
+    name: Windows x64 / development build
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Configure
+        run: cmake --preset windows
+      - name: Build
+        run: cmake --build --preset windows-release --parallel 2
+      - name: Test core
+        run: ctest --preset windows-release
+      - name: Native GUI lifecycle smoke test (no audio hardware)
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe'
+          $p = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'GUI smoke test timed out' }
+          if ($p.ExitCode -ne 0) { throw "GUI smoke test failed: $($p.ExitCode)" }
+      - name: Stage development build and corresponding project source
+        shell: pwsh
+        run: |
+          cmake --install build/windows --config Release --prefix dist/BrokeDJ
+          if ($LASTEXITCODE -ne 0) { throw 'Staging failed' }
+          git archive --format=zip --output=dist/BrokeDJ-source.zip HEAD
+          Copy-Item docs/TESTING.md dist/BrokeDJ/VALIDATION.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: BrokeDJ-0.1.0-development-windows-x64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "metric": "Equal-weight roadmap milestones, not production readiness",
+  "milestones": [
+    {
+      "id": "M0",
+      "title": "Repository and audio foundation",
+      "complete": true
+    },
+    {
+      "id": "M1",
+      "title": "Native Windows build and hardware validation",
+      "complete": false
+    },
+    {
+      "id": "M2",
+      "title": "Performance decks",
+      "complete": false
+    },
+    {
+      "id": "M3",
+      "title": "Professional mixer and recording",
+      "complete": false
+    },
+    {
+      "id": "M4",
+      "title": "Music library and sessions",
+      "complete": false
+    },
+    {
+      "id": "M5",
+      "title": "Effects and VST3",
+      "complete": false
+    },
+    {
+      "id": "M6",
+      "title": "Sampler and controllers",
+      "complete": false
+    },
+    {
+      "id": "M7",
+      "title": "Stems and creative assistance",
+      "complete": false
+    },
+    {
+      "id": "M8",
+      "title": "Advanced interoperability",
+      "complete": false
+    },
+    {
+      "id": "M9",
+      "title": "Public release qualification",
+      "complete": false
+    }
+  ]
+}

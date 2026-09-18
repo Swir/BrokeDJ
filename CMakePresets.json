@@ -1,0 +1,10 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {"major": 3, "minor": 24, "patch": 0},
+  "configurePresets": [
+    {"name": "windows", "displayName": "Windows x64 / Visual Studio 2022", "generator": "Visual Studio 17 2022", "architecture": "x64", "binaryDir": "${sourceDir}/build/windows", "cacheVariables": {"BROKEDJ_BUILD_APP": "ON", "BUILD_TESTING": "ON"}},
+    {"name": "core", "displayName": "Dependency-free core", "binaryDir": "${sourceDir}/build/core", "cacheVariables": {"BROKEDJ_BUILD_APP": "OFF", "BUILD_TESTING": "ON", "CMAKE_BUILD_TYPE": "Debug"}}
+  ],
+  "buildPresets": [{"name": "windows-release", "configurePreset": "windows", "configuration": "Release"}, {"name": "core", "configurePreset": "core"}],
+  "testPresets": [{"name": "windows-release", "configurePreset": "windows", "configuration": "Release", "output": {"outputOnFailure": true}}, {"name": "core", "configurePreset": "core", "output": {"outputOnFailure": true}}]
+}

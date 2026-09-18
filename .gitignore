@@ -1,0 +1,11 @@
+/build/
+/dist/
+/out/
+/.cache/
+/CMakeUserPresets.json
+*.user
+*.suo
+*.log
+.DS_Store
+Thumbs.db
+__pycache__/
