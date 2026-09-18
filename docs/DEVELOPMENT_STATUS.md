@@ -5,10 +5,10 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`
-- Active development branch: `feat/render-metrics-rt-contract`
-- Pull request: `#9` — objective offline render metrics plus real-time callback heap contract
-- Latest implementation head validated before documentation-only checkpoint updates: `9ed8f5ae828602c3897e56ef29018ffed926f924`
-- Validation run: `35349145885` — Linux ASan/UBSan + all five core-only CTest targets passed; Windows x64 configure/build/full CTest including decoder fixtures/native no-audio GUI smoke/staging passed
+- Latest merged package: PR `#9` — objective offline render metrics plus real-time callback heap contract
+- Merge commit: `90c7677dede1fc293fac31508f04ddaf8cbc9a13`
+- Exact final PR head: `98d52555ea207d3e1a22eb469d79981695820299`
+- Final PR validation run: `35349954270` — Linux ASan/UBSan + all five core-only CTest targets passed; Windows x64 configure/build/full CTest including decoder fixtures/native no-audio GUI smoke/staging passed
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**
 
 ## Completed in the current validation package
@@ -23,7 +23,7 @@ This file is a durable engineering checkpoint, not a release announcement.
 
 - The first render-metrics run failed because its step fixture was only 4096 frames and crossed the polarity boundary before the intended steady-state measurement. The fixture was corrected to keep the measurement window valid; audio thresholds were not weakened.
 - Implementation head `9ed8f5ae828602c3897e56ef29018ffed926f924` passed run `35349145885` on both required jobs.
-- Documentation-only checkpoint updates after that implementation head still require a fresh exact-final-head run before PR #9 may merge.
+- Final documentation head `98d52555ea207d3e1a22eb469d79981695820299` passed exact-head run `35349954270` on both required jobs before PR #9 merged.
 - No physical audio interface, Windows 11 clean-machine, controller, slow physical storage or reviewed listening validation was performed by this package.
 
 ## Remaining blockers / gates
@@ -36,4 +36,4 @@ This file is a durable engineering checkpoint, not a release announcement.
 
 ## Next highest-impact step
 
-Finish PR #9 on an exact-final-head green run, then extend objective resampler coverage toward high-frequency/alias behavior and use that evidence to choose the next production-quality tempo/key-lock path without weakening the separate Windows 11/audio-hardware gate.
+Extend objective resampler coverage toward high-frequency/alias behavior and use that evidence to choose the next production-quality tempo/key-lock path, while keeping clean Windows 11 and physical audio-hardware validation as separate release gates.
