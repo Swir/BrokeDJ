@@ -72,16 +72,32 @@ public:
     }
 
     void run() override {
+        const auto totalChunks = (reader->lengthInSamples
+            + static_cast<juce::int64>(broke::StreamCache::chunkFrames) - 1)
+            / static_cast<juce::int64>(broke::StreamCache::chunkFrames);
         while (!threadShouldExit()) {
             const auto requested = cache->requestedFrame();
             const auto centre = requested / static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
             bool didWork = false;
-            for (int offset = -1; offset < readAheadChunks && !threadShouldExit(); ++offset) {
-                const auto chunk = centre + offset;
-                if (chunk < 0 || cache->hasChunk(chunk)) continue;
+            bool readFailed = false;
+
+            const auto tryFill = [this, totalChunks, &didWork, &readFailed](std::int64_t chunk) {
+                if (chunk < 0 || chunk >= totalChunks || cache->hasChunk(chunk)) return;
                 if (fillChunk(chunk)) didWork = true;
-            }
-            if (!didWork) wait(4);
+                else readFailed = true;
+            };
+
+            // Seek/refill recovery gets the exact requested region first. Forward
+            // read-ahead follows, then one previous chunk for interpolation near
+            // boundaries. Invalid chunks beyond EOF are skipped instead of being
+            // counted as work, preventing an end-of-track busy loop.
+            tryFill(centre);
+            for (int offset = 1; offset < readAheadChunks && !threadShouldExit() && !readFailed; ++offset)
+                tryFill(centre + offset);
+            if (!threadShouldExit() && !readFailed) tryFill(centre - 1);
+
+            if (readFailed) wait(20);
+            else if (!didWork) wait(4);
         }
     }
 
