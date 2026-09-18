@@ -30,6 +30,7 @@ public:
         none,
         disabled,
         unprimed,
+        controlChanged,
         cursorDiscontinuity,
         clipChanged,
         loopModeChanged,
