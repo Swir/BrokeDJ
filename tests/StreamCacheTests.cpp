@@ -2,6 +2,7 @@
 #include "core/Engine.h"
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -15,20 +16,61 @@ void check(bool condition, const char* name) {
     if (!condition) throw std::runtime_error(name);
 }
 
-void run() {
+std::vector<float> chunkData(float value) {
+    return std::vector<float>(broke::StreamCache::chunkFrames, value);
+}
+
+void publishConstant(const std::shared_ptr<broke::StreamCache>& cache,
+                     std::int64_t chunk, float value) {
+    if (chunk < 0) return;
+    const auto start = chunk * static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+    if (start >= cache->totalFrames()) return;
+    auto left = chunkData(value);
+    auto right = chunkData(-value);
+    cache->publishChunk(chunk, left.data(), right.data(), left.size());
+}
+
+void publishWindow(const std::shared_ptr<broke::StreamCache>& cache,
+                   std::int64_t frame, int before = 1, int ahead = 4) {
+    const auto centre = frame / static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+    for (int offset = -before; offset <= ahead; ++offset) {
+        const auto chunk = centre + offset;
+        const float value = 0.15f + static_cast<float>((chunk >= 0 ? chunk : 0) % 7) * 0.01f;
+        publishConstant(cache, chunk, value);
+    }
+}
+
+void checkFinite(const std::array<std::array<float, 512>, 4>& audio, const char* name) {
+    for (const auto& channel : audio)
+        for (float sample : channel)
+            if (!std::isfinite(sample)) throw std::runtime_error(name);
+    ++checks;
+}
+
+void runBasicCacheChecks() {
     constexpr std::int64_t total = static_cast<std::int64_t>(broke::StreamCache::chunkFrames) * 3;
     auto cache = std::make_shared<broke::StreamCache>(total);
-    std::vector<float> left(broke::StreamCache::chunkFrames, 0.25f);
-    std::vector<float> right(broke::StreamCache::chunkFrames, -0.25f);
+    auto left = chunkData(0.25f);
+    auto right = chunkData(-0.25f);
 
     check(!cache->hasChunk(0), "empty cache starts unpopulated");
     check(cache->sample(0, 5000) == 0.0f, "missing chunk is silent");
     check(cache->requestedFrame() == 5000, "cache miss requests the missing region");
 
+    auto missing = cache->diagnostics(3);
+    check(missing.requestedChunk == 1, "diagnostics identify requested chunk");
+    check(!missing.requestedRegionReady, "diagnostics expose missing requested region");
+    check(missing.readyChunks == 0 && missing.inspectedChunks == 2,
+          "diagnostics bound coverage at end of track");
+
     cache->publishChunk(1, left.data(), right.data(), left.size());
     check(cache->hasChunk(1), "published chunk becomes visible");
     check(std::abs(cache->sample(0, 5000) - 0.25f) < 0.000001f, "left streamed sample is readable");
     check(std::abs(cache->sample(1, 5000) + 0.25f) < 0.000001f, "right streamed sample is readable");
+
+    auto recovered = cache->diagnostics(3);
+    check(recovered.requestedRegionReady, "diagnostics expose requested-region recovery");
+    check(recovered.readyChunks == 1, "diagnostics count resident forward chunks");
 
     broke::Engine engine;
     engine.prepare(48000.0);
@@ -53,12 +95,73 @@ void run() {
     engine.process(outputs.data(), 4, 512);
     check(cache->requestedFrame() >= static_cast<std::int64_t>(broke::StreamCache::chunkFrames) * 2,
           "engine seek requests uncached stream region");
+    check(!cache->diagnostics().requestedRegionReady,
+          "diagnostics report seek target starvation until refill");
+}
+
+void runLongTrackStress() {
+    constexpr std::int64_t sampleRate = 48000;
+    constexpr std::int64_t total = sampleRate * 60 * 90; // virtual 90-minute track, no full-track allocation
+    auto cache = std::make_shared<broke::StreamCache>(total);
+
+    broke::Engine engine;
+    engine.prepare(static_cast<double>(sampleRate));
+    auto clip = std::make_unique<broke::Clip>();
+    clip->sampleRate = static_cast<double>(sampleRate);
+    clip->frameCount = total;
+    clip->stream = cache;
+    check(engine.submit(0, std::move(clip)), "virtual long stream submits without full-track allocation");
+
+    std::array<std::array<float, 512>, 4> audio{};
+    std::array<float*, 4> outputs{};
+    for (std::size_t i = 0; i < outputs.size(); ++i) outputs[i] = audio[i].data();
+    publishWindow(cache, 0);
+    engine.process(outputs.data(), 4, 512); // adopt
+    engine.control(0).playing = true;
+
+    constexpr std::array<double, 10> seeks {0.01, 0.25, 0.50, 0.90, 0.10, 0.72, 0.33, 0.98, 0.42, 0.66};
+    for (double position : seeks) {
+        const auto target = static_cast<std::int64_t>(position * static_cast<double>(total - 1));
+        publishWindow(cache, target);
+        engine.control(0).seek = position;
+        for (int block = 0; block < 6; ++block) engine.process(outputs.data(), 4, 512);
+        checkFinite(audio, "long-track seek emitted non-finite output");
+        const auto diagnostics = cache->diagnostics(6);
+        check(diagnostics.requestedFrame >= 0 && diagnostics.requestedFrame < total,
+              "long-track request remains in bounds");
+        check(diagnostics.requestedRegionReady,
+              "preloaded seek window remains resident while rendering");
+        check(std::isfinite(engine.meter(0).position.load()),
+              "long-track playhead remains finite after repeated seek");
+    }
+
+    const auto nearEnd = total - 1024;
+    publishWindow(cache, nearEnd, 2, 2);
+    publishWindow(cache, 0, 0, 2); // interpolation after wrap needs the start resident too
+    engine.control(0).loop = true;
+    engine.control(0).seek = static_cast<double>(nearEnd) / static_cast<double>(total - 1);
+    for (int block = 0; block < 8; ++block) engine.process(outputs.data(), 4, 512);
+    checkFinite(audio, "long-track loop wrap emitted non-finite output");
+    check(engine.control(0).playing.load(), "whole-track loop keeps streamed deck playing across wrap");
+    check(engine.meter(0).position.load() < 0.2,
+          "whole-track loop wraps streamed playhead back near the start");
+
+    constexpr double missingPosition = 0.81;
+    engine.control(0).seek = missingPosition;
+    engine.process(outputs.data(), 4, 512);
+    const auto starved = cache->diagnostics(8);
+    check(!starved.requestedRegionReady, "diagnostics expose an intentionally unfilled seek region");
+    publishWindow(cache, starved.requestedFrame);
+    const auto refilled = cache->diagnostics(8);
+    check(refilled.requestedRegionReady && refilled.readyChunks >= 1,
+          "diagnostics expose refill recovery without touching the audio callback");
 }
 }
 
 int main() {
     try {
-        run();
+        runBasicCacheChecks();
+        runLongTrackStress();
         std::cout << "PASS: " << checks << " streaming-cache checks\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

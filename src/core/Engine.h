@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Swir
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -10,6 +11,14 @@
 
 namespace broke {
 inline constexpr std::size_t deckCount = 4;
+
+struct StreamCacheDiagnostics final {
+    std::int64_t requestedFrame = 0;
+    std::int64_t requestedChunk = 0;
+    std::size_t readyChunks = 0;
+    std::size_t inspectedChunks = 0;
+    bool requestedRegionReady = false;
+};
 
 // Bounded, lock-free read-ahead cache shared by a background decoder and the
 // audio callback. Cache writes may race with reads safely because sample cells
@@ -31,6 +40,25 @@ public:
     void request(std::int64_t frame) const noexcept;
     [[nodiscard]] std::int64_t requestedFrame() const noexcept {
         return requested.load(std::memory_order_relaxed);
+    }
+    // Non-audio diagnostic snapshot. It reports whether the exact transport
+    // request is resident plus bounded forward cache coverage; it does not
+    // claim that a hardware underrun occurred.
+    [[nodiscard]] StreamCacheDiagnostics diagnostics(std::size_t lookAheadChunks = 12) const noexcept {
+        StreamCacheDiagnostics result;
+        if (total <= 0) return result;
+        result.requestedFrame = requestedFrame();
+        result.requestedChunk = result.requestedFrame / static_cast<std::int64_t>(chunkFrames);
+        const auto totalChunks = (total + static_cast<std::int64_t>(chunkFrames) - 1)
+            / static_cast<std::int64_t>(chunkFrames);
+        const auto available = std::max<std::int64_t>(0, totalChunks - result.requestedChunk);
+        result.inspectedChunks = static_cast<std::size_t>(std::min<std::int64_t>(
+            std::max<std::int64_t>(1, static_cast<std::int64_t>(lookAheadChunks)), available));
+        result.requestedRegionReady = hasChunk(result.requestedChunk);
+        for (std::size_t i = 0; i < result.inspectedChunks; ++i) {
+            if (hasChunk(result.requestedChunk + static_cast<std::int64_t>(i))) ++result.readyChunks;
+        }
+        return result;
     }
 
 private:
