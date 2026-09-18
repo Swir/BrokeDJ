@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="180" viewBox="0 0 1200 180" role="img" aria-labelledby="title desc">
+<title id="title">BrokeDJ progress template — not project data</title>
+<desc id="desc">Reusable local template only. Generate live progress from docs/progress.json.</desc>
+<rect x="1" y="1" width="1198" height="178" rx="22" fill="#02050A" stroke="#62E5FF" stroke-opacity=".24"/>
+<text x="50" y="48" fill="#62E5FF" font-family="Segoe UI,Arial,sans-serif" font-size="18" font-weight="700">TEMPLATE · NOT PROJECT DATA</text>
+<text x="50" y="86" fill="#F4FAFF" font-family="Segoe UI,Arial,sans-serif" font-size="28" font-weight="800">Generate from docs/progress.json</text>
+<rect x="50" y="112" width="1100" height="16" rx="8" fill="#07111C" stroke="#62E5FF" stroke-opacity=".20"/>
+</svg>
