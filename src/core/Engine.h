@@ -44,13 +44,18 @@ public:
     [[nodiscard]] bool trySample(int channel, std::int64_t frame, float& value) const noexcept;
     [[nodiscard]] float sample(int channel, std::int64_t frame) const noexcept;
     void request(std::int64_t frame) const noexcept;
+    // Called from the audio callback only after a complete interpolation read
+    // has been classified. This avoids counting every Catmull-Rom tap as a
+    // separate starvation event while remaining lock-free.
+    void noteStarvation(std::int64_t frame) const noexcept;
+    void noteRefill() const noexcept;
     [[nodiscard]] std::int64_t requestedFrame() const noexcept {
         return requested.load(std::memory_order_relaxed);
     }
     // Non-audio diagnostic snapshot. It reports whether the exact transport
     // request is resident plus bounded forward cache coverage and lock-free
-    // read-starvation history. These counters describe cache misses/recovery,
-    // not physical audio-device underruns.
+    // read/starvation history. These counters describe cache behavior, not
+    // physical audio-device underruns.
     [[nodiscard]] StreamCacheDiagnostics diagnostics(std::size_t lookAheadChunks = 12) const noexcept {
         StreamCacheDiagnostics result;
         result.readMisses = readMisses.load(std::memory_order_relaxed);
@@ -82,7 +87,7 @@ private:
         std::unique_ptr<std::atomic<float>[]> right;
     };
     [[nodiscard]] static std::size_t slotFor(std::int64_t chunkIndex) noexcept;
-    void noteMiss(std::int64_t frame) const noexcept;
+    void noteReadMiss(std::int64_t frame) const noexcept;
     std::array<Slot, slotCount> slots;
     std::int64_t total = 0;
     mutable std::atomic<std::int64_t> requested{0};
