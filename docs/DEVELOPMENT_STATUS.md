@@ -6,10 +6,10 @@ This file is a durable engineering checkpoint, not a release announcement.
 
 - Default branch: `main`
 - Verified `main` baseline before this slice: `db7fc77fa8221f7497af0c6ebac528a3fe987109` (PR #14 merged).
+- Baseline `main` run `35370628571` completed successfully across Linux sanitizer/core checks and the Windows x64 development gate.
 - Active development branch: `feat/timestretch-source-bridge`
 - Pull request: `#15` — real `Clip` / `StreamCache` source bridge for the opt-in bounded key-lock research path.
-- Implementation commit before this documentation checkpoint: `8e417edf824e0a25d87fe97535f491242a893141`; the commit containing this status file becomes the next PR head and requires its own exact-head CI before merge.
-- Initial implementation run `35373507783` reached a green Linux ASan/UBSan build + CTest on `8e417edf...`; Windows x64 was still running when this checkpoint was written. That run is evidence for the implementation commit only, not for the later documentation head.
+- The current PR head is authoritative in GitHub/CI and is intentionally not duplicated as a mutable literal here; merge requires both Linux and Windows jobs green on that exact head.
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**.
 
 ## Verified PR #14 baseline
@@ -32,7 +32,7 @@ This file is a durable engineering checkpoint, not a release announcement.
 
 ## Validation state
 
-- PR #15 must pass exact-final-head Linux sanitizer and Windows x64 jobs after this checkpoint commit before merge.
+- PR #15 must pass exact-final-head Linux sanitizer and Windows x64 jobs before merge.
 - Required Windows coverage remains configure/build, full CTest (including decoder and all opt-in time-stretch targets), verbose audio diagnostic replay, native no-audio GUI lifecycle smoke, staging and artifact upload.
 - Shared-runner timing is diagnostic only. No physical Windows 11 audio interface, controller, reviewed music-domain listening, device latency or underrun qualification is claimed.
 - `docs/progress.json` remains unchanged at 1/10 = 10.0%; this integration infrastructure does not close M1 or M2.
