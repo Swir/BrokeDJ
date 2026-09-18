@@ -21,6 +21,22 @@ float bounded(float x, float lo, float hi, float fallback = 0.0f) noexcept {
 }
 float clean(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 
+// Allocation-free output protection with a unity-slope knee. Signals at or
+// below -0.92 dBFS (0.90 linear) pass unchanged; only the top 0.8 dB is
+// progressively compressed toward the 0.98 ceiling. This is deliberately a
+// safety curve, not a transparent look-ahead limiter or a replacement for
+// proper gain staging.
+float protectOutput(float x) noexcept {
+    x = clean(x);
+    constexpr float knee = 0.90f;
+    constexpr float ceiling = 0.98f;
+    constexpr float span = ceiling - knee;
+    const float magnitude = std::abs(x);
+    if (magnitude <= knee) return x;
+    const float shaped = knee + span * std::tanh((magnitude - knee) / span);
+    return std::copysign(std::min(shaped, ceiling), x);
+}
+
 struct ReadPoint final {
     float value = 0.0f;
     bool ready = false;
@@ -391,9 +407,9 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             const float x = clean(mix[static_cast<std::size_t>(c)] * masterSmooth);
             overload = overload || std::abs(x) > 0.98f;
             peak = std::max(peak, std::abs(x));
-            if (c < channels && output[c]) output[c][frame] = std::clamp(x, -0.98f, 0.98f);
+            if (c < channels && output[c]) output[c][frame] = protectOutput(x);
             if (channels >= 4 && output[c + 2])
-                output[c + 2][frame] = bounded(cueMix[static_cast<std::size_t>(c)], -0.98f, 0.98f);
+                output[c + 2][frame] = protectOutput(cueMix[static_cast<std::size_t>(c)]);
         }
     }
     for (std::size_t d = 0; d < deckCount; ++d) {

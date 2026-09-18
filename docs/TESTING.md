@@ -60,21 +60,36 @@ PR #9 adds two JUCE-independent CTest targets without changing production DSP:
 
 The first render-metrics run correctly failed because the step fixture was too short and had already crossed its polarity boundary before the measurement window. The fixture was corrected without weakening the audio thresholds.
 
-Implementation head `9ed8f5ae828602c3897e56ef29018ffed926f924` passed GitHub Actions run `35349145885`: Linux ASan/UBSan build plus all five core-only CTest targets succeeded; Windows Server 2022 / MSVC x64 configure/build, the full CTest matrix including decoder fixtures, native no-audio GUI lifecycle smoke, staging and artifact upload also succeeded. Documentation-only checkpoint commits after that implementation head require their own exact-final-head run before merge.
+Final PR #9 head `98d52555ea207d3e1a22eb469d79981695820299` passed GitHub Actions run `35349954270`: Linux ASan/UBSan build plus all five core-only CTest targets succeeded; Windows Server 2022 / MSVC x64 configure/build, the full CTest matrix including decoder fixtures, native no-audio GUI lifecycle smoke, staging and artifact upload also succeeded. PR #9 then merged as `90c7677dede1fc293fac31508f04ddaf8cbc9a13`.
 
 These objective checks are regression gates for the current implementation. They do **not** establish inaudibility, transparent time-stretch, true-peak limiting, device latency or professional live readiness.
 
+## Output safety and cue-routing package
+
+PR #10 replaces the final hard master/cue sample clamp with a smooth allocation-free safety curve. Samples at or below 0.90 linear pass unchanged; only the top region is progressively compressed toward the 0.98 ceiling. The master meter and overload flag still observe the pre-protection signal, so the safety stage cannot hide excessive gain.
+
+`brokedj_quality_tests` now verifies:
+
+- below-knee output remains effectively identical to the pre-protection master meter;
+- pre-protection overload remains visible while the rendered master stays finite and within the 0.98 ceiling;
+- private cue remains absent from master when channel gain is down;
+- four-channel mode keeps independent stereo cue on outputs 3/4;
+- rendering the same state to a two-channel device never folds private cue into master;
+- summed cue output is bounded by the same smooth safety curve.
+
+This is deterministic routing/DSP evidence only. The protection curve is **not** a transparent look-ahead limiter or true-peak limiter, and offline output routing tests do not replace physical two-output/four-output interface validation or reviewed listening.
+
 ## Audio quality hardening coverage
 
-`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity and control automation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
+`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
 
 ## Existing core coverage
 
-Empty silence; invalid clip/deck/device-rate rejection; stereo playback; playhead/rate/seek behavior; crossfader endpoints; cue isolation on two/four outputs; EOF; whole-track looping; clipping/finite values; three-band kill; an echo impulse; stopped replacement; retirement backpressure; concurrent publication and shutdown.
+Empty silence; invalid clip/deck/device-rate rejection; stereo playback; playhead/rate/seek behavior; crossfader endpoints; cue isolation on two/four outputs; EOF; whole-track looping; output protection/finite values; three-band kill; an echo impulse; stopped replacement; retirement backpressure; concurrent publication and shutdown.
 
 ## What automated checks do not certify
 
-Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. Catmull-Rom rate conversion is still pitch-changing resampling, not key lock/time stretch.
+Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. Catmull-Rom rate conversion is still pitch-changing resampling, not key lock/time stretch. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
 
 ## Native acceptance checklist
 
@@ -83,7 +98,8 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
 - [x] Seek/refill hardening and starvation/refill smoothing pass exact-head Linux + Windows CI and are merged.
 - [x] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
-- [x] Objective offline render metrics and callback heap-allocation contract pass Linux sanitizer and Windows x64 CI on PR #9 implementation head.
+- [x] Objective offline render metrics and callback heap-allocation contract pass exact-head Linux sanitizer and Windows x64 CI for PR #9.
+- [ ] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.
