@@ -5,44 +5,43 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`.
-- PR #19 (`feat/engine-keylock-production-hook`) merged as `b06318332264423f6bb63c9b3be3d00d90e0dc5b` after exact-final-head `7b45e143234336d198d75f135af57628dcf6d379` passed GitHub Actions run `35390608930`.
-- That exact-head gate passed Linux ASan/UBSan plus all 15 core/time-stretch CTest targets, and Windows x64 configure/build/full CTest/audio diagnostics/native no-audio GUI smoke/staging/artifact upload.
-- PR #18 had already qualified the Engine-facing time-stretch boundary and fixed the real 96 kHz prepared-capacity regression. PR #19 builds on that boundary without changing ordinary `Engine::process()` playback.
+- PR #20 (`feat/deck-keylock-selector`) merged as `971d4ea418559792cab0f00aa95025ade5d841b5` after exact-final-head `f2c3b1336d1afd4fb22a5dbc79676b9fa157b43f` passed GitHub Actions run `35396076701`.
+- That exact-head gate passed Linux ASan/UBSan with **17/17 CTest targets**, including the new selector functional and warmed realtime contracts, plus Windows x64 configure/build/full CTest/audio diagnostics/native no-audio GUI smoke/staging/artifact upload.
+- The selector is still deliberately outside ordinary `Engine::process()` and exposes no GUI control. Production playback remains the default and immediate fallback.
 - Roadmap counter remains **M0 complete; 1/10 equal-weight milestones = 10.0%**.
 
-## Verified Engine-facing key-lock lifecycle boundary
+## Verified deck-owned key-lock selector boundary
 
-The opt-in `TimeStretchEngineBridge` now has an explicit transactional off-callback staging path for the lifecycle that a future production Engine owner will need.
+PR #20 adds `DeckPlaybackSelector` above the already-qualified `TimeStretchEngineBridge`. It is the first deck-level ownership slice for eventual production key lock without changing ordinary playback.
 
-The qualified boundary now:
+The selector now:
 
-- accepts one `ControlSnapshot` containing playback rate, pitch and enable state;
-- validates the complete snapshot before changing the research path and fails closed on invalid controls;
-- disables/resets stale prefetched state, applies rate/pitch, primes the exact immutable `Clip`/cursor/loop identity and only then enables stretch;
-- intentionally keeps a bypassed snapshot unprimed so stale FIFO content cannot resume after production transport has advanced;
-- renders the existing production-style pitch-changing hybrid converter in parallel as deterministic fallback;
-- preserves existing `StreamCache` starvation/refill episode diagnostics when that fallback path encounters or recovers from missing streamed data;
-- exposes algorithm-latency-compensated audible cursor metadata while keeping hardware latency outside the claim;
-- keeps prepare/re-prime work outside the measured audio callback;
-- covers staged rate/pitch changes, bypass, invalid-control fail-close/recovery, clip/loop/cursor discontinuities, stream failure and fallback refill with deterministic fixtures;
-- retains zero heap allocation/deallocation across two separately staged realtime render windows in the warmed Engine-facing contract.
+- owns transactional off-callback prepare/stage/disarm lifecycle for one deck-level key-lock path;
+- retains the existing production-style pitch-changing converter as immediate fail-closed fallback;
+- publishes transport and algorithm-latency-compensated audible cursors separately for future deck meter/sync ownership;
+- adds a prepared 5 ms path-transition de-click when switching between fallback and stretch output;
+- never re-primes, allocates, decodes, performs I/O, logs or locks inside the measured render path;
+- fails closed on unstaged seek/cursor discontinuity, clip replacement and invalid staged controls, and requires explicit off-callback restaging before stretch can resume;
+- supports exact loop identity and explicit disarm without allowing stale prefetched stretch audio to resume;
+- exposes bounded path/fallback diagnostics for later Engine integration.
 
 ## Validation state
 
-- PR #19 exact-final-head run `35390608930` is green across Linux and Windows development gates.
-- Linux completed 15/15 CTest targets under ASan/UBSan, including both Engine-facing integration targets.
+- PR #20 exact-final-head run `35396076701` is green across Linux and Windows development gates.
+- Linux completed 17/17 CTest targets under ASan/UBSan; the selector realtime target rendered 500 warmed blocks and retained the zero-heap allocation/deallocation contract.
 - Windows x64 completed configure/build, full CTest, audio diagnostic replay, native no-audio GUI lifecycle smoke, staging and artifact upload.
 - Shared-runner timing remains diagnostic only. No physical Windows 11 audio interface, controller, reviewed music-domain listening, measured device latency or hardware-underrun qualification is claimed.
-- `docs/progress.json` remains unchanged at 1/10 = 10.0%; this lifecycle qualification does not by itself close M1 or M2.
+- `docs/progress.json` remains unchanged at 1/10 = 10.0%; this selector qualification does not close M1 or the broader M2 performance-deck milestone.
 
 ## Remaining blockers / gates
 
-1. Production `Engine::process()` still uses the current pitch-changing hybrid converter; the verified lifecycle boundary must now be owned by a deck-level production hook before a user-visible key-lock control is enabled.
-2. The production hook must prove allocation-free rendering, explicit off-callback prepare/re-prime, bounded fallback, de-clicked transitions and correct transport/meter semantics across load/seek/loop/rate/pitch changes.
-3. Algorithm-latency compensation is verified as scheduling metadata, not physical device latency or perceptual switching quality.
-4. Clean Windows 11 interactive launch, resize/import and physical two-/four-output audio-interface behavior remain manual M1 gates.
-5. Beat/tempo/key analysis, editable beat grids and the remainder of M2 remain open.
+1. Production `Engine::process()` still uses the current pitch-changing hybrid converter; the qualified selector must be connected behind an opt-in Engine/deck ownership boundary before any user-visible key-lock control exists.
+2. The first Engine hookup must preserve the existing deck mix/EQ/FX/cue semantics, publish the correct audible-vs-transport meter position and keep fallback immediate under load/seek/loop/rate/pitch changes.
+3. The selector transition is a deterministic de-click gate, not proof of transparent perceptual switching; reviewed music-domain listening remains open.
+4. Algorithm-latency compensation is scheduling metadata, not physical device latency.
+5. Clean Windows 11 interactive launch, resize/import and physical two-/four-output audio-interface behavior remain manual M1 gates.
+6. Beat/tempo/key analysis, editable beat grids, hotcues, beat loops, slip/reverse/scratch and the remainder of M2 remain open.
 
 ## Next highest-impact step
 
-Introduce the smallest deck-owned production selector around the already-qualified Engine-facing bridge, keeping ordinary playback as the default and immediate fallback. The first slice should expose no GUI control yet: it should prove off-callback lifecycle ownership plus allocation-free block rendering and transport/meter correctness under deterministic load/seek/loop/rate/pitch transition tests before the path becomes user-selectable.
+Wire the qualified selector into the smallest opt-in production Engine/deck boundary while leaving ordinary playback as the default. Keep lifecycle preparation off callback, preserve per-deck gain/EQ/FX/cue/meter behavior, add deterministic integration fixtures for load/seek/loop/rate/pitch/fallback transitions, and still expose no GUI key-lock control until that exact production path is qualified.
