@@ -76,6 +76,8 @@ std::vector<float> renderTone(double sourceRate, double deviceRate, double frequ
               "device bridge block renders");
         check(bridge.lastRenderPath() == broke::TimeStretchDeviceBridge::RenderPath::stretch,
               "primed enabled bridge selects stretch path");
+        check(bridge.lastFallbackReason() == broke::TimeStretchDeviceBridge::FallbackReason::none,
+              "successful stretch clears fallback reason");
         check(std::abs(next - fallbackNext) < 1.0e-6,
               "audible cursor follows device duration and playback rate");
         cursor = next;
@@ -85,7 +87,9 @@ std::vector<float> renderTone(double sourceRate, double deviceRate, double frequ
 }
 
 void run() {
-    broke::TimeStretchDeviceBridge invalid;
+    using Bridge = broke::TimeStretchDeviceBridge;
+
+    Bridge invalid;
     check(!invalid.prepare(44100.0, 0.0, 1024), "invalid device rate rejected");
     check(!invalid.prepare(384000.0, 48000.0, 1024),
           "unqualified extreme source/device ratio rejected");
@@ -109,7 +113,7 @@ void run() {
 
     constexpr int frames = 1024;
     auto clip = makeTone(48000.0, 330.0, 8);
-    broke::TimeStretchDeviceBridge bridge;
+    Bridge bridge;
     check(bridge.prepare(48000.0, 48000.0, 4096), "fallback fixture prepares");
     check(bridge.setPlaybackRate(1.0), "fallback fixture neutral rate accepted");
     check(bridge.setPitchSemitones(0.0f), "fallback fixture neutral pitch accepted");
@@ -134,8 +138,10 @@ void run() {
                         fallbackLeft.data(), fallbackRight.data(), fallbackNext,
                         left.data(), right.data(), frames, next),
           "explicit bypass renders supplied fallback");
-    check(bridge.lastRenderPath() == broke::TimeStretchDeviceBridge::RenderPath::fallback,
+    check(bridge.lastRenderPath() == Bridge::RenderPath::fallback,
           "disabled bridge reports fallback path");
+    check(bridge.lastFallbackReason() == Bridge::FallbackReason::disabled,
+          "disabled bridge exposes deterministic fallback reason");
     check(next == fallbackNext, "fallback path preserves production transport decision");
     check(std::abs(left.back() - fallbackLeft.back()) < 1.0e-6f
               && std::abs(right.back() - fallbackRight.back()) < 1.0e-6f,
@@ -150,10 +156,99 @@ void run() {
                         fallbackLeft.data(), fallbackRight.data(), discontinuousFallback,
                         left.data(), right.data(), frames, next),
           "unprimed/discontinuous enable fails safely to production path");
-    check(bridge.lastRenderPath() == broke::TimeStretchDeviceBridge::RenderPath::fallback,
-          "discontinuity never emits stale stretch FIFO");
-    check(bridge.needsPrime(), "discontinuity requires explicit re-prime before stretch resumes");
-    check(next == discontinuousFallback, "discontinuity fallback preserves caller transport");
+    check(bridge.lastRenderPath() == Bridge::RenderPath::fallback,
+          "unprimed enable never emits stale stretch FIFO");
+    check(bridge.needsPrime(), "unprimed enable requires explicit re-prime before stretch resumes");
+    check(next == discontinuousFallback, "unprimed fallback preserves caller transport");
+
+    // Future Engine snapshots will commonly re-apply unchanged controls every
+    // callback. Identical values must be idempotent; actual changes must fail
+    // closed until an off-callback prime rebuilds processor history.
+    Bridge identity;
+    auto identityClip = makeTone(48000.0, 220.0, 8);
+    auto replacementClip = makeTone(48000.0, 550.0, 8);
+    check(identity.prepare(48000.0, 48000.0, 4096), "identity fixture prepares");
+    check(identity.setPlaybackRate(1.0), "identity fixture rate accepted");
+    check(identity.setPitchSemitones(0.0f), "identity fixture pitch accepted");
+    identity.setEnabled(true);
+    double identityCursor = 64000.5;
+    check(identity.prime(identityClip, identityCursor, false), "identity fixture primes");
+    check(identity.setPlaybackRate(1.0), "identical playback rate reapply accepted");
+    check(identity.setPitchSemitones(0.0f), "identical pitch reapply accepted");
+    check(identity.primed() && !identity.needsPrime(),
+          "identical controls do not invalidate prepared history");
+
+    check(identity.setPitchSemitones(2.0f), "changed pitch accepted");
+    check(identity.needsPrime(), "changed pitch invalidates prefetched stretch audio");
+    check(identity.lastFallbackReason() == Bridge::FallbackReason::controlChanged,
+          "changed pitch exposes control-change fallback reason");
+    const double controlFallback = identityCursor + 321.0;
+    check(identity.render(identityClip, identityCursor, false,
+                          fallbackLeft.data(), fallbackRight.data(), controlFallback,
+                          left.data(), right.data(), frames, next),
+          "changed pitch fails safely to production path");
+    check(identity.lastRenderPath() == Bridge::RenderPath::fallback && next == controlFallback,
+          "control-change fallback preserves production transport");
+
+    check(identity.setPitchSemitones(0.0f), "identity fixture restores neutral pitch");
+    check(identity.prime(identityClip, identityCursor, false), "identity fixture re-primes");
+    const double stretchAdvance = identityCursor + static_cast<double>(frames);
+    check(identity.render(identityClip, identityCursor, false,
+                          fallbackLeft.data(), fallbackRight.data(), stretchAdvance,
+                          left.data(), right.data(), frames, next),
+          "identity fixture establishes stretch output");
+    check(identity.lastRenderPath() == Bridge::RenderPath::stretch,
+          "identity fixture reaches stretch path");
+    identityCursor = next;
+
+    const double replacementFallback = identityCursor + 333.0;
+    check(identity.render(replacementClip, identityCursor, false,
+                          fallbackLeft.data(), fallbackRight.data(), replacementFallback,
+                          left.data(), right.data(), frames, next),
+          "clip replacement fails safely to production path");
+    check(identity.lastRenderPath() == Bridge::RenderPath::fallback
+              && identity.lastFallbackReason() == Bridge::FallbackReason::clipChanged,
+          "clip replacement cannot consume stale FIFO from previous clip");
+    check(identity.needsPrime() && next == replacementFallback,
+          "clip replacement requires re-prime and preserves production transport");
+
+    check(identity.prime(identityClip, identityCursor, false), "loop fixture re-primes");
+    const double loopFallback = identityCursor + 444.0;
+    check(identity.render(identityClip, identityCursor, true,
+                          fallbackLeft.data(), fallbackRight.data(), loopFallback,
+                          left.data(), right.data(), frames, next),
+          "loop-mode change fails safely to production path");
+    check(identity.lastRenderPath() == Bridge::RenderPath::fallback
+              && identity.lastFallbackReason() == Bridge::FallbackReason::loopModeChanged,
+          "loop-mode change cannot consume history prepared for another transport mode");
+    check(identity.needsPrime() && next == loopFallback,
+          "loop-mode change requires re-prime and preserves production transport");
+
+    check(identity.prime(identityClip, identityCursor, false), "cursor fixture re-primes");
+    const double jumpedCursor = identityCursor + 500.0;
+    const double jumpFallback = jumpedCursor + 555.0;
+    check(identity.render(identityClip, jumpedCursor, false,
+                          fallbackLeft.data(), fallbackRight.data(), jumpFallback,
+                          left.data(), right.data(), frames, next),
+          "cursor jump fails safely to production path");
+    check(identity.lastRenderPath() == Bridge::RenderPath::fallback
+              && identity.lastFallbackReason() == Bridge::FallbackReason::cursorDiscontinuity,
+          "cursor discontinuity cannot consume stale prefetched stretch data");
+    check(identity.needsPrime() && next == jumpFallback,
+          "cursor discontinuity requires re-prime and preserves production transport");
+
+    Bridge sourceMismatch;
+    auto wrongRateClip = makeTone(44100.0, 440.0, 8);
+    check(sourceMismatch.prepare(48000.0, 48000.0, 4096), "rate mismatch fixture prepares");
+    sourceMismatch.setEnabled(true);
+    const double mismatchFallback = 1000.0;
+    check(sourceMismatch.render(wrongRateClip, 0.0, false,
+                                fallbackLeft.data(), fallbackRight.data(), mismatchFallback,
+                                left.data(), right.data(), frames, next),
+          "source-rate mismatch falls back without entering research path");
+    check(sourceMismatch.lastFallbackReason() == Bridge::FallbackReason::sourceRateMismatch,
+          "source-rate mismatch is diagnosable");
+    check(next == mismatchFallback, "source-rate mismatch preserves production transport");
 
     check(bridge.reportedDeviceOutputLatencyFrames() > 0,
           "device bridge exposes deterministic algorithm-latency metadata");

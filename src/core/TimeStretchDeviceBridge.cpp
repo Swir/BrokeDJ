@@ -19,6 +19,12 @@ constexpr int maxDeviceBlock = 8192;
 float finiteSample(float value) noexcept {
     return std::isfinite(value) ? value : 0.0f;
 }
+
+bool compatibleSource(const Clip& clip, double sourceRate) noexcept {
+    if (!clip.valid() || !std::isfinite(clip.sampleRate) || !std::isfinite(sourceRate)) return false;
+    const double tolerance = std::max(1.0e-6, sourceRate * 1.0e-9);
+    return std::abs(clip.sampleRate - sourceRate) <= tolerance;
+}
 } // namespace
 
 bool TimeStretchDeviceBridge::prepare(double newSourceSampleRate, double newDeviceSampleRate,
@@ -26,7 +32,10 @@ bool TimeStretchDeviceBridge::prepare(double newSourceSampleRate, double newDevi
                                       bool splitComputation) {
     ready = false;
     primedForClip = false;
+    primedClip = nullptr;
+    primedLoop = false;
     rePrimeRequired = true;
+    fallbackReason = FallbackReason::unprimed;
     if (!std::isfinite(newSourceSampleRate) || newSourceSampleRate < minRate
         || newSourceSampleRate > maxSourceRate || !std::isfinite(newDeviceSampleRate)
         || newDeviceSampleRate < minRate || newDeviceSampleRate > maxDeviceRate
@@ -65,6 +74,7 @@ bool TimeStretchDeviceBridge::prepare(double newSourceSampleRate, double newDevi
 
     transitionFrames = std::max(1, static_cast<int>(std::lround(deviceRate * 0.005)));
     playbackRate = 1.0;
+    pitchSemitones = 0.0f;
     enabled = false;
     lastPath = RenderPath::fallback;
     lastOutput.fill(0.0f);
@@ -82,30 +92,63 @@ void TimeStretchDeviceBridge::reset() noexcept {
     lastOutput.fill(0.0f);
     transitionFrom.fill(0.0f);
     lastPath = RenderPath::fallback;
+    primedClip = nullptr;
     primedForClip = false;
+    primedLoop = false;
     rePrimeRequired = true;
+    fallbackReason = enabled ? FallbackReason::unprimed : FallbackReason::disabled;
     clearFifo();
+}
+
+void TimeStretchDeviceBridge::invalidatePrime(FallbackReason reason) noexcept {
+    sourceBridge.reset();
+    primedClip = nullptr;
+    primedForClip = false;
+    primedLoop = false;
+    rePrimeRequired = true;
+    fallbackReason = reason;
+    clearFifo();
+}
+
+void TimeStretchDeviceBridge::setEnabled(bool shouldEnable) noexcept {
+    if (!shouldEnable && enabled) {
+        // A bypassed device block advances the production transport while the
+        // research FIFO stops. Require explicit off-callback re-prime before
+        // re-enabling so stale prefetched stretch audio cannot leak.
+        invalidatePrime(FallbackReason::disabled);
+    }
+    enabled = shouldEnable;
+    if (!enabled) fallbackReason = FallbackReason::disabled;
+    else if (!primedForClip && fallbackReason == FallbackReason::disabled)
+        fallbackReason = FallbackReason::unprimed;
 }
 
 bool TimeStretchDeviceBridge::setPlaybackRate(double newPlaybackRate) noexcept {
     if (!ready || !sourceBridge.setPlaybackRate(newPlaybackRate)) return false;
-    if (std::abs(newPlaybackRate - playbackRate) > 1.0e-12 && primedForClip) {
+    const bool changed = std::abs(newPlaybackRate - playbackRate) > 1.0e-12;
+    playbackRate = newPlaybackRate;
+    if (changed && primedForClip) {
         // The FIFO may already contain processor output generated at the old
         // ratio. Fail closed until the caller primes at the current transport
         // position instead of emitting stale prefetched audio.
-        primedForClip = false;
-        rePrimeRequired = true;
+        invalidatePrime(FallbackReason::controlChanged);
+    } else if (changed && enabled) {
+        fallbackReason = FallbackReason::controlChanged;
     }
-    playbackRate = newPlaybackRate;
     return true;
 }
 
 bool TimeStretchDeviceBridge::setPitchSemitones(float semitones) noexcept {
     if (!ready || !sourceBridge.setPitchSemitones(semitones)) return false;
-    if (primedForClip) {
-        // Pitch changes can also invalidate already-prefetched processor output.
-        primedForClip = false;
-        rePrimeRequired = true;
+    const bool changed = std::abs(semitones - pitchSemitones) > 1.0e-6f;
+    pitchSemitones = semitones;
+    if (changed && primedForClip) {
+        // Pitch changes can invalidate already-prefetched processor output.
+        // Re-applying an identical value is intentionally idempotent so an
+        // Engine-facing control snapshot can be pushed without needless gaps.
+        invalidatePrime(FallbackReason::controlChanged);
+    } else if (changed && enabled) {
+        fallbackReason = FallbackReason::controlChanged;
     }
     return true;
 }
@@ -152,15 +195,31 @@ void TimeStretchDeviceBridge::clearFifo() noexcept {
 }
 
 bool TimeStretchDeviceBridge::prime(const Clip& clip, double cursor, bool loop) noexcept {
+    primedClip = nullptr;
     primedForClip = false;
+    primedLoop = false;
     rePrimeRequired = true;
     transitionRemaining = 0;
-    if (!ready || !std::isfinite(cursor) || !sourceBridge.prime(clip, cursor, loop)) return false;
+    if (!ready || !std::isfinite(cursor)) {
+        fallbackReason = FallbackReason::unprimed;
+        return false;
+    }
+    if (!compatibleSource(clip, sourceRate)) {
+        fallbackReason = FallbackReason::sourceRateMismatch;
+        return false;
+    }
+    if (!sourceBridge.prime(clip, cursor, loop)) {
+        fallbackReason = FallbackReason::stretchFailure;
+        return false;
+    }
     sourceCursor = cursor;
     audibleCursor = cursor;
     clearFifo();
+    primedClip = &clip;
+    primedLoop = loop;
     primedForClip = true;
     rePrimeRequired = false;
+    fallbackReason = FallbackReason::none;
     return true;
 }
 
@@ -301,11 +360,18 @@ bool TimeStretchDeviceBridge::render(const Clip& clip, double cursor, bool loop,
     }
 
     constexpr double cursorTolerance = 1.0e-5;
-    if (primedForClip && std::abs(cursor - audibleCursor) > cursorTolerance) {
-        primedForClip = false;
-        rePrimeRequired = true;
-        sourceBridge.reset();
-        clearFifo();
+    if (primedForClip) {
+        if (&clip != primedClip) {
+            invalidatePrime(FallbackReason::clipChanged);
+        } else if (loop != primedLoop) {
+            invalidatePrime(FallbackReason::loopModeChanged);
+        } else if (!compatibleSource(clip, sourceRate)) {
+            invalidatePrime(FallbackReason::sourceRateMismatch);
+        } else if (std::abs(cursor - audibleCursor) > cursorTolerance) {
+            invalidatePrime(FallbackReason::cursorDiscontinuity);
+        }
+    } else if (enabled && !compatibleSource(clip, sourceRate)) {
+        fallbackReason = FallbackReason::sourceRateMismatch;
     }
 
     RenderPath target = RenderPath::fallback;
@@ -314,15 +380,17 @@ bool TimeStretchDeviceBridge::render(const Clip& clip, double cursor, bool loop,
         stretchRendered = renderStretchBlock(clip, loop, outputLeft, outputRight, deviceFrames);
         if (stretchRendered) {
             target = RenderPath::stretch;
+            fallbackReason = FallbackReason::none;
         } else {
-            primedForClip = false;
-            rePrimeRequired = true;
-            sourceBridge.reset();
-            clearFifo();
+            invalidatePrime(FallbackReason::stretchFailure);
         }
     }
 
-    if (!stretchRendered) renderFallback(fallbackLeft, fallbackRight, outputLeft, outputRight, deviceFrames);
+    if (!stretchRendered) {
+        renderFallback(fallbackLeft, fallbackRight, outputLeft, outputRight, deviceFrames);
+        if (!enabled) fallbackReason = FallbackReason::disabled;
+        else if (fallbackReason == FallbackReason::none) fallbackReason = FallbackReason::unprimed;
+    }
     if (target != lastPath) {
         transitionRemaining = transitionFrames;
         transitionFrom = lastOutput;

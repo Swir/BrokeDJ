@@ -94,11 +94,21 @@ void run() {
     const auto started = std::chrono::steady_clock::now();
     trackHeap.store(true, std::memory_order_seq_cst);
     for (int block = 0; block < measuredBlocks; ++block) {
+        // Model a future Engine callback pushing an unchanged atomic control
+        // snapshot every block. Re-applying equal values must remain bounded,
+        // allocation-free and must not invalidate already prepared history.
+        if (!bridge.setPlaybackRate(playbackRate)
+            || !bridge.setPitchSemitones(0.0f)
+            || bridge.needsPrime()) {
+            trackHeap.store(false, std::memory_order_seq_cst);
+            throw std::runtime_error("idempotent realtime control snapshot keeps bridge primed");
+        }
         double next = cursor;
         if (!bridge.render(clip, cursor, false,
                            fallbackLeft.data(), fallbackRight.data(), cursor + advance,
                            left.data(), right.data(), blockFrames, next)
-            || bridge.lastRenderPath() != broke::TimeStretchDeviceBridge::RenderPath::stretch) {
+            || bridge.lastRenderPath() != broke::TimeStretchDeviceBridge::RenderPath::stretch
+            || bridge.lastFallbackReason() != broke::TimeStretchDeviceBridge::FallbackReason::none) {
             trackHeap.store(false, std::memory_order_seq_cst);
             throw std::runtime_error("device bridge measured block stays on stretch path");
         }
@@ -110,9 +120,9 @@ void run() {
     const auto observedAllocations = allocations.load(std::memory_order_relaxed);
     const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
     check(observedAllocations == 0,
-          "device bridge render performs no heap allocation after prepare/prime/warmup");
+          "device bridge render/control snapshot performs no heap allocation after prepare/prime/warmup");
     check(observedDeallocations == 0,
-          "device bridge render performs no heap deallocation after prepare/prime/warmup");
+          "device bridge render/control snapshot performs no heap deallocation after prepare/prime/warmup");
     check(std::all_of(left.begin(), left.end(), [](float value) { return std::isfinite(value); }),
           "device bridge left output remains finite");
     check(std::all_of(right.begin(), right.end(), [](float value) { return std::isfinite(value); }),
