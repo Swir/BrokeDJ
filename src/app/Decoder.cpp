@@ -9,6 +9,7 @@
 namespace {
 constexpr int previewBuckets = 512;
 constexpr int previewWindow = 2048;
+constexpr int previewSequentialBlock = 65536;
 constexpr int primeChunks = 8;
 constexpr int readAheadChunks = 12;
 
@@ -42,6 +43,37 @@ bool buildSparsePeaks(juce::AudioFormatReader& reader, const std::atomic<bool>& 
             peak = std::max(peak, std::min(1.0f, std::max(std::abs(left), std::abs(right))));
         }
         peaks[static_cast<std::size_t>(bucket)] = peak;
+    }
+    return true;
+}
+
+bool buildSequentialPeaks(juce::AudioFormatReader& reader, const std::atomic<bool>& cancelled,
+                          std::vector<float>& peaks) {
+    peaks.assign(previewBuckets, 0.0f);
+    juce::AudioBuffer<float> scratch(2, previewSequentialBlock);
+    const auto totalFrames = reader.lengthInSamples;
+    for (juce::int64 offset = 0; offset < totalFrames;) {
+        if (cancelled.load()) return false;
+        const int count = static_cast<int>(std::min<juce::int64>(
+            previewSequentialBlock, totalFrames - offset));
+        scratch.clear();
+        float* channels[] {scratch.getWritePointer(0), scratch.getWritePointer(1)};
+        if (!reader.read(channels, 2, offset, count)) return false;
+        if (reader.numChannels == 1)
+            std::copy_n(scratch.getReadPointer(0), count, scratch.getWritePointer(1));
+
+        for (int i = 0; i < count; ++i) {
+            const auto frame = offset + static_cast<juce::int64>(i);
+            const auto bucket = std::min<std::int64_t>(
+                previewBuckets - 1,
+                frame * static_cast<juce::int64>(previewBuckets) / totalFrames);
+            const float left = std::isfinite(channels[0][i]) ? channels[0][i] : 0.0f;
+            const float right = std::isfinite(channels[1][i]) ? channels[1][i] : 0.0f;
+            peaks[static_cast<std::size_t>(bucket)] = std::max(
+                peaks[static_cast<std::size_t>(bucket)],
+                std::min(1.0f, std::max(std::abs(left), std::abs(right))));
+        }
+        offset += count;
     }
     return true;
 }
@@ -178,19 +210,32 @@ DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancel
 
         if (useStreaming) {
             if (!buildSparsePeaks(*reader, cancelled, result.peaks)) {
-                result.error = cancelled.load() ? "Import cancelled." : "Read error while building waveform preview.";
-                return result;
+                if (cancelled.load()) {
+                    result.error = "Import cancelled.";
+                    return result;
+                }
+
+                // Some compressed readers cannot reliably satisfy hundreds of tiny,
+                // non-monotonic preview seeks. Fall back to one bounded-memory
+                // sequential pass on a fresh decoder instead of rejecting a track
+                // that is otherwise playable. This work remains off the audio thread.
+                reader.reset(formats.createReaderFor(file));
+                if (!reader || !validReader(*reader)
+                    || !buildSequentialPeaks(*reader, cancelled, result.peaks)) {
+                    result.error = cancelled.load()
+                        ? "Import cancelled."
+                        : "Read error while building waveform preview.";
+                    return result;
+                }
             }
             if (cancelled.load()) {
                 result.error = "Import cancelled.";
                 return result;
             }
 
-            // Waveform extraction deliberately performs many non-monotonic seeks.
-            // Some compressed-format readers keep decoder state that is not a safe
-            // starting point for a subsequent rewind/prime. Reopen the same file so
-            // streaming begins from a fresh decoder instance independent of preview
-            // generation. This also isolates future preview changes from playback.
+            // Preview extraction may leave a compressed decoder at an arbitrary
+            // position/state. Playback always gets a fresh reader, isolating cache
+            // priming and future read-ahead from waveform-generation behavior.
             reader.reset(formats.createReaderFor(file));
             if (!reader || !validReader(*reader)) {
                 result.error = "Cannot reopen the audio decoder for streaming playback.";
