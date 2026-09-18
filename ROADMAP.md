@@ -13,7 +13,7 @@ The initial milestone is complete only for the repository, testable core and doc
 |---|---|---|---|
 | M0 | Repository and audio foundation | C++20 core, reproducible test command, concurrent clip handoff tests, source layout, build definitions, license/branding and explicit limitations | Complete; local core validation recorded |
 | M1 | Native development build | Windows x64 build passes; clean-machine launch; resize and import checks; device switching and four-output cue verified | Windows CI build + headless GUI smoke pass; manual clean-machine/hardware validation pending |
-| M2 | Performance decks | Validated beat/tempo/key analysis, editable grids including tempo changes, key lock, hotcues, beat loops, slip/reverse/scratch and de-clicked transitions | Transport/seek de-clicking and improved rate interpolation implemented in development; milestone still open |
+| M2 | Performance decks | Validated beat/tempo/key analysis, editable grids including tempo changes, key lock, hotcues, beat loops, slip/reverse/scratch and de-clicked transitions | Play/pause/seek/loop-wrap de-clicking, smoothed rate changes and improved interpolation implemented in development; milestone still open |
 | M3 | Professional mixer and recording | Configurable routing, gain staging, EQ curves, fader laws, limiter evaluation, microphone/ducking and dropout-aware set recording | Basic source only; full milestone open |
 | M4 | Music library and sessions | SQLite migrations, search/tags/playlists/history, duplicate and moved-file handling, waveform/analysis cache, session persistence and tested backup restore | Planned |
 | M5 | Effects and VST3 | Distinct effect inventory, chains/sends, presets, XY/macros, automation smoothing, scanner isolation, license review and a tested compatibility matrix | Two built-in effects; parameter smoothing added; milestone open |
@@ -30,7 +30,7 @@ The initial milestone is complete only for the repository, testable core and doc
 
 ## Audio quality hardening in progress
 
-The original linear rate converter has been replaced in development with allocation-free four-point Catmull-Rom interpolation. Play/pause/seek discontinuities now use short transitions, and deck EQ/echo/drive parameters are smoothed instead of applying full-scale jumps sample-to-sample. These changes reduce obvious development-engine artifacts but do **not** prove transparent DSP, key lock, zero clicks on every file/device, or professional live readiness.
+The original linear rate converter has been replaced in development with allocation-free four-point Catmull-Rom interpolation. Play/pause/seek and whole-track loop wraparound now use short de-click transitions. Playback-rate targets, headphone cue switching/level and deck EQ/echo/drive controls are smoothed rather than applying abrupt sample-to-sample jumps. These changes reduce obvious development-engine artifacts but do **not** prove transparent DSP, key lock, zero clicks on every file/device, or professional live readiness.
 
 ## Effects scope
 
