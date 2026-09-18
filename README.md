@@ -28,12 +28,12 @@ Windows 11 x64 first · Native C++ audio · No subscription, ads, or mandatory a
 | Mixer | Channel gain; basic three-band EQ; equal-power crossfader; master gain | A/C are assigned left, B/D right. Not yet a configurable professional mixer. |
 | Effects | Fixed 250 ms feedback echo and saturation per deck | Two effects, not 40 presets disguised as effects. Beat sync and effect chains are pending. |
 | Cue | Pre-fader, post-EQ/FX stereo headphone bus | Outputs 3/4 only. Two-output devices do not receive cue mixed into master. Physical hardware validation pending. |
-| Import | Background decoding of local WAV, AIFF, FLAC, OGG and MP3 through JUCE | Mono/stereo only; decoded stereo remains capped at 256 MiB per track. Streaming/read-ahead is still pending. |
+| Import | Background import of local WAV, AIFF, FLAC, OGG and MP3 through JUCE. Small tracks use the in-memory path; larger tracks use a bounded background read-ahead cache with a sparse waveform preview. | Mono/stereo, 8–384 kHz. The old fixed 256 MiB decoded-whole-track ceiling is retired for the streaming path, but long-file seek/loop/slow-storage underrun behavior still needs stress and listening validation. |
 | Interface | Four deck panels, waveforms, drag/drop, audio settings and clickable `by Swir` credit | Native JUCE source; Windows CI builds and headless GUI lifecycle smoke tests, while clean-machine/manual usability qualification remains separate. |
 | Language | Polish selected for a Polish system; otherwise English | Decoder diagnostics currently fall back to English. No global translation claim. |
-| Reliability | Immutable clip handoff; deferred destruction; bounded output; shutdown cancellation; smoothed control automation | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
+| Reliability | Immutable clip handoff; deferred destruction; bounded output; shutdown cancellation; smoothed control automation; bounded stream cache for large tracks | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
 
-The output clamp is last-resort **sample clipping protection**, not a transparent limiter. Lower gain when the clipping warning appears. The waveform shows decoded amplitude, not detected beats or musical phrases. The new interpolation path improves development playback over the original linear reference, but it is **not** a time-stretch/key-lock engine.
+The output clamp is last-resort **sample clipping protection**, not a transparent limiter. Lower gain when the clipping warning appears. The waveform is an amplitude preview, not detected beats or musical phrases. Catmull-Rom interpolation improves development playback over the original linear reference, but it is **not** a time-stretch/key-lock engine. The large-track cache prevents full-file RAM growth; it does not yet prove dropout-free playback on every disk, codec or seek pattern.
 
 ## Project status
 
@@ -58,6 +58,7 @@ Source of truth: [`docs/progress.json`](docs/progress.json). This number is not 
 | Four native decks | Independent stereo playback engines and deck controls |
 | Safer transport | Short transition crossfades around play/pause/seek discontinuities instead of abrupt jumps |
 | Improved rate conversion | Four-point Catmull-Rom interpolation for variable-rate playback while key lock remains a future milestone |
+| Bounded long-track playback | Large local tracks use a fixed-size, lock-free sample cache filled by a background reader instead of decoding the entire track into RAM |
 | Independent headphone cue | Dedicated logical outputs 3/4 when the selected interface provides four output channels |
 | Real-time-safe core direction | No disk/network I/O, decoding, allocation or blocking mutex in the audio callback |
 | Honest validation | Core, Windows build, GUI smoke and hardware/manual gates are reported separately |
@@ -101,7 +102,7 @@ ctest --test-dir build/core --output-on-failure
 
 ## First session
 
-Open **Audio settings** and select your output device. Start with low hardware volume. Load a file onto a deck or drop it onto its panel, wait for decoding, then press PLAY. Click its waveform to seek. CUE 0 pauses and returns to the start; LOOP repeats the **whole track**. Turn ECHO or DRIVE to hear the two initial effects.
+Open **Audio settings** and select your output device. Start with low hardware volume. Load a file onto a deck or drop it onto its panel, wait for import/cache preparation, then press PLAY. Click its waveform to seek. CUE 0 pauses and returns to the start; LOOP repeats the **whole track**. Turn ECHO or DRIVE to hear the two initial effects.
 
 The crossfader sends A/C to the left side and B/D to the right. For independent stereo headphone cue, enable four output channels and connect an appropriate interface: master goes to logical outputs 1/2, headphones to 3/4. A normal two-channel output cannot provide two independent stereo pairs.
 
@@ -115,7 +116,8 @@ There is no manually qualified release yet. Successful GitHub Actions builds pro
 |---|---|
 | No sound | Open audio settings; verify the selected device, channel gain, master and crossfader. Inspect the master status. |
 | No headphone cue | Enable four outputs. Cue is deliberately not folded into a two-channel master. |
-| Track will not load | Check codec, corruption, channel count and the 256 MiB decoded limit. The old audio is retained on failure. |
+| Track will not load | Check codec, corruption, mono/stereo channel count and 8–384 kHz sample rate. The previous working audio is retained on import failure. |
+| Gap after a long-file seek | The bounded cache requests the new region asynchronously. Read-ahead/underrun recovery and loop-edge stress testing are still active hardening work. |
 | Tempo affects pitch | Expected in this build; high-quality key lock/time-stretch is a future gate. |
 | Build cannot fetch JUCE | Check Git/proxy/network configuration or use an offline checkout as described in the build guide. |
 | Audible discontinuity remains | Record exact file/rate/action details. Transport smoothing reduces abrupt changes but hardware/codec stress validation is still ongoing. |
@@ -126,9 +128,9 @@ Runtime diagnostics use JUCE's application log directory under `BrokeDJ/BrokeDJ.
 
 | Location | Responsibility |
 |---|---|
-| `src/core/` | JUCE-independent engine, controls, meters and immutable clip handoff |
-| `src/app/` | Native interface, decoder workers and device integration |
-| `tests/` | Deterministic core, quality-transition and concurrent handoff tests |
+| `src/core/` | JUCE-independent engine, controls, meters, immutable clip handoff and bounded stream cache |
+| `src/app/` | Native interface, decoder/read-ahead workers and device integration |
+| `tests/` | Deterministic core, quality-transition, streaming-cache and concurrent handoff tests |
 | `assets/readme/` | README PRO hero and generated SVG-only progress visuals |
 | `docs/` | Architecture, build instructions, validation and progress evidence |
 | `.github/workflows/` | Windows build, core tests and development artifact packaging |
@@ -139,7 +141,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/ARCHITECTURE.md`](docs/ARCHITE
 
 ## 🔎 Search Keywords
 
-`open source DJ software` • `Windows 11 DJ mixer` • `C++ JUCE audio workstation` • `four deck DJ software` • `native DJ application` • `DJ headphone cue` • `DJ audio effects` • `real time audio C++` • `open source music mixing` • `DJ software Windows x64` • `CMake audio application` • `BrokeDJ` • `Swir DJ software`
+`open source DJ software` • `Windows 11 DJ mixer` • `C++ JUCE audio workstation` • `four deck DJ software` • `native DJ application` • `DJ headphone cue` • `DJ audio effects` • `real time audio C++` • `bounded audio streaming` • `DJ read ahead cache` • `open source music mixing` • `DJ software Windows x64` • `CMake audio application` • `BrokeDJ` • `Swir DJ software`
 
 <div align="center">
 

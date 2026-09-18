@@ -4,18 +4,25 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 
 ## Unreleased
 
+### Long-track playback foundation
+
+- Added a fixed-capacity lock-free stream cache to the JUCE-independent core.
+- Added a background JUCE read-ahead source for larger supported local tracks while retaining the low-overhead in-memory path for small files.
+- Removed the previous fixed 256 MiB decoded-whole-track rejection from the large-track streaming path.
+- Added bounded sparse waveform preview generation so long tracks do not require a full decoded waveform allocation.
+- Added deterministic cache miss/publication/stereo/render/seek-request tests as a separate CTest target.
+- Kept file I/O and decoding outside the audio callback; a missing cache region returns bounded silence and requests background refill rather than blocking.
+
 ### Audio quality hardening
 
 - Replaced the original linear variable-rate interpolation path with an allocation-free four-point Catmull-Rom interpolator.
 - Added short de-click transitions around play/pause/seek discontinuities and whole-track loop wraparound.
 - Added per-sample smoothing for playback-rate changes, headphone cue switching/level, EQ, echo and drive controls.
-- Added deterministic quality checks for loop continuity, cue fade-out and rate-slew convergence alongside the existing transport/control tests.
-- Added a separate deterministic CTest quality suite for transport transitions and control automation.
-- Migrated roadmap presentation to the SWIR SVG-only progress system and retired the previous standalone progress asset.
-- Migrated README presentation to SWIR README PRO v2 while preserving BrokeDJ-specific branding and limitations.
+- Added deterministic quality checks for loop continuity, cue fade-out and rate-slew convergence.
+- Migrated roadmap presentation to the SWIR SVG-only progress system and README presentation to SWIR README PRO v2.
 
 ### Validation status
 
-- Previous merged audio-quality package `977ad6a16de0837666208d6b8b1a9459191a7f17` passed the repository's Linux sanitizer/core checks and Windows x64 development build, core/quality tests and GUI lifecycle smoke workflow on 2026-09-18.
-- The new transport-continuity changes passed local JUCE-independent C++20 builds plus AddressSanitizer/UndefinedBehaviorSanitizer runs: **439 core checks and 18 quality checks**.
-- The new changes still require exact-head pull-request CI before merge and do not close M1 hardware/manual validation.
+- Merged-main checkpoint `cc5b43ebbd323d2119c54ff2fea8d8db9fab0199` passed Linux sanitizer/core checks and Windows x64 development build, core/quality tests and GUI lifecycle smoke in run `35331491062`.
+- The bounded streaming core compiled locally as C++20 and its new deterministic suite passed **11/11 stream-cache checks** before PR publication.
+- PR #4 still requires exact-final-head repository CI before merge and does not close M1 hardware/manual validation or M2.
