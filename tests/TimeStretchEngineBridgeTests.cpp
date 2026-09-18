@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <stdexcept>
@@ -210,6 +211,127 @@ void runTransitionAndLatencyMatrix() {
           "cursor discontinuity is diagnosable");
 }
 
+void runTransactionalControlStaging() {
+    using Integration = broke::TimeStretchEngineBridge;
+    using Snapshot = Integration::ControlSnapshot;
+    using Path = Integration::RenderPath;
+    using Reason = Integration::FallbackReason;
+
+    constexpr double sampleRate = 48000.0;
+    constexpr int frames = 512;
+    auto clip = makeTone(sampleRate, 280.0, 20);
+    Integration integration;
+    check(integration.prepare(sampleRate, sampleRate, 2048, 4.0),
+          "transactional fixture prepares");
+
+    double cursor = 5000.5;
+    Snapshot first{1.25, 3.0f, true};
+    check(integration.configureAndPrime(clip, cursor, false, first),
+          "transactional control snapshot stages and primes");
+    check(std::abs(integration.playbackRateValue() - first.playbackRate) < 1.0e-12,
+          "transactional snapshot publishes playback rate");
+    check(std::abs(integration.pitchSemitonesValue() - first.pitchSemitones) < 1.0e-6f,
+          "transactional snapshot publishes pitch");
+    check(!integration.needsPrime(), "transactional enabled snapshot is ready for render");
+
+    std::vector<float> left(frames);
+    std::vector<float> right(frames);
+    double next = cursor;
+    double audible = cursor;
+    check(integration.render(clip, cursor, false, left.data(), right.data(), frames, next, audible),
+          "transactional first snapshot renders");
+    check(integration.lastRenderPath() == Path::stretch
+              && integration.lastFallbackReason() == Reason::none,
+          "transactional first snapshot selects stretch immediately");
+    cursor = next;
+
+    Snapshot changed{0.80, -2.0f, true};
+    check(integration.configureAndPrime(clip, cursor, false, changed),
+          "changed rate and pitch are re-staged off callback");
+    check(!integration.needsPrime(), "changed staged controls do not leave stale-prime debt");
+    check(integration.render(clip, cursor, false, left.data(), right.data(), frames, next, audible),
+          "changed staged controls render");
+    check(integration.lastRenderPath() == Path::stretch
+              && integration.lastFallbackReason() == Reason::none,
+          "changed staged controls resume stretch without controlChanged fallback");
+    cursor = next;
+
+    Snapshot bypass{1.0, 0.0f, false};
+    check(integration.configureAndPrime(clip, cursor, false, bypass),
+          "disabled staged snapshot is accepted");
+    check(integration.needsPrime(), "disabled staged snapshot intentionally remains unprimed");
+    check(integration.render(clip, cursor, false, left.data(), right.data(), frames, next, audible),
+          "disabled staged snapshot renders fallback");
+    check(integration.lastRenderPath() == Path::fallback
+              && integration.lastFallbackReason() == Reason::disabled,
+          "disabled staged snapshot is deterministic bypass");
+    cursor = next;
+
+    Snapshot invalid{std::numeric_limits<double>::quiet_NaN(), 0.0f, true};
+    check(!integration.configureAndPrime(clip, cursor, false, invalid),
+          "invalid staged snapshot is rejected");
+    check(integration.needsPrime(), "invalid staged snapshot fails closed");
+    check(integration.render(clip, cursor, false, left.data(), right.data(), frames, next, audible),
+          "invalid staged snapshot still permits safe fallback render");
+    check(integration.lastRenderPath() == Path::fallback,
+          "invalid staged snapshot cannot select stretch");
+    cursor = next;
+
+    Snapshot recovered{1.10, 1.0f, true};
+    check(integration.configureAndPrime(clip, cursor, true, recovered),
+          "valid staged snapshot recovers after invalid controls");
+    check(integration.render(clip, cursor, true, left.data(), right.data(), frames, next, audible),
+          "recovered staged snapshot renders");
+    check(integration.lastRenderPath() == Path::stretch,
+          "recovered staged snapshot returns to stretch path");
+}
+
+void runFallbackStreamDiagnostics() {
+    using Integration = broke::TimeStretchEngineBridge;
+    constexpr double sampleRate = 48000.0;
+    constexpr int frames = 256;
+
+    auto cache = std::make_shared<broke::StreamCache>(12000);
+    broke::Clip streamClip;
+    streamClip.sampleRate = sampleRate;
+    streamClip.stream = cache;
+    streamClip.frameCount = 12000;
+    check(streamClip.valid(), "fallback stream diagnostic clip is valid");
+
+    Integration integration;
+    check(integration.prepare(sampleRate, sampleRate, frames, 4.0),
+          "fallback stream diagnostic integration prepares");
+    check(integration.configureAndPrime(streamClip, 1000.0, false,
+                                        Integration::ControlSnapshot{1.0, 0.0f, false}),
+          "fallback stream diagnostic bypass config accepted");
+
+    std::vector<float> left(frames);
+    std::vector<float> right(frames);
+    double next = 1000.0;
+    double audible = 1000.0;
+    check(integration.render(streamClip, 1000.0, false,
+                             left.data(), right.data(), frames, next, audible),
+          "uncached production fallback renders bounded silence");
+    auto diagnostics = cache->diagnostics();
+    check(diagnostics.starving && diagnostics.starvationEvents == 1,
+          "production fallback records one stream starvation episode");
+    check(diagnostics.readMisses > 0,
+          "production fallback retains existing read-miss evidence");
+
+    std::vector<float> chunkLeft(broke::StreamCache::chunkFrames, 0.05f);
+    std::vector<float> chunkRight(broke::StreamCache::chunkFrames, 0.04f);
+    cache->publishChunk(0, chunkLeft.data(), chunkRight.data(), chunkLeft.size());
+    const double secondCursor = next;
+    check(integration.render(streamClip, secondCursor, false,
+                             left.data(), right.data(), frames, next, audible),
+          "resident production fallback renders after refill");
+    diagnostics = cache->diagnostics();
+    check(!diagnostics.starving && diagnostics.refillEvents == 1,
+          "production fallback records refill recovery");
+    check(std::any_of(left.begin(), left.end(), [](float value) { return std::abs(value) > 0.001f; }),
+          "resident production fallback emits recovered audio");
+}
+
 void runStreamFailureFallback() {
     using Integration = broke::TimeStretchEngineBridge;
     using Reason = Integration::FallbackReason;
@@ -270,6 +392,8 @@ void runStreamFailureFallback() {
 void run() {
     runProductionFallbackParity();
     runTransitionAndLatencyMatrix();
+    runTransactionalControlStaging();
+    runFallbackStreamDiagnostics();
     runStreamFailureFallback();
 }
 } // namespace
