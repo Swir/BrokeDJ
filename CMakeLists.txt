@@ -67,7 +67,8 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
     add_library(brokedj_timestretch STATIC
         src/core/TimeStretch.cpp
         src/core/TimeStretchDeck.cpp
-        src/core/TimeStretchSourceBridge.cpp)
+        src/core/TimeStretchSourceBridge.cpp
+        src/core/TimeStretchDeviceBridge.cpp)
     target_include_directories(brokedj_timestretch PUBLIC src)
     target_link_libraries(brokedj_timestretch PUBLIC brokedj_core PRIVATE signalsmith-stretch)
     if(MSVC)
@@ -112,6 +113,19 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_test(NAME time_stretch_source_bridge_realtime
             COMMAND brokedj_timestretch_source_bridge_realtime_tests)
         set_tests_properties(time_stretch_source_bridge_realtime PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_timestretch_device_bridge_tests
+            tests/TimeStretchDeviceBridgeTests.cpp)
+        target_link_libraries(brokedj_timestretch_device_bridge_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch_device_bridge COMMAND brokedj_timestretch_device_bridge_tests)
+        set_tests_properties(time_stretch_device_bridge PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_timestretch_device_bridge_realtime_tests
+            tests/TimeStretchDeviceBridgeRealtimeTests.cpp)
+        target_link_libraries(brokedj_timestretch_device_bridge_realtime_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch_device_bridge_realtime
+            COMMAND brokedj_timestretch_device_bridge_realtime_tests)
+        set_tests_properties(time_stretch_device_bridge_realtime PROPERTIES TIMEOUT 90)
     endif()
 endif()
 
