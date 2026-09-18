@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="180" viewBox="0 0 1200 180" role="img" aria-labelledby="title desc">
+<title id="title">BrokeDJ engineering roadmap: 1/10 milestones, 10.0%</title>
+<desc id="desc">Equal-weight roadmap milestone count from docs/progress.json. This is not sound-quality, release-readiness, or live-performance readiness.</desc>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#02050A"/><stop offset="1" stop-color="#07111C"/></linearGradient><linearGradient id="fill" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0088FF"/><stop offset="1" stop-color="#62E5FF"/></linearGradient></defs>
+<rect x="1" y="1" width="1198" height="178" rx="22" fill="url(#bg)" stroke="#62E5FF" stroke-opacity=".24"/>
+<text x="50" y="39" fill="#62E5FF" font-family="Segoe UI,Arial,sans-serif" font-size="14" font-weight="700" letter-spacing="3">BROKEDJ · ENGINEERING ROADMAP</text>
+<text x="50" y="76" fill="#F4FAFF" font-family="Segoe UI,Arial,sans-serif" font-size="27" font-weight="800">M0–M9 verified milestone scope</text>
+<text x="1150" y="76" text-anchor="end" fill="#F4FAFF" font-family="Segoe UI,Arial,sans-serif" font-size="30" font-weight="800">10.0%</text>
+<rect x="50" y="96" width="1100" height="16" rx="8" fill="#0B1928" stroke="#62E5FF" stroke-opacity=".16"/>
+<rect x="50" y="96" width="110.0" height="16" rx="8" fill="url(#fill)"/>
+<text x="50" y="142" fill="#8DA8B8" font-family="Segoe UI,Arial,sans-serif" font-size="13">1/10 milestones complete · PRE-ALPHA · source: docs/progress.json</text>
+<text x="1150" y="142" text-anchor="end" fill="#8DA8B8" font-family="Segoe UI,Arial,sans-serif" font-size="13">Not a live-readiness score</text>
+</svg>
