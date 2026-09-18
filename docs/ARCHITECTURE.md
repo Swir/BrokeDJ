@@ -26,13 +26,15 @@ Track adoption clears already allocated delay buffers. This is bounded but can s
 
 Small tracks whose decoded stereo float payload is at most 64 MiB use the simple in-memory path. Larger supported local files use `StreamCache`: 32 fixed slots of 4096 stereo frames. Sample cells and publication metadata are atomic so the audio callback never locks while a background reader refills a slot.
 
-The reader primes the first region, then follows a last-request-wins frame hint from transport/seek and fills the surrounding read-ahead window. A missing cache cell returns silence and requests that source region; the callback never waits for disk/decoder work. Sparse waveform preview generation reads bounded windows off the audio thread instead of allocating the full decoded track.
+The reader primes the first region, then follows a last-request-wins frame hint from transport/seek. The exact requested chunk is refilled first, forward read-ahead follows, and one previous chunk is then considered for interpolation support. Chunks outside the file are skipped before decode work so the worker cannot spin merely because its forward window extends beyond EOF. A missing cache cell returns silence and requests that source region; the callback never waits for disk/decoder work. Sparse waveform preview generation reads bounded windows off the audio thread instead of allocating the full decoded track.
 
-This architecture bounds sample-cache memory independently of track duration and retires the previous 256 MiB full-decode ceiling for the streaming path. It is still pre-alpha: no claim is made that every disk/codec/seek sequence is dropout-free. Cache-refill onset smoothing, explicit underrun counters, long-loop boundaries, slow-storage stress and cancellation of a decoder blocked inside OS/file I/O remain hardening work.
+A non-audio `StreamCacheDiagnostics` snapshot reports the requested frame/chunk, whether that exact requested region is resident and how many chunks are resident in a bounded forward window. This is intentionally cache-readiness observability, not a hardware underrun counter or a live-readiness signal.
+
+This architecture bounds sample-cache memory independently of track duration and retires the previous 256 MiB full-decode ceiling for the streaming path. It is still pre-alpha: no claim is made that every disk/codec/seek sequence is dropout-free. Cache-refill onset smoothing, event/history diagnostics, long-loop boundaries on real files, slow-storage stress and cancellation of a decoder blocked inside OS/file I/O remain hardening work.
 
 ## Quality validation boundary
 
-Deterministic tests cover transport transitions, finite output during aggressive controls and stream-cache publication/miss/seek behavior. Automated render checks support implementation confidence but do not replace reviewed listening tests on representative material and real output devices.
+Deterministic tests cover transport transitions, finite output during aggressive controls and stream-cache publication/miss/seek behavior. The streaming fixture can model a 90-minute track without allocating full-track audio, exercise repeated distant seeks, a prepared whole-track loop edge and starvation/refill snapshots. Automated render checks support implementation confidence but do not replace reviewed listening tests on representative material and real output devices.
 
 ## Planned extension boundaries
 
