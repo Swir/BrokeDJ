@@ -47,6 +47,15 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Windows development artifacts now retain `AUDIO-DIAGNOSTICS.txt` with verbose render and realtime metrics so CI evidence can be reviewed without treating shared-runner timing as hardware certification.
 - Migrated roadmap presentation to the SWIR SVG-only progress system and README presentation to SWIR README PRO v2.
 
+### Time-stretch / key-lock research
+
+- Added an opt-in JUCE-independent `TimeStretchPrototype` around immutable pinned Signalsmith Stretch and Signalsmith Linear sources after MIT-license review; ordinary playback does not depend on or instantiate this path.
+- Added explicit prepared input/output bounds, ±24-semitone pitch bounds, reported latency/seek metadata, reset and seek-preroll handling while leaving the production hybrid rate converter unchanged as fallback.
+- Added deterministic 1.25x key-lock and +12-semitone fixtures plus finite-output/reset/seek/error-path checks.
+- Added a warmed realtime-contract executable that requires zero heap allocations and deallocations over 600 bounded 1.25x processing blocks with periodic pitch changes.
+- Added CI qualification for the optional prototype on Linux sanitizers and Windows x64, offline source-preparation instructions and third-party notices. The initial GCC failure from an upstream header's missing `<cstring>` declaration was fixed in the BrokeDJ adapter without modifying vendored source.
+- This is research infrastructure only: deck clocking/buffering, latency compensation, de-clicked enable/bypass, production listening and hardware/underrun qualification remain open before key lock can become a user-facing feature.
+
 ### Validation status
 
 - Merged-main checkpoint `cc5b43ebbd323d2119c54ff2fea8d8db9fab0199` passed Linux sanitizer/core checks and Windows x64 development build, core/quality tests and GUI lifecycle smoke in run `35331491062`.
@@ -58,4 +67,5 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Output-safety/cue-routing PR #10 final head `f82a0dab7dde1298690dbe326049d21190c0be90` passed exact-head run `35355739490`: Linux ASan/UBSan core/progress checks succeeded, and Windows x64 configure/build, full CTest, native no-audio GUI smoke, staging and artifact upload succeeded; it merged as `a207b89e573c6068285e24bf9748c9ecefcaaf69`.
 - Band-limited rate-conversion PR #11 final head `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032` passed exact-head run `35361883586`: Linux ASan/UBSan core/progress checks and all five core-only CTest targets succeeded; Windows x64 configure/build, full CTest including decoder fixtures, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #11 merged as `d15fbb8187e699f200bfb79666c637614cf128c7`.
 - Resampler-matrix/callback-diagnostics PR #12 final head `1747ed8d10f3f2151752bd1bf55963b9c17917b2` passed exact-head run `35364173494`: Linux ASan/UBSan and all five core-only CTest targets succeeded; Windows x64 configure/build/full CTest, explicit render/realtime diagnostic replay, native no-audio GUI smoke, staging and artifact upload succeeded. PR #12 merged as `77ff9bca772b6b035f7c8ce76a1317789c485f26`.
-- The roadmap remains **1/10 = 10.0%** because these hardening packages do not close M1 hardware/manual validation or the broader M2 performance-deck scope.
+- Time-stretch/key-lock PR #13 remains unmerged while its exact-final-head Linux + Windows gate runs. Linux run `35367465361` already passed all seven core-only CTest targets on implementation head `0532a05d2c9cc13fa4b51a701ce4a308caf88ea7`; later documentation commits require a fresh exact-head run before merge.
+- The roadmap remains **1/10 = 10.0%** because these hardening/research packages do not close M1 hardware/manual validation or the broader M2 performance-deck scope.
