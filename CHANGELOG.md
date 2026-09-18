@@ -17,6 +17,10 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Prioritized the exact requested chunk after a seek before forward read-ahead, reducing avoidable refill latency.
 - Prevented the read-ahead worker from treating chunks beyond EOF as completed work, avoiding a potential busy loop near the end of long tracks.
 - Expanded deterministic streaming stress coverage with a virtual 90-minute stream, repeated distant seeks, whole-track loop wrap and starvation/refill snapshots without allocating a full track.
+- Added lock-free cache read-miss totals plus starvation/refill episode counters and last-miss position so repeated misses can be diagnosed without logging or allocating on the audio callback.
+- Added readiness-aware streamed interpolation: an incomplete Catmull-Rom tap set is treated as unavailable instead of blending partially cached samples.
+- Added short fade-out/fade-in transitions when a streamed deck enters or exits cache starvation, reducing hard discontinuities around refill onset while keeping decoder work off the audio thread.
+- Added deterministic tests proving continuous starvation is counted as one episode and refill recovery ramps from silence instead of jumping directly to the recovered sample.
 
 ### Audio quality hardening
 
@@ -30,5 +34,6 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 
 - Merged-main checkpoint `cc5b43ebbd323d2119c54ff2fea8d8db9fab0199` passed Linux sanitizer/core checks and Windows x64 development build, core/quality tests and GUI lifecycle smoke in run `35331491062`.
 - Bounded streaming PR #4 final head `9d842feecda23ea78904a35a9f4c073533784abc` passed exact-head run `35334147477`, including Linux sanitizers and Windows x64 build, CTest, GUI smoke, staging and artifact upload, then merged as `ac9a98610a166548c3ca0e18446fc95af99cd7c9`.
-- Stream seek/refill hardening is being validated in PR #5; merge requires exact-final-head Linux sanitizer and Windows x64 build/test/GUI-smoke success.
-- The roadmap remains **1/10 = 10.0%** because this package does not close M1 hardware/manual validation or the broader M2 performance-deck scope.
+- Stream seek/refill hardening PR #5 passed exact-final-head Linux sanitizer and Windows x64 build/test/GUI-smoke validation and merged as `7cced0d18fe7d192fa983b482d2637b2204fe0f5`.
+- Starvation-history/refill-smoothing work is under validation on its feature branch; merge requires exact-final-head Linux sanitizer and Windows x64 build/test/GUI-smoke success.
+- The roadmap remains **1/10 = 10.0%** because these hardening packages do not close M1 hardware/manual validation or the broader M2 performance-deck scope.
