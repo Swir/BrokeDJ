@@ -11,6 +11,8 @@ namespace broke {
 static_assert(std::atomic<float>::is_always_lock_free);
 static_assert(std::atomic<double>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
+static_assert(std::atomic<std::size_t>::is_always_lock_free);
+static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 static_assert(std::atomic<Clip*>::is_always_lock_free);
 namespace {
 float bounded(float x, float lo, float hi, float fallback = 0.0f) noexcept {
@@ -18,8 +20,8 @@ float bounded(float x, float lo, float hi, float fallback = 0.0f) noexcept {
 }
 float clean(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 
-float point(const std::vector<float>& data, std::int64_t index, bool loop) noexcept {
-    const auto size = static_cast<std::int64_t>(data.size());
+float point(const Clip& clip, int channel, std::int64_t index, bool loop) noexcept {
+    const auto size = clip.frames();
     if (size <= 0) return 0.0f;
     if (loop) {
         index %= size;
@@ -27,27 +29,29 @@ float point(const std::vector<float>& data, std::int64_t index, bool loop) noexc
     } else {
         index = std::clamp<std::int64_t>(index, 0, size - 1);
     }
+    if (clip.stream) return clean(clip.stream->sample(channel, index));
+    const auto& data = channel == 0 ? clip.left : clip.right;
     return clean(data[static_cast<std::size_t>(index)]);
 }
 
 // Four-point Catmull-Rom interpolation. It materially reduces the staircase/
 // image energy of the original linear development resampler while keeping the
 // callback allocation-free. A future key-lock/time-stretch stage remains separate.
-float resample(const std::vector<float>& data, double cursor, bool loop) noexcept {
-    if (data.empty() || !std::isfinite(cursor)) return 0.0f;
-    if (data.size() < 4) {
+float resample(const Clip& clip, int channel, double cursor, bool loop) noexcept {
+    if (clip.frames() <= 0 || !std::isfinite(cursor)) return 0.0f;
+    if (clip.frames() < 4) {
         const auto i = static_cast<std::int64_t>(std::floor(cursor));
         const auto f = static_cast<float>(cursor - static_cast<double>(i));
-        const float a = point(data, i, loop);
-        const float b = point(data, i + 1, loop);
+        const float a = point(clip, channel, i, loop);
+        const float b = point(clip, channel, i + 1, loop);
         return clean(a + (b - a) * f);
     }
     const auto i = static_cast<std::int64_t>(std::floor(cursor));
     const float t = static_cast<float>(cursor - static_cast<double>(i));
-    const float p0 = point(data, i - 1, loop);
-    const float p1 = point(data, i, loop);
-    const float p2 = point(data, i + 1, loop);
-    const float p3 = point(data, i + 2, loop);
+    const float p0 = point(clip, channel, i - 1, loop);
+    const float p1 = point(clip, channel, i, loop);
+    const float p2 = point(clip, channel, i + 1, loop);
+    const float p3 = point(clip, channel, i + 2, loop);
     const float t2 = t * t;
     const float t3 = t2 * t;
     return clean(0.5f * ((2.0f * p1) + (-p0 + p2) * t
@@ -55,24 +59,96 @@ float resample(const std::vector<float>& data, double cursor, bool loop) noexcep
         + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3));
 }
 }
-bool Clip::valid() const noexcept {
-    return std::isfinite(sampleRate) && sampleRate >= 8000.0 && sampleRate <= 384000.0
-        && !left.empty() && left.size() == right.size();
+
+StreamCache::Slot::Slot()
+    : left(std::make_unique<std::atomic<float>[]>(chunkFrames)),
+      right(std::make_unique<std::atomic<float>[]>(chunkFrames)) {
+    for (std::size_t i = 0; i < chunkFrames; ++i) {
+        left[i].store(0.0f, std::memory_order_relaxed);
+        right[i].store(0.0f, std::memory_order_relaxed);
+    }
 }
+
+StreamCache::StreamCache(std::int64_t totalFrames) : total(std::max<std::int64_t>(0, totalFrames)) {}
+
+std::size_t StreamCache::slotFor(std::int64_t chunkIndex) noexcept {
+    return static_cast<std::size_t>(chunkIndex % static_cast<std::int64_t>(slotCount));
+}
+
+bool StreamCache::hasChunk(std::int64_t chunkIndex) const noexcept {
+    if (chunkIndex < 0) return false;
+    const auto& slot = slots[slotFor(chunkIndex)];
+    return slot.chunk.load(std::memory_order_acquire) == chunkIndex
+        && slot.validFrames.load(std::memory_order_acquire) > 0;
+}
+
+void StreamCache::publishChunk(std::int64_t chunkIndex, const float* leftData, const float* rightData,
+                               std::size_t frames) noexcept {
+    if (chunkIndex < 0 || leftData == nullptr || rightData == nullptr || frames == 0) return;
+    const auto start = chunkIndex * static_cast<std::int64_t>(chunkFrames);
+    if (start < 0 || start >= total) return;
+    const auto remaining = static_cast<std::size_t>(std::min<std::int64_t>(
+        static_cast<std::int64_t>(chunkFrames), total - start));
+    const auto count = std::min(frames, remaining);
+    auto& slot = slots[slotFor(chunkIndex)];
+    slot.chunk.store(-1, std::memory_order_release);
+    slot.validFrames.store(0, std::memory_order_release);
+    for (std::size_t i = 0; i < count; ++i) {
+        slot.left[i].store(clean(leftData[i]), std::memory_order_relaxed);
+        slot.right[i].store(clean(rightData[i]), std::memory_order_relaxed);
+    }
+    slot.validFrames.store(count, std::memory_order_release);
+    slot.chunk.store(chunkIndex, std::memory_order_release);
+}
+
+float StreamCache::sample(int channel, std::int64_t frame) const noexcept {
+    if (frame < 0 || frame >= total || (channel != 0 && channel != 1)) return 0.0f;
+    const auto chunkIndex = frame / static_cast<std::int64_t>(chunkFrames);
+    const auto offset = static_cast<std::size_t>(frame % static_cast<std::int64_t>(chunkFrames));
+    const auto& slot = slots[slotFor(chunkIndex)];
+    if (slot.chunk.load(std::memory_order_acquire) != chunkIndex) {
+        request(frame);
+        return 0.0f;
+    }
+    const auto valid = slot.validFrames.load(std::memory_order_acquire);
+    if (offset >= valid) return 0.0f;
+    const float value = (channel == 0 ? slot.left[offset] : slot.right[offset]).load(std::memory_order_relaxed);
+    if (slot.chunk.load(std::memory_order_acquire) != chunkIndex) {
+        request(frame);
+        return 0.0f;
+    }
+    return clean(value);
+}
+
+void StreamCache::request(std::int64_t frame) const noexcept {
+    if (total <= 0) return;
+    requested.store(std::clamp<std::int64_t>(frame, 0, total - 1), std::memory_order_relaxed);
+}
+
+std::int64_t Clip::frames() const noexcept {
+    if (stream) return frameCount > 0 ? frameCount : stream->totalFrames();
+    return static_cast<std::int64_t>(left.size());
+}
+
+bool Clip::valid() const noexcept {
+    if (!std::isfinite(sampleRate) || sampleRate < 8000.0 || sampleRate > 384000.0) return false;
+    if (stream)
+        return frameCount > 0 && frameCount == stream->totalFrames();
+    return !left.empty() && left.size() == right.size();
+}
+
 ClipMailbox::~ClipMailbox() {
     delete pending.load();
     delete retired.load();
     delete active;
 }
 void ClipMailbox::publish(std::unique_ptr<Clip> clip) noexcept {
-    // An unconsumed request can be replaced and freed on the publishing thread.
     delete pending.exchange(clip.release(), std::memory_order_acq_rel);
 }
 void ClipMailbox::collect() noexcept {
     delete retired.exchange(nullptr, std::memory_order_acq_rel);
 }
 bool ClipMailbox::adopt() noexcept {
-    // Backpressure: never overwrite a not-yet-collected retired clip.
     if (retired.load(std::memory_order_acquire) != nullptr) return false;
     auto* next = pending.exchange(nullptr, std::memory_order_acq_rel);
     if (next == nullptr) return false;
@@ -140,8 +216,9 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             state.wasPlaying = false;
             for (auto& channel : state.delay) std::fill(channel.begin(), channel.end(), 0.0f);
             state.delayIndex = 0;
-            // Loading a replacement track is deliberately stopped, never auto-played.
             control.playing.store(false, std::memory_order_relaxed);
+            if (const auto* adopted = clips[d].current(); adopted && adopted->stream)
+                adopted->stream->request(0);
         }
         auto& b = blocks[d];
         b.clip = clips[d].current();
@@ -159,7 +236,11 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         if (b.clip && std::isfinite(seek) && seek >= 0.0) {
             state.transitionFrom = state.lastProcessed;
             state.transitionRemaining = transitionSamples;
-            state.cursor = std::clamp(seek, 0.0, 1.0) * static_cast<double>(b.clip->left.size() - 1);
+            state.cursor = std::clamp(seek, 0.0, 1.0) * static_cast<double>(b.clip->frames() - 1);
+            if (b.clip->stream)
+                b.clip->stream->request(static_cast<std::int64_t>(state.cursor));
+        } else if (b.clip && b.clip->stream) {
+            b.clip->stream->request(static_cast<std::int64_t>(state.cursor));
         }
     }
     const float crossTarget = bounded(crossfader.load(), 0.0f, 1.0f, 0.5f);
@@ -192,12 +273,14 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             s.drive += smoothing * (b.drive - s.drive);
             std::array<float, 2> sample{};
             if (b.clip && b.playing) {
-                const auto length = static_cast<double>(b.clip->left.size());
+                const auto lengthFrames = b.clip->frames();
+                const auto length = static_cast<double>(lengthFrames);
                 if (s.cursor >= length) {
                     if (b.loop) {
                         s.transitionFrom = s.lastProcessed;
                         s.transitionRemaining = transitionSamples;
                         s.cursor = std::fmod(s.cursor, length);
+                        if (b.clip->stream) b.clip->stream->request(static_cast<std::int64_t>(s.cursor));
                     } else {
                         b.playing = false;
                         controls[d].playing.store(false, std::memory_order_relaxed);
@@ -209,8 +292,8 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                     }
                 }
                 if (b.playing) {
-                    sample[0] = resample(b.clip->left, s.cursor, b.loop);
-                    sample[1] = resample(b.clip->right, s.cursor, b.loop);
+                    sample[0] = resample(*b.clip, 0, s.cursor, b.loop);
+                    sample[1] = resample(*b.clip, 1, s.cursor, b.loop);
                     s.cursor += b.clip->sampleRate / sampleRate * s.rate;
                 }
             }
@@ -232,7 +315,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 if (s.transitionRemaining > 0)
                     x = s.transitionFrom[c] * (1.0f - transitionMix) + x * transitionMix;
                 s.lastProcessed[c] = x;
-                if (s.cue > 0.0001f) cueMix[c] += x * headphoneSmooth * s.cue; // pre-fader, post-EQ/FX
+                if (s.cue > 0.0001f) cueMix[c] += x * headphoneSmooth * s.cue;
                 x *= s.gain;
                 peaks[d] = std::max(peaks[d], std::abs(x));
                 mix[c] += x * ((d % 2 == 0) ? leftFade : rightFade);
@@ -245,16 +328,18 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             overload = overload || std::abs(x) > 0.98f;
             peak = std::max(peak, std::abs(x));
             if (c < channels && output[c]) output[c][frame] = std::clamp(x, -0.98f, 0.98f);
-            // Never fold headphone cue into the main stereo pair.
             if (channels >= 4 && output[c + 2])
                 output[c + 2][frame] = bounded(cueMix[static_cast<std::size_t>(c)], -0.98f, 0.98f);
         }
     }
     for (std::size_t d = 0; d < deckCount; ++d) {
         const auto* clip = blocks[d].clip;
-        meters[d].duration.store(clip ? static_cast<double>(clip->left.size()) / clip->sampleRate : 0.0);
-        meters[d].position.store(clip ? std::min(states[d].cursor, static_cast<double>(clip->left.size())) / clip->sampleRate : 0.0);
+        const auto frameCount = clip ? clip->frames() : 0;
+        meters[d].duration.store(clip ? static_cast<double>(frameCount) / clip->sampleRate : 0.0);
+        meters[d].position.store(clip ? std::min(states[d].cursor, static_cast<double>(frameCount)) / clip->sampleRate : 0.0);
         meters[d].peak.store(peaks[d]);
+        if (clip && clip->stream)
+            clip->stream->request(static_cast<std::int64_t>(std::min(states[d].cursor, static_cast<double>(frameCount - 1))));
     }
     masterPeak.store(peak);
     clipped.store(overload);
