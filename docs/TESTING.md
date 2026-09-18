@@ -8,11 +8,13 @@ That baseline includes Linux ASan/UBSan core checks, generated SVG synchronizati
 
 ## Bounded streaming/read-ahead package
 
-PR #4 adds a fixed-size stream cache to the JUCE-independent core and a background JUCE read-ahead source for larger local tracks. Small supported tracks retain the in-memory path. The streaming path removes the former fixed 256 MiB decoded-whole-track ceiling without moving file I/O or decoding into the audio callback.
+PR #4 added a fixed-size stream cache to the JUCE-independent core and a background JUCE read-ahead source for larger local tracks. Small supported tracks retain the in-memory path. The streaming path removes the former fixed 256 MiB decoded-whole-track ceiling without moving file I/O or decoding into the audio callback.
 
-Before PR publication, JUCE-independent C++20 compilation passed locally and the new `brokedj_stream_cache_tests` reported **11/11 streaming-cache checks**. The repository's exact-head Linux sanitizer and Windows build/smoke jobs remain the merge gate.
+The final PR head `9d842feecda23ea78904a35a9f4c073533784abc` passed GitHub Actions run `35334147477`: Linux sanitizer/core tests and SVG checks succeeded; Windows Server 2022 / MSVC x64 configure/build, all CTest targets including streaming cache, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #4 was then merged to `main` as `ac9a98610a166548c3ca0e18446fc95af99cd7c9`.
 
-New deterministic streaming coverage verifies:
+Before publication, JUCE-independent C++20 compilation also passed locally and `brokedj_stream_cache_tests` reported **11/11 streaming-cache checks**.
+
+Deterministic streaming coverage verifies:
 
 - a cache miss produces bounded silence and requests the missing source region;
 - a published chunk becomes visible and preserves stereo sample data;
@@ -38,7 +40,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 
 - [x] Windows x64 build and native no-audio smoke mode pass on the merged baseline.
 - [x] SVG progress synchronization and no-legacy-meter check pass on the merged baseline.
-- [ ] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
+- [x] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode/stream as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio.

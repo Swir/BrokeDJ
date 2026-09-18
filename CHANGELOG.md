@@ -12,6 +12,7 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Added bounded sparse waveform preview generation so long tracks do not require a full decoded waveform allocation.
 - Added deterministic cache miss/publication/stereo/render/seek-request tests as a separate CTest target.
 - Kept file I/O and decoding outside the audio callback; a missing cache region returns bounded silence and requests background refill rather than blocking.
+- Fixed streaming priming so decoder read failures reject the import instead of accepting an incompletely prepared source.
 
 ### Audio quality hardening
 
@@ -24,5 +25,5 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 ### Validation status
 
 - Merged-main checkpoint `cc5b43ebbd323d2119c54ff2fea8d8db9fab0199` passed Linux sanitizer/core checks and Windows x64 development build, core/quality tests and GUI lifecycle smoke in run `35331491062`.
-- The bounded streaming core compiled locally as C++20 and its new deterministic suite passed **11/11 stream-cache checks** before PR publication.
-- PR #4 still requires exact-final-head repository CI before merge and does not close M1 hardware/manual validation or M2.
+- Bounded streaming PR #4 final head `9d842feecda23ea78904a35a9f4c073533784abc` passed exact-head run `35334147477`, including Linux sanitizers and Windows x64 build, CTest, GUI smoke, staging and artifact upload, then merged as `ac9a98610a166548c3ca0e18446fc95af99cd7c9`.
+- The roadmap remains **1/10 = 10.0%** because this package does not close M1 hardware/manual validation or the broader M2 performance-deck scope.
