@@ -4,14 +4,57 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace broke {
 inline constexpr std::size_t deckCount = 4;
+
+// Bounded, lock-free read-ahead cache shared by a background decoder and the
+// audio callback. Cache writes may race with reads safely because sample cells
+// are atomic and every slot is published only after a complete chunk write.
+class StreamCache final {
+public:
+    static constexpr std::size_t chunkFrames = 4096;
+    static constexpr std::size_t slotCount = 32;
+
+    explicit StreamCache(std::int64_t totalFrames);
+    StreamCache(const StreamCache&) = delete;
+    StreamCache& operator=(const StreamCache&) = delete;
+
+    [[nodiscard]] std::int64_t totalFrames() const noexcept { return total; }
+    [[nodiscard]] bool hasChunk(std::int64_t chunkIndex) const noexcept;
+    void publishChunk(std::int64_t chunkIndex, const float* left, const float* right,
+                      std::size_t frames) noexcept;
+    [[nodiscard]] float sample(int channel, std::int64_t frame) const noexcept;
+    void request(std::int64_t frame) const noexcept;
+    [[nodiscard]] std::int64_t requestedFrame() const noexcept {
+        return requested.load(std::memory_order_relaxed);
+    }
+
+private:
+    struct Slot final {
+        Slot();
+        std::atomic<std::int64_t> chunk{-1};
+        std::atomic<std::size_t> validFrames{0};
+        std::unique_ptr<std::atomic<float>[]> left;
+        std::unique_ptr<std::atomic<float>[]> right;
+    };
+    [[nodiscard]] static std::size_t slotFor(std::int64_t chunkIndex) noexcept;
+    std::array<Slot, slotCount> slots;
+    std::int64_t total = 0;
+    mutable std::atomic<std::int64_t> requested{0};
+};
+
 struct Clip final {
     double sampleRate = 44100.0;
     std::vector<float> left, right;
+    std::shared_ptr<StreamCache> stream;
+    std::shared_ptr<void> sourceOwner; // keeps a non-core background source alive; never touched by audio code
+    std::int64_t frameCount = 0;
+    [[nodiscard]] std::int64_t frames() const noexcept;
+    [[nodiscard]] bool streamed() const noexcept { return static_cast<bool>(stream); }
     [[nodiscard]] bool valid() const noexcept;
 };
 
