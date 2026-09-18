@@ -11,6 +11,10 @@
 
 namespace broke {
 inline constexpr std::size_t deckCount = 4;
+inline constexpr std::size_t resamplerTaps = 24;
+inline constexpr std::size_t resamplerPhases = 128;
+inline constexpr std::size_t resamplerCutoffBins = 64;
+inline constexpr float resamplerMinCutoff = 0.06f;
 
 struct StreamCacheDiagnostics final {
     std::int64_t requestedFrame = 0;
@@ -45,7 +49,7 @@ public:
     [[nodiscard]] float sample(int channel, std::int64_t frame) const noexcept;
     void request(std::int64_t frame) const noexcept;
     // Called from the audio callback only after a complete interpolation read
-    // has been classified. This avoids counting every Catmull-Rom tap as a
+    // has been classified. This avoids counting every interpolation tap as a
     // separate starvation event while remaining lock-free.
     void noteStarvation(std::int64_t frame) const noexcept;
     void noteRefill() const noexcept;
@@ -145,7 +149,8 @@ public:
     Engine() = default;
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
-    // Call only while audio is stopped. Allocates the fixed-delay buffers.
+    // Call only while audio is stopped. Allocates fixed-delay buffers and the
+    // immutable windowed-sinc lookup table used by the callback.
     void prepare(double outputSampleRate);
     [[nodiscard]] bool submit(std::size_t deck, std::unique_ptr<Clip> clip);
     void collectRetired() noexcept;
@@ -171,10 +176,14 @@ private:
         bool wasPlaying = false;
         bool streamReady = true;
     };
+    void prepareResamplerKernels();
+    [[nodiscard]] const float* resamplerKernel(double step, double cursor) const noexcept;
+
     std::array<Controls, deckCount> controls;
     std::array<Meter, deckCount> meters;
     std::array<ClipMailbox, deckCount> clips;
     std::array<State, deckCount> states;
+    std::vector<float> resamplerKernels;
     double sampleRate = 44100.0;
     float lowCoeff = 0.0f, highCoeff = 0.0f, smoothing = 0.0f;
     float masterSmooth = 0.0f, crossSmooth = 0.5f, headphoneSmooth = 0.5f;

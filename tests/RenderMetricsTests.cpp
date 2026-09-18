@@ -66,6 +66,17 @@ void warmup(broke::Engine& engine, int samples = 8192) {
     static_cast<void>(render(engine, samples));
 }
 
+double rmsOf(const std::vector<float>& samples) {
+    if (samples.empty()) return 0.0;
+    double sumSquares = 0.0;
+    for (const float sample : samples) {
+        check(std::isfinite(sample), "render remains finite");
+        const double value = sample;
+        sumSquares += value * value;
+    }
+    return std::sqrt(sumSquares / static_cast<double>(samples.size()));
+}
+
 struct ToneMetrics final {
     double measuredFrequency = 0.0;
     double frequencyError = 0.0;
@@ -139,6 +150,21 @@ ToneMetrics renderTone(double playbackRate) {
     return analyseTone(render(engine, 48000), 1000.0 * playbackRate);
 }
 
+std::vector<float> renderRateConvertedTone(double sourceFrequency, double playbackRate) {
+    broke::Engine engine;
+    engine.prepare(outputRate);
+    engine.crossfader = 0.0f;
+    engine.master = 1.0f;
+    check(engine.submit(0, sineClip(sourceFrequency)), "rate-conversion clip accepted");
+    warmup(engine, blockSize);
+    auto& control = engine.control(0);
+    control.loop = true;
+    control.rate = static_cast<float>(playbackRate);
+    control.playing = true;
+    warmup(engine);
+    return render(engine, 48000);
+}
+
 float maxDelta(const std::vector<float>& samples, float previous) {
     float result = 0.0f;
     for (const float sample : samples) {
@@ -166,6 +192,23 @@ void run() {
                   << " rms=" << metrics.rms
                   << " peak=" << metrics.peak << '\n';
     }
+
+    // At 1.5x, an 8 kHz source remains below the output Nyquist limit (12 kHz),
+    // while a 19 kHz source would fold to an audible alias without a low-pass
+    // before decimation. The ratio makes this a deterministic spectral guard,
+    // not a claim of perceptual transparency.
+    const auto passband = renderRateConvertedTone(8000.0, 1.5);
+    const auto stopband = renderRateConvertedTone(19000.0, 1.5);
+    const double passbandRms = rmsOf(passband);
+    const double stopbandRms = rmsOf(stopband);
+    const double aliasRatio = passbandRms > 0.0 ? stopbandRms / passbandRms : 1.0;
+    check(passbandRms > 0.08, "bandlimited resampler preserves useful 8 kHz passband level at 1.5x");
+    check(stopbandRms < 0.02, "bandlimited resampler rejects out-of-band 19 kHz energy at 1.5x");
+    check(aliasRatio < 0.10, "out-of-band RMS stays below ten percent of passband RMS");
+    std::cout << std::fixed << std::setprecision(6)
+              << "METRIC resampler_1_5x passband_8k_rms=" << passbandRms
+              << " stopband_19k_rms=" << stopbandRms
+              << " stopband_to_passband=" << aliasRatio << '\n';
 
     broke::Engine engine;
     engine.prepare(outputRate);

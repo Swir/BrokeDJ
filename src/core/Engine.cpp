@@ -60,11 +60,25 @@ ReadPoint point(const Clip& clip, int channel, std::int64_t index, bool loop) no
     return {clean(data[static_cast<std::size_t>(index)]), true};
 }
 
-// Four-point Catmull-Rom interpolation. It materially reduces the staircase/
-// image energy of the original linear development resampler while keeping the
-// callback allocation-free. A future key-lock/time-stretch stage remains separate.
-ReadPoint resample(const Clip& clip, int channel, double cursor, bool loop) noexcept {
+// Catmull-Rom remains the low-cost path when no anti-alias low-pass is needed.
+// When the effective source step exceeds one frame/output-sample, Engine passes
+// a precomputed normalized Blackman-windowed sinc kernel. The kernel is built
+// in prepare(), never in the realtime callback.
+ReadPoint resample(const Clip& clip, int channel, double cursor, bool loop,
+                   const float* bandlimitedKernel) noexcept {
     if (clip.frames() <= 0 || !std::isfinite(cursor)) return {};
+    if (bandlimitedKernel != nullptr && clip.frames() >= static_cast<std::int64_t>(resamplerTaps)) {
+        constexpr int firstTap = 1 - static_cast<int>(resamplerTaps / 2);
+        const auto centre = static_cast<std::int64_t>(std::floor(cursor));
+        float value = 0.0f;
+        for (std::size_t tap = 0; tap < resamplerTaps; ++tap) {
+            const auto sample = point(clip, channel,
+                centre + static_cast<std::int64_t>(firstTap + static_cast<int>(tap)), loop);
+            if (!sample.ready) return {};
+            value += sample.value * bandlimitedKernel[tap];
+        }
+        return {clean(value), true};
+    }
     if (clip.frames() < 4) {
         const auto i = static_cast<std::int64_t>(std::floor(cursor));
         const auto f = static_cast<float>(cursor - static_cast<double>(i));
@@ -216,10 +230,68 @@ bool ClipMailbox::adopt() noexcept {
     active = next;
     return true;
 }
+
+void Engine::prepareResamplerKernels() {
+    const auto weightCount = resamplerCutoffBins * resamplerPhases * resamplerTaps;
+    resamplerKernels.assign(weightCount, 0.0f);
+    constexpr int firstTap = 1 - static_cast<int>(resamplerTaps / 2);
+    const double radius = static_cast<double>(resamplerTaps) * 0.5;
+    const double cutoffSpan = 1.0 - static_cast<double>(resamplerMinCutoff);
+    for (std::size_t bin = 0; bin < resamplerCutoffBins; ++bin) {
+        const double cutoff = static_cast<double>(resamplerMinCutoff)
+            + cutoffSpan * static_cast<double>(bin) / static_cast<double>(resamplerCutoffBins - 1);
+        for (std::size_t phase = 0; phase < resamplerPhases; ++phase) {
+            const double fraction = static_cast<double>(phase) / static_cast<double>(resamplerPhases);
+            const auto base = (bin * resamplerPhases + phase) * resamplerTaps;
+            double sum = 0.0;
+            for (std::size_t tap = 0; tap < resamplerTaps; ++tap) {
+                const double x = static_cast<double>(firstTap + static_cast<int>(tap)) - fraction;
+                const double distance = std::abs(x);
+                double weight = 0.0;
+                if (distance < radius) {
+                    const double window = 0.42
+                        + 0.5 * std::cos(std::numbers::pi * x / radius)
+                        + 0.08 * std::cos(2.0 * std::numbers::pi * x / radius);
+                    const double sincArgument = cutoff * x;
+                    const double sinc = std::abs(sincArgument) < 1.0e-12
+                        ? 1.0
+                        : std::sin(std::numbers::pi * sincArgument)
+                            / (std::numbers::pi * sincArgument);
+                    weight = cutoff * sinc * window;
+                }
+                resamplerKernels[base + tap] = static_cast<float>(weight);
+                sum += weight;
+            }
+            if (std::abs(sum) > 1.0e-12) {
+                const float scale = static_cast<float>(1.0 / sum);
+                for (std::size_t tap = 0; tap < resamplerTaps; ++tap)
+                    resamplerKernels[base + tap] *= scale;
+            }
+        }
+    }
+}
+
+const float* Engine::resamplerKernel(double step, double cursor) const noexcept {
+    if (resamplerKernels.empty() || !std::isfinite(step) || step <= 1.0001 || !std::isfinite(cursor))
+        return nullptr;
+    constexpr double guard = 0.985;
+    const double desiredCutoff = std::clamp(guard / step,
+        static_cast<double>(resamplerMinCutoff), 1.0);
+    const double cutoffPosition = (desiredCutoff - static_cast<double>(resamplerMinCutoff))
+        / (1.0 - static_cast<double>(resamplerMinCutoff));
+    const auto bin = std::min<std::size_t>(resamplerCutoffBins - 1,
+        static_cast<std::size_t>(std::floor(cutoffPosition * static_cast<double>(resamplerCutoffBins - 1))));
+    const double fraction = cursor - std::floor(cursor);
+    const auto phase = std::min<std::size_t>(resamplerPhases - 1,
+        static_cast<std::size_t>(fraction * static_cast<double>(resamplerPhases)));
+    return resamplerKernels.data() + (bin * resamplerPhases + phase) * resamplerTaps;
+}
+
 void Engine::prepare(double rate) {
     if (!std::isfinite(rate) || rate < 8000.0 || rate > 192000.0)
         throw std::invalid_argument("Output sample rate must be 8-192 kHz");
     sampleRate = rate;
+    prepareResamplerKernels();
     lowCoeff = static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * 200.0 / rate));
     highCoeff = static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * 2400.0 / rate));
     smoothing = static_cast<float>(1.0 - std::exp(-1.0 / (rate * 0.005)));
@@ -358,8 +430,10 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                     }
                 }
                 if (b.playing) {
-                    const auto left = resample(*b.clip, 0, s.cursor, b.loop);
-                    const auto right = resample(*b.clip, 1, s.cursor, b.loop);
+                    const double step = b.clip->sampleRate / sampleRate * static_cast<double>(s.rate);
+                    const auto* kernel = resamplerKernel(step, s.cursor);
+                    const auto left = resample(*b.clip, 0, s.cursor, b.loop, kernel);
+                    const auto right = resample(*b.clip, 1, s.cursor, b.loop, kernel);
                     sample[0] = left.value;
                     sample[1] = right.value;
                     streamFrameReady = left.ready && right.ready;
@@ -374,7 +448,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                             s.streamReady = streamFrameReady;
                         }
                     }
-                    s.cursor += b.clip->sampleRate / sampleRate * s.rate;
+                    s.cursor += step;
                 }
             }
             const float transitionMix = s.transitionRemaining > 0

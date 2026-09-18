@@ -24,7 +24,7 @@ Deterministic streaming coverage verifies:
 
 PR #5 added deterministic virtual long-track seek/loop/refill coverage and prioritized the exact requested cache region before forward read-ahead. It passed exact-final-head Linux + Windows validation and merged as `7cced0d18fe7d192fa983b482d2637b2204fe0f5`.
 
-PR #6 added lock-free starvation/refill episode counters, readiness-aware Catmull-Rom tap handling and short fade transitions into/out of cache starvation. Final head `915441c73cc6bab7c58579a8343952ca9e1a9bf1` passed run `35338665653` and merged as `58ecdb3b85b8ff395d115097776d5946bf457936`.
+PR #6 added lock-free starvation/refill episode counters, readiness-aware interpolation tap handling and short fade transitions into/out of cache starvation. Final head `915441c73cc6bab7c58579a8343952ca9e1a9bf1` passed run `35338665653` and merged as `58ecdb3b85b8ff395d115097776d5946bf457936`.
 
 The deterministic streaming stress uses a **virtual 90-minute stream** backed only by the fixed cache; it does not allocate or decode a 90-minute audio buffer. It verifies repeated distant seeks, a prepared whole-track loop edge, intentional starvation/refill recovery, event accounting and bounded forward cache coverage.
 
@@ -81,9 +81,17 @@ Final PR #10 head `f82a0dab7dde1298690dbe326049d21190c0be90` passed exact-head G
 
 This is deterministic routing/DSP evidence only. The protection curve is **not** a transparent look-ahead limiter or true-peak limiter, and offline output routing tests do not replace physical two-output/four-output interface validation or reviewed listening.
 
+## Band-limited rate-conversion candidate
+
+The current development package extends `render_metrics` with a deterministic high-frequency anti-alias gate for the new prepared windowed-sinc downsampling path. At 1.5x playback it renders an 8 kHz source as a passband reference and a 19 kHz source as an out-of-band case that would fold into the audible band without pre-decimation filtering.
+
+The gate requires the 8 kHz reference to retain useful RMS level, the 19 kHz stopband RMS to remain below 0.02 and the stopband/passband RMS ratio to remain below 0.10. These thresholds are implementation regression guards, not psychoacoustic transparency claims. Existing low-frequency rate/frequency-error, residual, DC, peak and transport-transition gates remain active, as does the zero-heap realtime callback contract.
+
+The large-track worker also prioritizes the requested chunk and its two immediate neighbours before deeper forward read-ahead, because the wider interpolation kernel can need samples on both sides of a seek cursor. Actual physical-storage refill latency and hardware underruns remain unqualified.
+
 ## Audio quality hardening coverage
 
-`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
+`brokedj_quality_tests` covers stable playback, pause/seek transitions, loop-wrap continuity, cue switching continuity, control automation, master/cue output protection and cue routing isolation. `brokedj_render_metrics_tests` adds reproducible numeric transition and pitch-changing rate-conversion measurements, including high-frequency passband/stopband evidence for downsampling. These tests support implementation hardening; reviewed listening on representative material and devices remains required before stronger sound-quality claims.
 
 ## Existing core coverage
 
@@ -91,7 +99,7 @@ Empty silence; invalid clip/deck/device-rate rejection; stereo playback; playhea
 
 ## What automated checks do not certify
 
-Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. Catmull-Rom rate conversion is still pitch-changing resampling, not key lock/time stretch. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
+Automated CI does not by itself certify Windows 11 clean-machine usability, physical audio hardware, device switching, real four-output cue isolation, controller support, latency, listening quality, zero audible clicks/dropouts, ASIO support, or multi-hour live reliability. The hybrid rate converter remains pitch-changing resampling, not key lock/time stretch; its finite windowed-sinc anti-alias gate does not prove ideal reconstruction or inaudibility on arbitrary music. The smooth output safety curve is not a transparent/look-ahead or true-peak limiter.
 
 ## Native acceptance checklist
 
@@ -102,6 +110,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
 - [x] Objective offline render metrics and callback heap-allocation contract pass exact-head Linux sanitizer and Windows x64 CI for PR #9.
 - [x] Master/cue safety protection and routing regressions pass exact-final-head Linux + Windows CI and merge through PR #10.
+- [ ] Band-limited rate-conversion package passes exact-head Linux sanitizer and Windows x64 CI and is merged.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Broader real-world mono/stereo WAV, FLAC, OGG, AIFF and CBR/VBR MP3 corpus decodes/streams as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio across the broader corpus.

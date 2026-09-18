@@ -124,23 +124,24 @@ public:
                 if (fillChunk(chunk, true)) didWork = true;
                 else readFailed = !threadShouldExit();
             };
-
-            // Seek/refill recovery gets the exact requested region first. Forward
-            // read-ahead follows, then one previous chunk for interpolation near
-            // boundaries. A new seek preempts stale forward work between chunks,
-            // which keeps recovery latency bounded by at most the in-flight read
-            // rather than by the rest of the old read-ahead window.
-            tryFill(centre);
-            for (int offset = 1; offset < readAheadChunks && !threadShouldExit() && !readFailed; ++offset) {
+            const auto stillCurrent = [&] {
                 if (requestedChunkChanged()) {
                     requestChanged = true;
-                    break;
+                    return false;
                 }
+                return true;
+            };
+
+            // Recovery always loads the requested chunk first, then both immediate
+            // neighbours before deep forward read-ahead. The interpolation engine
+            // can require samples on either side of the cursor, so this ordering
+            // materially reduces avoidable post-seek starvation at chunk edges.
+            tryFill(centre);
+            if (!threadShouldExit() && !readFailed && stillCurrent()) tryFill(centre - 1);
+            if (!threadShouldExit() && !readFailed && stillCurrent()) tryFill(centre + 1);
+            for (int offset = 2; offset < readAheadChunks && !threadShouldExit() && !readFailed; ++offset) {
+                if (!stillCurrent()) break;
                 tryFill(centre + offset);
-            }
-            if (!threadShouldExit() && !readFailed && !requestChanged) {
-                if (requestedChunkChanged()) requestChanged = true;
-                else tryFill(centre - 1);
             }
 
             if (requestChanged) continue;

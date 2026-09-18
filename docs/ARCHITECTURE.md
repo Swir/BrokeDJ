@@ -10,15 +10,15 @@ Atomics used in the callback are required to be always lock-free at compile time
 
 ## Signal path
 
-Per deck: in-memory clip **or** bounded stream cache -> readiness-aware four-point Catmull-Rom variable-rate interpolation -> basic split-band EQ -> saturation -> fixed 250 ms feedback echo -> short transport/cache transition blend -> pre-fader headphone tap -> channel gain -> crossfader group -> master gain -> hard sample ceiling.
+Per deck: in-memory clip **or** bounded stream cache -> hybrid variable-rate converter -> basic split-band EQ -> saturation -> fixed 250 ms feedback echo -> short transport/cache transition blend -> pre-fader headphone tap -> channel gain -> crossfader group -> master gain -> smooth bounded output safety curve.
 
-A/C belong to the left crossfader group and B/D to the right. Cue reaches output indices 2 and 3 only if at least four channels are available. It is never automatically mixed into the master. Output ceiling protection is not a look-ahead or true-peak limiter.
+The rate converter uses four-point Catmull-Rom interpolation when the effective source step does not require downsampling. When the step exceeds one source frame per output sample, it switches to a prepared 24-tap Blackman-windowed sinc kernel selected from a finite cutoff/phase lookup bank. The bank is allocated and normalized by `prepare()` while audio is stopped; the callback only performs bounded lookup and multiply-accumulate work. Its cutoff follows the source/output/rate step so energy above the output Nyquist region is reduced before decimation. This remains pitch-changing resampling, not time-stretch or key lock.
 
-The Catmull-Rom path is pitch-changing rate conversion and does not perform phase-vocoder/time-domain stretching, anti-aliasing across every transposition, or key lock. Those remain M2 engineering gates.
+A/C belong to the left crossfader group and B/D to the right. Cue reaches output indices 2 and 3 only if at least four channels are available. It is never automatically mixed into the master. Output safety protection is not a look-ahead or true-peak limiter.
 
 ## Real-time callback boundaries
 
-The audio callback performs bounded arithmetic, atomic loads/stores, preallocated delay-buffer access and immutable clip/cache reads. It does not perform file/network I/O, decoding, plugin scanning, allocation/free of clip objects or blocking mutex acquisition.
+The audio callback performs bounded arithmetic, atomic loads/stores, immutable precomputed resampler-kernel reads, preallocated delay-buffer access and immutable clip/cache reads. It does not perform file/network I/O, decoding, plugin scanning, kernel generation, allocation/free of clip objects or blocking mutex acquisition.
 
 Track adoption clears already allocated delay buffers. This is bounded but can still be a measurable callback spike, so its worst-case cost needs measurement before live qualification.
 
@@ -30,9 +30,9 @@ The JUCE-independent `realtime_contract` test instruments heap allocation in its
 
 Small tracks whose decoded stereo float payload is at most 64 MiB use the simple in-memory path. Larger supported local files use `StreamCache`: 32 fixed slots of 4096 stereo frames. Sample cells and publication metadata are atomic so the audio callback never locks while a background reader refills a slot.
 
-The reader primes the first region, then follows a last-request-wins frame hint from transport/seek. The exact requested chunk is refilled first, forward read-ahead follows, and one previous chunk is then considered for interpolation support. Chunks outside the file are skipped before decode work so the worker cannot spin merely because its forward window extends beyond EOF. A missing cache cell returns silence and requests that source region; the callback never waits for disk/decoder work. Sparse waveform preview generation reads bounded windows off the audio thread instead of allocating the full decoded track.
+The reader primes the first region, then follows a last-request-wins frame hint from transport/seek. After a new request it fills the exact requested chunk first, then the immediate previous and next chunks before deeper forward read-ahead. This ordering supports interpolation kernels that can need samples on either side of the cursor and reduces avoidable starvation at chunk boundaries after a seek. Chunks outside the file are skipped before decode work so the worker cannot spin merely because its forward window extends beyond EOF. A missing cache cell returns silence and requests that source region; the callback never waits for disk/decoder work. Sparse waveform preview generation reads bounded windows off the audio thread instead of allocating the full decoded track.
 
-A streamed Catmull-Rom output frame is considered readable only when every interpolation tap needed by both stereo channels is available. Partial tap sets are rejected as a unit rather than mixing cached values with implicit zeros. When playback enters starvation, the engine fades from the last processed sample toward bounded silence; when a fully readable interpolation frame returns, it fades back in using the same short transition window. This reduces abrupt refill edges but is not a claim of inaudible recovery for every codec/storage path.
+A streamed output frame is considered readable only when every interpolation tap needed by both stereo channels is available. Partial tap sets are rejected as a unit rather than mixing cached values with implicit zeros. When playback enters starvation, the engine fades from the last processed sample toward bounded silence; when a fully readable interpolation frame returns, it fades back in using the same short transition window. This reduces abrupt refill edges but is not a claim of inaudible recovery for every codec/storage path.
 
 A non-audio `StreamCacheDiagnostics` snapshot reports the requested frame/chunk, whether that exact requested region is resident, bounded forward coverage, total failed cache reads, starvation/refill episode counts, current starvation state and the most recent missed frame. These are cache/playback observability signals, not hardware underrun counters or live-readiness evidence.
 
@@ -42,7 +42,9 @@ This architecture bounds sample-cache memory independently of track duration and
 
 Deterministic tests cover transport transitions, finite output during aggressive controls, stream-cache publication/miss/seek behavior, starvation episode accounting and refill-onset smoothing. The streaming fixture can model a 90-minute track without allocating full-track audio, exercise repeated distant seeks, a prepared whole-track loop edge and intentional starvation/refill recovery.
 
-The `render_metrics` target adds reproducible numeric evidence for the current pitch-changing rate converter and transition system: rate/frequency error, residual RMS ratio, DC, output level/peak and maximum adjacent-sample transition delta are gated on deterministic fixtures. Those numbers are regression baselines for this implementation, not proof of perceptual transparency, full-band anti-alias performance or professional key lock. Automated render checks support implementation confidence but do not replace reviewed listening tests on representative material and real output devices.
+The `render_metrics` target adds reproducible numeric evidence for the pitch-changing rate converter and transition system: low-frequency rate/frequency error, residual RMS ratio, DC, output level/peak and maximum adjacent-sample transition delta are gated on deterministic fixtures. A separate 1.5x test compares an 8 kHz passband tone with a 19 kHz source that would fold into the audible band without pre-decimation filtering; it gates stopband RMS and the stopband/passband ratio. These are regression baselines for the implementation, not proof of perceptual transparency, ideal reconstruction, professional key lock or inaudibility on arbitrary music.
+
+Automated render checks support implementation confidence but do not replace reviewed listening tests on representative material and real output devices. The current finite polyphase/windowed-sinc bank is an engineering improvement over the unfiltered speed-up path, not a claim that no stronger production resampler will ever be justified.
 
 ## Planned extension boundaries
 

@@ -24,7 +24,7 @@ Windows 11 x64 first · Native C++ audio · No subscription, ads, or mandatory a
 
 | Area | Implemented in source | Validation / limits |
 |---|---|---|
-| Audio core | Four stereo decks; variable-rate playback; start/pause; seek; whole-track loop; Catmull-Rom rate conversion; smoothed transport/EQ/FX transitions | Core tests cover deterministic transport and automation behavior. Rate changes pitch; no key lock or beat grid. |
+| Audio core | Four stereo decks; variable-rate playback; start/pause; seek; whole-track loop; hybrid rate conversion with Catmull-Rom when no downsampling filter is needed and a prepared band-limited windowed-sinc path for speed-up/downsampling; smoothed transport/EQ/FX transitions | Core tests cover deterministic transport and automation behavior. Rate changes pitch; no key lock or beat grid. |
 | Mixer | Channel gain; basic three-band EQ; equal-power crossfader; master gain; smooth master/cue output safety stage | A/C are assigned left, B/D right. The safety stage is not a transparent/look-ahead limiter; the mixer is not yet fully configurable. |
 | Effects | Fixed 250 ms feedback echo and saturation per deck | Two effects, not 40 presets disguised as effects. Beat sync and effect chains are pending. |
 | Cue | Pre-fader, post-EQ/FX stereo headphone bus | Outputs 3/4 only. Two-output devices do not receive cue mixed into master. Physical hardware validation pending. |
@@ -33,7 +33,7 @@ Windows 11 x64 first · Native C++ audio · No subscription, ads, or mandatory a
 | Language | Polish selected for a Polish system; otherwise English | Decoder diagnostics currently fall back to English. No global translation claim. |
 | Reliability | Immutable clip handoff; deferred destruction; smooth bounded output safety; shutdown cancellation; smoothed control automation; bounded stream cache for large tracks | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
 
-The master/cue safety curve leaves the normal region unchanged and progressively compresses only the top output region toward a 0.98 ceiling. It is **not** a transparent look-ahead or true-peak limiter. The clipping warning is based on the signal before this protection, so lower gain when it appears. The waveform is an amplitude preview, not detected beats or musical phrases. Catmull-Rom interpolation improves development playback over the original linear reference, but it is **not** a time-stretch/key-lock engine. The large-track cache prevents full-file RAM growth; it does not yet prove dropout-free playback on every disk, codec or seek pattern.
+The master/cue safety curve leaves the normal region unchanged and progressively compresses only the top output region toward a 0.98 ceiling. It is **not** a transparent look-ahead or true-peak limiter. The clipping warning is based on the signal before this protection, so lower gain when it appears. The waveform is an amplitude preview, not detected beats or musical phrases. Variable-rate playback now uses a prepared 24-tap Blackman-windowed sinc filter bank when the effective source step exceeds one frame per output sample, reducing out-of-band energy before downsampling; the lower-cost Catmull-Rom path remains for steps that do not need that anti-alias filter. This is still pitch-changing resampling, **not** time-stretch/key lock or proof of inaudibility on all material. The large-track cache prevents full-file RAM growth; it does not yet prove dropout-free playback on every disk, codec or seek pattern.
 
 ## Project status
 
@@ -57,7 +57,7 @@ Source of truth: [`docs/progress.json`](docs/progress.json). This number is not 
 |---|---|
 | Four native decks | Independent stereo playback engines and deck controls |
 | Safer transport | Short transition crossfades around play/pause/seek discontinuities instead of abrupt jumps |
-| Improved rate conversion | Four-point Catmull-Rom interpolation for variable-rate playback while key lock remains a future milestone |
+| Improved rate conversion | Catmull-Rom interpolation for non-downsampling playback plus prepared band-limited windowed-sinc filtering when speed-up/downsampling requires anti-alias protection; key lock remains a future milestone |
 | Bounded long-track playback | Large local tracks use a fixed-size, lock-free sample cache filled by a background reader instead of decoding the entire track into RAM |
 | Independent headphone cue | Dedicated logical outputs 3/4 when the selected interface provides four output channels |
 | Safer output ceiling | A smooth allocation-free master/cue safety curve bounds extreme output while preserving pre-protection overload diagnostics |
@@ -131,7 +131,7 @@ Runtime diagnostics use JUCE's application log directory under `BrokeDJ/BrokeDJ.
 |---|---|
 | `src/core/` | JUCE-independent engine, controls, meters, immutable clip handoff and bounded stream cache |
 | `src/app/` | Native interface, decoder/read-ahead workers and device integration |
-| `tests/` | Deterministic core, quality-transition, streaming-cache and concurrent handoff tests |
+| `tests/` | Deterministic core, quality-transition, streaming-cache, render-metric and concurrent handoff tests |
 | `assets/readme/` | README PRO hero and generated SVG-only progress visuals |
 | `docs/` | Architecture, build instructions, validation and progress evidence |
 | `.github/workflows/` | Windows build, core tests and development artifact packaging |
@@ -142,7 +142,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/ARCHITECTURE.md`](docs/ARCHITE
 
 ## 🔎 Search Keywords
 
-`open source DJ software` • `Windows 11 DJ mixer` • `C++ JUCE audio workstation` • `four deck DJ software` • `native DJ application` • `DJ headphone cue` • `DJ audio effects` • `real time audio C++` • `bounded audio streaming` • `DJ read ahead cache` • `open source music mixing` • `DJ software Windows x64` • `CMake audio application` • `BrokeDJ` • `Swir DJ software`
+`open source DJ software` • `Windows 11 DJ mixer` • `C++ JUCE audio workstation` • `four deck DJ software` • `native DJ application` • `DJ headphone cue` • `DJ audio effects` • `real time audio C++` • `band limited audio resampling` • `bounded audio streaming` • `DJ read ahead cache` • `open source music mixing` • `DJ software Windows x64` • `CMake audio application` • `BrokeDJ` • `Swir DJ software`
 
 <div align="center">
 
