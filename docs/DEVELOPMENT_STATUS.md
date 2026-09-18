@@ -5,34 +5,35 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`
-- Seek/refill hardening pull request: `#5` — merged
-- Final PR head: `70e9143d2e1897a57c5174102f1a8dcb32c96fe6`
-- Exact-final-head GitHub Actions run: `35336109555` — Linux ASan/UBSan core/SVG checks and Windows x64 configure/build/CTest/native no-audio GUI-smoke/staging passed
-- Merge commit: `7cced0d18fe7d192fa983b482d2637b2204fe0f5`
+- Active branch: `feat/stream-starvation-smoothing`
+- Active scope: lock-free cache starvation history, complete-tap stream reads and refill transition smoothing
+- Validation state: feature branch pending exact-final-head GitHub Actions before merge
+- Previous merged seek/refill hardening: PR `#5`, merge `7cced0d18fe7d192fa983b482d2637b2204fe0f5`
 - Roadmap counter remains: **M0 complete; 1/10 equal-weight milestones = 10.0%**
 
-## Completed in the seek/refill hardening package
+## Completed on the active branch
 
-- Added a bounded, non-audio `StreamCacheDiagnostics` snapshot that exposes the requested frame/chunk, exact requested-region residency and forward cache coverage without claiming a physical audio underrun.
-- Changed the background read-ahead order so a seek refills the exact requested chunk before forward prefetch.
-- Prevented out-of-range chunks beyond EOF from being counted as successful read-ahead work, eliminating a potential end-of-track worker busy loop.
-- Expanded `brokedj_stream_cache_tests` with a virtual 90-minute stream, repeated distant seeks, bounded finite-output checks, streamed whole-track loop wrap and deterministic starvation/refill snapshots without allocating full-track audio.
-- Preserved the real-time boundary: no new file I/O, decode work, allocation, logging or blocking synchronization was added to the audio callback.
+- Added lock-free totals for failed cache reads, starvation episodes and successful refill episodes plus the latest missed source frame.
+- Kept cache-probe misses separate from playback starvation: the engine classifies one continuous unavailable period as one episode rather than counting every Catmull-Rom tap.
+- Made streamed Catmull-Rom reads readiness-aware. If any required stereo interpolation tap is unavailable, the frame is treated as unavailable rather than combining cached samples with implicit zeros.
+- Added a short transition toward silence when starvation begins and a short refill-onset fade when a complete interpolation frame becomes readable again.
+- Expanded deterministic stream tests to check event accounting, recovery accounting and refill fade behavior in addition to the existing virtual 90-minute seek/loop stress.
+- Preserved the real-time boundary: no file I/O, decode work, allocation, logging or blocking synchronization was added to the audio callback.
 
 ## Validation state
 
-- Exact-final-head PR CI passed before merge on both required jobs.
-- The automated Windows job built the native x64 app, ran the complete CTest set including the expanded stream-cache target, completed the no-audio GUI lifecycle smoke test, staged the development build/source and uploaded the artifact.
-- No physical audio interface, Windows 11 clean-machine, slow-storage or reviewed listening validation was performed by this package.
+- Source implementation and deterministic tests are committed on the feature branch.
+- Exact-final-head Linux ASan/UBSan and Windows x64 build/CTest/GUI-smoke/staging validation is required before merge.
+- No physical audio interface, Windows 11 clean-machine, slow-storage or reviewed listening validation has been performed by this package.
 
 ## Remaining blockers / gates
 
 1. Clean Windows 11 interactive launch, resize/import and actual audio interface behavior still require manual verification.
-2. Long-file behavior still needs real WAV/FLAC/OGG/MP3 seek/loop, slow-storage and reviewed listening evidence.
-3. Cache-starvation event/history counters and refill-onset smoothing remain open; the current snapshot is state observability, not an underrun certificate.
+2. Long-file behavior still needs real WAV/AIFF/FLAC/OGG/MP3 seek/loop, intentionally slow-reader/storage stress and reviewed listening evidence.
+3. The new starvation/refill counters are cache/playback diagnostics, not physical device underrun counters.
 4. Objective render fixtures and reviewed listening tests are needed before stronger sound-quality claims.
 5. Time-stretch/key-lock, beat analysis/grid and the rest of M2 remain open.
 
 ## Next highest-impact step
 
-Add cache-starvation event/history accounting plus refill-onset smoothing, then exercise real supported-codec seek/loop fixtures before moving deeper into beat/key processing.
+After exact-head CI passes and this branch merges, add real supported-codec long-file fixtures plus controlled slow-reader stress, then correlate the new starvation/refill history with deterministic delayed-input tests before moving deeper into beat/key processing.
