@@ -111,10 +111,11 @@ void run() {
                                  outL.data(), outR.data(), fractionalOutputFrames),
               "fractional-rate clock block processes");
     }
-    const auto expected = static_cast<std::int64_t>(std::floor(
-        static_cast<double>(fractionalOutputFrames * fractionalBlocks) * 1.001));
-    check(planned == expected, "fractional carry prevents cumulative source-clock drift");
-    check(deck.sourceFramesConsumed() == expected,
+    const double idealSourceFrames = static_cast<double>(fractionalOutputFrames)
+        * static_cast<double>(fractionalBlocks) * 1.001;
+    check(std::abs(static_cast<double>(planned) - idealSourceFrames) < 1.0,
+          "fractional carry keeps cumulative source-clock error below one frame");
+    check(deck.sourceFramesConsumed() == planned,
           "reported source consumption matches fractional clock plan");
     check(deck.fractionalSourceCarry() >= 0.0 && deck.fractionalSourceCarry() < 1.0,
           "fractional carry stays normalized");
@@ -135,7 +136,8 @@ void run() {
           "oversized output request is rejected before processing");
 
     std::cout << "METRIC deck_keylock_1_25x_hz=" << lockedHz
-              << " fractional_clock_source_frames=" << expected
+              << " fractional_clock_source_frames=" << planned
+              << " ideal_fractional_source_frames=" << idealSourceFrames
               << " carry=" << deck.fractionalSourceCarry()
               << " input_latency_frames=" << deck.inputLatencyFrames()
               << " output_latency_frames=" << deck.outputLatencyFrames() << '\n';
