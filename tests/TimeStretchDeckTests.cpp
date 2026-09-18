@@ -45,6 +45,21 @@ void run() {
     check(!deck.prepare(0.0, 1024), "invalid sample rate rejected");
     check(!deck.prepare(48000.0, 0), "invalid output bound rejected");
     check(!deck.prepare(48000.0, 20000, 4.0), "input bound overflow rejected");
+
+    // Regression: the Engine-facing device bridge derives a 568-frame source-domain
+    // output bound for a 96 kHz source feeding a 48 kHz / 256-frame device block.
+    // Signalsmith's seek history at 96 kHz can exceed the ordinary 4x realtime
+    // block demand (2273 frames), so prepare must reserve the larger requirement
+    // instead of rejecting an otherwise supported source/device-rate pair.
+    broke::TimeStretchDeckAdapter highRateDeck;
+    check(highRateDeck.prepare(96000.0, 568, 4.0),
+          "96 kHz small-block deck reserves discontinuity history");
+    check(highRateDeck.seekLengthFrames() > 0
+              && highRateDeck.maxInputFrames() >= highRateDeck.seekLengthFrames(),
+          "96 kHz prepared input capacity covers Signalsmith seek history");
+    check(highRateDeck.maxInputFrames() >= 2273,
+          "96 kHz prepared input capacity still covers worst realtime playback demand");
+
     check(deck.prepare(48000.0, 4096, 4.0), "deck adapter prepares");
     check(deck.maxOutputFrames() == 4096, "prepared output bound exposed");
     check(deck.maxInputFrames() >= 16384, "prepared input bound covers maximum rate");
@@ -140,7 +155,9 @@ void run() {
               << " ideal_fractional_source_frames=" << idealSourceFrames
               << " carry=" << deck.fractionalSourceCarry()
               << " input_latency_frames=" << deck.inputLatencyFrames()
-              << " output_latency_frames=" << deck.outputLatencyFrames() << '\n';
+              << " output_latency_frames=" << deck.outputLatencyFrames()
+              << " high_rate_seek_frames=" << highRateDeck.seekLengthFrames()
+              << " high_rate_input_capacity=" << highRateDeck.maxInputFrames() << '\n';
 }
 } // namespace
 

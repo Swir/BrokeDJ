@@ -126,6 +126,19 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_test(NAME time_stretch_device_bridge_realtime
             COMMAND brokedj_timestretch_device_bridge_realtime_tests)
         set_tests_properties(time_stretch_device_bridge_realtime PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_timestretch_engine_bridge_tests
+            tests/TimeStretchEngineBridgeTests.cpp)
+        target_link_libraries(brokedj_timestretch_engine_bridge_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch_engine_bridge COMMAND brokedj_timestretch_engine_bridge_tests)
+        set_tests_properties(time_stretch_engine_bridge PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_timestretch_engine_bridge_realtime_tests
+            tests/TimeStretchEngineBridgeRealtimeTests.cpp)
+        target_link_libraries(brokedj_timestretch_engine_bridge_realtime_tests PRIVATE brokedj_timestretch)
+        add_test(NAME time_stretch_engine_bridge_realtime
+            COMMAND brokedj_timestretch_engine_bridge_realtime_tests)
+        set_tests_properties(time_stretch_engine_bridge_realtime PROPERTIES TIMEOUT 90)
     endif()
 endif()
 

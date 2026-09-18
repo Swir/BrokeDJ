@@ -5,9 +5,11 @@ This file is a durable engineering checkpoint, not a release announcement.
 ## Current checkpoint
 
 - Default branch: `main`.
-- Verified merged baseline: `6b8449932c23ab2e6aafc3ab4bcbcc1e62a42615` (PR #17 merged).
-- PR #17 exact-final-head `689fc096c04eeeea889a0d81b32e940b2837e995` passed run `35379038363`: Linux ASan/UBSan + full optional time-stretch CTest passed; Windows x64 configure/build/full CTest/audio diagnostics/native no-audio GUI smoke/staging/artifact upload passed.
-- No competing BrokeDJ development PR was left open by this checkpoint.
+- Verified merged baseline: `2a9647466375f071b47a0c2ae1f47be2adf5fb56` after the PR #17 discontinuity/identity gate was recorded.
+- Active work: PR #18 on `feat/engine-facing-keylock-adapter` qualifies the smallest opt-in Engine-facing boundary around the verified time-stretch/device bridge; it still does not replace `Engine::process()` or expose a key-lock UI control.
+- The first PR #18 exact-head run `35381874230` compiled successfully on Linux and Windows but failed the new `time_stretch_engine_bridge` test on both platforms at `Engine-facing bridge prepares`. The failure was deterministic, not a runner-only timeout.
+- Root cause: the deck adapter sized prepared input only from maximum realtime output demand. At 96 kHz with the 96->48 kHz / 256-device-frame Engine fixture, Signalsmith discontinuity/seek history can exceed that block-derived capacity, causing `TimeStretchSourceBridge::prepare()` to reject an otherwise supported source/device-rate pair.
+- Candidate fix on PR #18 now discovers Signalsmith seek history during off-callback `prepare()`, widens the prepared input capacity when required, and adds a direct 96 kHz small-block regression fixture while retaining the existing absolute bounds. Exact-final-head CI remains the merge gate.
 - Roadmap counter remains **M0 complete; 1/10 equal-weight milestones = 10.0%**.
 
 ## Verified device-rate research boundary
@@ -23,20 +25,27 @@ PR #17 then hardened the bridge before any Engine hookup:
 - deterministic fixtures reject stale FIFO reuse across clip/loop/cursor/source-rate/control discontinuities while preserving caller-provided production transport;
 - the warmed device-rate realtime contract pushes unchanged playback-rate/pitch snapshots every measured block and still requires zero heap allocation/deallocation.
 
+## PR #18 Engine-facing qualification scope
+
+The active candidate adds `TimeStretchEngineBridge` as an opt-in integration boundary. It renders the existing production-style hybrid source converter in parallel as deterministic fallback, feeds that fallback into the bounded stretch/device bridge, exposes an algorithm-latency-compensated audible cursor for future scheduling, and adds Engine-level transition/failure/realtime fixtures. It remains research-only until the exact final PR head passes the full required CI matrix and is merged.
+
+The high-rate preparation fix is deliberately confined to off-callback preparation. Runtime `inputFramesForOutput()` and `processStereo()` remain bounded by prepared capacity, while discontinuity history now fits the same capacity contract instead of relying on a sample-rate-specific guessed preroll constant.
+
 ## Validation state
 
-- PR #17 exact-final-head Linux and Windows development gates are green and the change is merged.
+- PR #17 exact-final-head Linux and Windows development gates are green and merged.
+- PR #18 initial head failed deterministically in the new high-rate Engine bridge fixture; the root cause is diagnosed and a bounded capacity-planning fix plus regression coverage is now on the same branch for exact-final-head revalidation.
 - Shared-runner timing remains diagnostic only. No physical Windows 11 audio interface, controller, reviewed music-domain listening, measured device latency or underrun qualification is claimed.
-- `docs/progress.json` remains unchanged at 1/10 = 10.0%; these research/hardening slices do not close M1 or M2.
+- `docs/progress.json` remains unchanged at 1/10 = 10.0%; Engine-facing key-lock research does not by itself close M1 or M2.
 
 ## Remaining blockers / gates
 
-1. Production key lock still needs a smallest-possible opt-in Engine-facing integration without creating a mandatory Signalsmith dependency for ordinary playback.
-2. Reported stretch/SRC latency must be applied to deck/output scheduling, not merely exposed as metadata.
-3. Engine-level parallel-fallback fixtures must cover enable/bypass, rate/pitch change, seek, loop, load, cache starvation and processor failure before any key-lock UI is exposed.
+1. PR #18 must pass exact-final-head Linux ASan/UBSan and Windows x64 build/full CTest/GUI-smoke/development packaging before merge.
+2. Production `Engine::process()` still uses the current pitch-changing hybrid converter; key lock remains opt-in research until the integration boundary is fully qualified and deliberately wired.
+3. Algorithm-latency compensation is being qualified as scheduling metadata; real device latency and perceptual switching still require hardware/listening evidence.
 4. Clean Windows 11 interactive launch, resize/import and physical two-/four-output audio-interface behavior remain manual M1 gates.
 5. Beat/tempo/key analysis, editable beat grids and the remainder of M2 remain open.
 
 ## Next highest-impact step
 
-Implement the smallest opt-in Engine-facing integration around the verified device bridge: prepare/re-prime outside the callback, render the current production converter in parallel as deterministic fallback, apply algorithm-latency scheduling explicitly, and add transition fixtures before exposing a key-lock control.
+Finish PR #18 exact-head qualification. If green, merge the Engine-facing boundary without exposing UI, then use the verified adapter to design the smallest safe production hookup with explicit off-callback prepare/re-prime ownership and deterministic bypass/fallback behavior before any user-visible key-lock control is enabled.
