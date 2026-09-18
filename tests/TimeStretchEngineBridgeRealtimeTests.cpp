@@ -54,22 +54,24 @@ broke::Clip makeTone() {
 }
 
 void run() {
+    using Integration = broke::TimeStretchEngineBridge;
+    using Snapshot = Integration::ControlSnapshot;
     constexpr double sourceRate = 44100.0;
     constexpr double deviceRate = 48000.0;
-    constexpr double playbackRate = 1.25;
     constexpr int frames = 1024;
-    constexpr int measuredBlocks = 500;
+    constexpr int firstMeasuredBlocks = 250;
+    constexpr int secondMeasuredBlocks = 250;
+    constexpr int measuredBlocks = firstMeasuredBlocks + secondMeasuredBlocks;
 
     auto clip = makeTone();
-    broke::TimeStretchEngineBridge integration;
+    Integration integration;
     check(integration.prepare(sourceRate, deviceRate, 4096, 4.0),
           "Engine-facing integration prepares outside realtime window");
-    check(integration.setPlaybackRate(playbackRate), "playback rate accepted");
-    check(integration.setPitchSemitones(0.0f), "neutral pitch accepted");
-    integration.setEnabled(true);
 
     double cursor = sourceRate * 2.0 + 0.5;
-    check(integration.prime(clip, cursor, false), "integration primes before measurement");
+    constexpr Snapshot firstSnapshot{1.25, 0.0f, true};
+    check(integration.configureAndPrime(clip, cursor, false, firstSnapshot),
+          "first control snapshot stages and primes outside realtime window");
     std::vector<float> left(frames);
     std::vector<float> right(frames);
 
@@ -79,7 +81,7 @@ void run() {
         check(integration.render(clip, cursor, false,
                                  left.data(), right.data(), frames, next, audible),
               "warmup block renders");
-        check(integration.lastRenderPath() == broke::TimeStretchEngineBridge::RenderPath::stretch,
+        check(integration.lastRenderPath() == Integration::RenderPath::stretch,
               "warmup remains on stretch path");
         cursor = next;
     }
@@ -87,23 +89,55 @@ void run() {
     allocations.store(0, std::memory_order_relaxed);
     deallocations.store(0, std::memory_order_relaxed);
     const auto started = std::chrono::steady_clock::now();
+
     trackHeap.store(true, std::memory_order_seq_cst);
-    for (int block = 0; block < measuredBlocks; ++block) {
-        if (!integration.setPlaybackRate(playbackRate)
-            || !integration.setPitchSemitones(0.0f)
+    for (int block = 0; block < firstMeasuredBlocks; ++block) {
+        if (!integration.setPlaybackRate(firstSnapshot.playbackRate)
+            || !integration.setPitchSemitones(firstSnapshot.pitchSemitones)
             || integration.needsPrime()) {
             trackHeap.store(false, std::memory_order_seq_cst);
-            throw std::runtime_error("idempotent Engine control snapshot remains primed");
+            throw std::runtime_error("idempotent first Engine control snapshot remains primed");
         }
         double next = cursor;
         double audible = cursor;
         if (!integration.render(clip, cursor, false,
                                 left.data(), right.data(), frames, next, audible)
-            || integration.lastRenderPath() != broke::TimeStretchEngineBridge::RenderPath::stretch
-            || integration.lastFallbackReason() != broke::TimeStretchEngineBridge::FallbackReason::none
+            || integration.lastRenderPath() != Integration::RenderPath::stretch
+            || integration.lastFallbackReason() != Integration::FallbackReason::none
             || !(audible < next)) {
             trackHeap.store(false, std::memory_order_seq_cst);
-            throw std::runtime_error("measured block keeps stretch path and compensated scheduling");
+            throw std::runtime_error("first measured window keeps stretch path and compensated scheduling");
+        }
+        cursor = next;
+    }
+    trackHeap.store(false, std::memory_order_seq_cst);
+
+    // This control/discontinuity handoff deliberately runs outside the measured
+    // callback window. It proves the future Engine owner can change rate/pitch
+    // and rebuild processor history without ever doing re-prime work in render().
+    constexpr Snapshot secondSnapshot{0.80, -3.0f, true};
+    check(integration.configureAndPrime(clip, cursor, false, secondSnapshot),
+          "second control snapshot re-stages outside realtime window");
+    check(!integration.needsPrime(),
+          "off-callback restage clears control-change prime debt before render");
+
+    trackHeap.store(true, std::memory_order_seq_cst);
+    for (int block = 0; block < secondMeasuredBlocks; ++block) {
+        if (!integration.setPlaybackRate(secondSnapshot.playbackRate)
+            || !integration.setPitchSemitones(secondSnapshot.pitchSemitones)
+            || integration.needsPrime()) {
+            trackHeap.store(false, std::memory_order_seq_cst);
+            throw std::runtime_error("idempotent second Engine control snapshot remains primed");
+        }
+        double next = cursor;
+        double audible = cursor;
+        if (!integration.render(clip, cursor, false,
+                                left.data(), right.data(), frames, next, audible)
+            || integration.lastRenderPath() != Integration::RenderPath::stretch
+            || integration.lastFallbackReason() != Integration::FallbackReason::none
+            || !(audible < next)) {
+            trackHeap.store(false, std::memory_order_seq_cst);
+            throw std::runtime_error("second measured window keeps stretch path and compensated scheduling");
         }
         cursor = next;
     }
@@ -113,9 +147,9 @@ void run() {
     const auto observedAllocations = allocations.load(std::memory_order_relaxed);
     const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
     check(observedAllocations == 0,
-          "Engine-facing render/control snapshot performs no heap allocation after prepare/prime");
+          "Engine-facing render/control snapshots perform no heap allocation after off-callback staging");
     check(observedDeallocations == 0,
-          "Engine-facing render/control snapshot performs no heap deallocation after prepare/prime");
+          "Engine-facing render/control snapshots perform no heap deallocation after off-callback staging");
     check(std::all_of(left.begin(), left.end(), [](float value) { return std::isfinite(value); }),
           "left output remains finite");
     check(std::all_of(right.begin(), right.end(), [](float value) { return std::isfinite(value); }),
@@ -131,7 +165,9 @@ void run() {
     std::cout << "METRIC engine_bridge_blocks=" << measuredBlocks
               << " source_rate=" << sourceRate
               << " device_rate=" << deviceRate
-              << " playback_rate=" << playbackRate
+              << " first_playback_rate=" << firstSnapshot.playbackRate
+              << " second_playback_rate=" << secondSnapshot.playbackRate
+              << " second_pitch_semitones=" << secondSnapshot.pitchSemitones
               << " latency_frames=" << integration.reportedDeviceOutputLatencyFrames()
               << " ns_per_device_frame=" << nsPerFrame
               << " heap_allocations=" << observedAllocations
