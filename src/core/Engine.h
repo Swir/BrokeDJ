@@ -66,7 +66,7 @@ public:
 private:
     struct State {
         double cursor = 0.0;
-        float gain = 0.0f;
+        float gain = 0.0f, rate = 1.0f, cue = 0.0f;
         float low = 1.0f, mid = 1.0f, high = 1.0f;
         float echo = 0.0f, drive = 0.0f;
         std::array<float, 2> bass{}, treble{};
@@ -82,7 +82,7 @@ private:
     std::array<State, deckCount> states;
     double sampleRate = 44100.0;
     float lowCoeff = 0.0f, highCoeff = 0.0f, smoothing = 0.0f;
-    float masterSmooth = 0.0f, crossSmooth = 0.5f;
+    float masterSmooth = 0.0f, crossSmooth = 0.5f, headphoneSmooth = 0.5f;
     int transitionSamples = 1;
 };
 } // namespace broke

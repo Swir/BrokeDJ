@@ -38,8 +38,8 @@ std::unique_ptr<broke::Clip> constantClip(float value, int frames = 48000) {
     return clip;
 }
 
-std::unique_ptr<broke::Clip> stepClip() {
-    auto clip = constantClip(1.0f);
+std::unique_ptr<broke::Clip> stepClip(int frames = 48000) {
+    auto clip = constantClip(1.0f, frames);
     const auto half = clip->left.size() / 2;
     std::fill(clip->left.begin() + static_cast<std::ptrdiff_t>(half), clip->left.end(), -1.0f);
     clip->right = clip->left;
@@ -73,6 +73,33 @@ void run() {
         f.render();
         check(f.audio[0][0] > 0.0f, "seek crossfade prevents immediate polarity discontinuity");
         check(f.audio[0][400] < -0.05f, "seek reaches destination audio after transition");
+    }
+    {
+        Fixture f;
+        check(f.engine.submit(0, stepClip(4096)), "loop continuity clip accepted");
+        f.render();
+        f.engine.control(0).loop = true;
+        f.engine.control(0).seek = 0.99;
+        f.engine.control(0).playing = true;
+        f.render();
+        check(f.audio[0][20] < 0.0f, "loop wrap retains previous polarity at transition start");
+        check(f.audio[0][400] > 0.05f, "loop wrap reaches beginning after short crossfade");
+        check(f.engine.control(0).playing.load(), "loop wrap keeps transport running");
+    }
+    {
+        Fixture f;
+        check(f.engine.submit(0, constantClip(0.4f)), "cue smoothing clip accepted");
+        f.render();
+        f.engine.control(0).playing = true;
+        f.engine.control(0).headphone = true;
+        f.render(12);
+        const float beforeDisable = f.audio[2][511];
+        check(beforeDisable > 0.05f, "cue reaches stable output");
+        f.engine.control(0).headphone = false;
+        f.render();
+        check(f.audio[2][0] > beforeDisable * 0.7f, "cue disable starts from previous level");
+        check(std::abs(f.audio[2][400]) < std::abs(f.audio[2][0]) * 0.3f,
+            "cue disable fades instead of hard cutting");
     }
     {
         Fixture f;

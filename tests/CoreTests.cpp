@@ -78,8 +78,19 @@ void run() {
         check(std::isfinite(f.audio[0][400]), "out-of-range seek is bounded");
     }
     {
-        Fixture f; f.load(0); f.engine.control(0).rate = 1.5f; f.render();
-        check(std::abs(f.engine.meter(0).position.load() - 768.0 / 48000.0) < 1e-8, "variable-rate playback advances correctly");
+        Fixture f; f.load(0);
+        const double normalBlock = 512.0 / 48000.0;
+        const double fastBlock = 768.0 / 48000.0;
+        f.engine.control(0).rate = 1.5f;
+        const double before = f.engine.meter(0).position.load();
+        f.render();
+        const double firstDelta = f.engine.meter(0).position.load() - before;
+        check(firstDelta > normalBlock && firstDelta < fastBlock, "rate change slews instead of jumping");
+        f.render(12);
+        const double settledBefore = f.engine.meter(0).position.load();
+        f.render();
+        const double settledDelta = f.engine.meter(0).position.load() - settledBefore;
+        check(std::abs(settledDelta - fastBlock) < 0.0002, "smoothed rate converges to target");
         f.engine.control(0).playing = false;
         f.engine.control(0).seek = 0.5; f.render();
         check(std::abs(f.engine.meter(0).position.load() - 0.5) < 0.0001f, "normalized seek works while paused");
