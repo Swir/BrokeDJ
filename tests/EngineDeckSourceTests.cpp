@@ -118,12 +118,11 @@ void run() {
     engine.control(0).high = 1.0f;
     engine.control(0).seek = 0.0;
     source.succeed = false;
-    const double beforeFallback = engine.meter(0).position.load();
     for (int block = 0; block < 16; ++block)
         engine.process(outputs.data(), 4, frames);
     check(source.calls >= 28, "failed provider continues to be queried without callback mutation");
-    check(engine.meter(0).position.load() > beforeFallback || beforeFallback > 0.5,
-          "built-in converter advances after provider refusal");
+    check(engine.meter(0).position.load() > 0.05,
+          "built-in converter advances from seek after provider refusal");
     check(std::any_of(audio[0].begin(), audio[0].end(), [](float value) {
         return std::isfinite(value) && std::abs(value) > 0.01f;
     }), "provider refusal falls back to audible production playback");
