@@ -13,18 +13,24 @@ That successful run included:
 - native GUI lifecycle smoke mode with a 30-second timeout and no required audio hardware;
 - staged development files and corresponding source artifact upload.
 
-The original core suite reported **438 assertions/checks**. Four hundred are repeated publication operations in the concurrent handoff stress scenario; they are not 400 different feature tests.
+The original merged core suite reported **438 assertions/checks**. Four hundred are repeated publication operations in the concurrent handoff stress scenario; they are not 400 different feature tests.
+
+## Current transport-continuity package
+
+The current development branch extends continuity hardening without changing the roadmap counter. Before publication, the JUCE-independent C++20 core was compiled locally in optimized and AddressSanitizer/UndefinedBehaviorSanitizer configurations. Both suites passed: **439 core checks and 18 quality checks**.
+
+New deterministic coverage verifies:
+
+- a playback-rate change slews from the old speed rather than jumping instantly, then converges to the requested target;
+- whole-track loop wraparound retains the previous processed polarity at the start of the short transition and reaches the wrapped audio afterward;
+- disabling headphone cue fades from the prior cue level instead of hard-cutting;
+- existing pause, seek and simultaneous EQ/echo/drive automation remain finite and continuous under the established checks.
+
+Exact-head GitHub Actions remains required before merge. Local sanitizer success is supporting evidence, not a substitute for the repository's Windows build/smoke gate or physical audio-interface testing.
 
 ## Audio quality hardening coverage
 
-The merged code adds a second deterministic CTest executable, `brokedj_quality_tests`. Offline compilation of the modified JUCE-independent core and this test executable succeeded before PR publication, and exact-head CI later passed the complete CTest set. The dedicated quality suite contains **10 checks** covering:
-
-- playback reaches a stable level before transition tests;
-- pause starts near the prior processed sample and decays instead of hard-cutting;
-- seek across a polarity step avoids an immediate polarity discontinuity and reaches destination audio after the transition;
-- EQ/echo/drive automation remains finite under simultaneous control changes.
-
-These tests support the implementation of short transport transitions and control smoothing. They do **not** prove inaudibility on every file, buffer size, device or loudspeaker chain.
+The repository has a second deterministic CTest executable, `brokedj_quality_tests`. Its checks cover stable playback, pause/seek transition behavior, loop-wrap continuity, cue switching continuity and control automation. These tests support short transport/cue transitions and control smoothing. They do **not** prove inaudibility on every file, buffer size, device or loudspeaker chain.
 
 ## Existing core coverage
 
@@ -38,6 +44,7 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 
 - [x] Windows x64 build and native no-audio smoke mode pass in CI on the merged audio-quality package.
 - [x] Exact-head PR CI passed before merge for the audio-quality package.
+- [ ] Current transport-continuity branch passes exact-head PR CI.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode as expected.
 - [ ] Invalid, truncated, Unicode-path and oversized files fail clearly without losing working audio.
@@ -46,6 +53,6 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [ ] Device change/disconnect and closing during decode recover safely.
 - [ ] Sample-rate/buffer changes are exercised without invalid output or transport corruption.
 - [ ] Long-running simultaneous playback and repeated loading pass an agreed soak test.
-- [ ] Transport/seek transitions receive deterministic render metrics plus reviewed listening checks on representative fixtures.
+- [ ] Transport/seek/loop/cue transitions receive deterministic render metrics plus reviewed listening checks on representative fixtures.
 
 Use original/generated or appropriately licensed audio fixtures only. Report the commit, OS, device/driver, sample rate, buffer size, reproduction steps and a reviewed/redacted log. Do not mark a release gate complete based only on a scheduled run, a screenshot or a compile result.
