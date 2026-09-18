@@ -62,6 +62,10 @@ void runBasicCacheChecks() {
     check(!missing.requestedRegionReady, "diagnostics expose missing requested region");
     check(missing.readyChunks == 0 && missing.inspectedChunks == 2,
           "diagnostics bound coverage at end of track");
+    check(missing.readMisses == 1 && missing.lastMissFrame == 5000,
+          "diagnostics count lock-free cache read misses");
+    check(missing.starvationEvents == 0 && !missing.starving,
+          "a raw cache probe is not misreported as playback starvation");
 
     cache->publishChunk(1, left.data(), right.data(), left.size());
     check(cache->hasChunk(1), "published chunk becomes visible");
@@ -95,8 +99,11 @@ void runBasicCacheChecks() {
     engine.process(outputs.data(), 4, 512);
     check(cache->requestedFrame() >= static_cast<std::int64_t>(broke::StreamCache::chunkFrames) * 2,
           "engine seek requests uncached stream region");
-    check(!cache->diagnostics().requestedRegionReady,
+    const auto starved = cache->diagnostics();
+    check(!starved.requestedRegionReady,
           "diagnostics report seek target starvation until refill");
+    check(starved.starving && starved.starvationEvents >= 1 && starved.readMisses > missing.readMisses,
+          "engine classifies continuous cache misses as one starvation episode");
 }
 
 void runLongTrackStress() {
@@ -150,11 +157,57 @@ void runLongTrackStress() {
     engine.control(0).seek = missingPosition;
     engine.process(outputs.data(), 4, 512);
     const auto starved = cache->diagnostics(8);
-    check(!starved.requestedRegionReady, "diagnostics expose an intentionally unfilled seek region");
+    check(!starved.requestedRegionReady && starved.starving,
+          "diagnostics expose an intentionally unfilled seek starvation episode");
+    const auto starvationCount = starved.starvationEvents;
     publishWindow(cache, starved.requestedFrame);
+    engine.process(outputs.data(), 4, 512);
     const auto refilled = cache->diagnostics(8);
     check(refilled.requestedRegionReady && refilled.readyChunks >= 1,
-          "diagnostics expose refill recovery without touching the audio callback");
+          "diagnostics expose requested-region refill after playback resumes");
+    check(!refilled.starving && refilled.refillEvents >= 1
+              && refilled.starvationEvents == starvationCount,
+          "refill closes starvation history without inventing a second episode");
+}
+
+void runRefillTransitionCheck() {
+    constexpr std::int64_t total = static_cast<std::int64_t>(broke::StreamCache::chunkFrames) * 8;
+    auto cache = std::make_shared<broke::StreamCache>(total);
+
+    broke::Engine engine;
+    engine.prepare(48000.0);
+    engine.master = 1.0f;
+    engine.crossfader = 0.0f;
+    engine.control(0).gain = 1.0f;
+
+    auto clip = std::make_unique<broke::Clip>();
+    clip->sampleRate = 48000.0;
+    clip->frameCount = total;
+    clip->stream = cache;
+    check(engine.submit(0, std::move(clip)), "refill transition stream submits");
+
+    std::array<std::array<float, 512>, 4> audio{};
+    std::array<float*, 4> outputs{};
+    for (std::size_t i = 0; i < outputs.size(); ++i) outputs[i] = audio[i].data();
+    engine.process(outputs.data(), 4, 512); // adopt
+    engine.control(0).playing = true;
+    for (int block = 0; block < 8; ++block) engine.process(outputs.data(), 4, 512);
+
+    const auto before = cache->diagnostics(4);
+    check(before.starving && before.starvationEvents == 1,
+          "continuous empty playback records one starvation episode");
+    check(before.readMisses > 0, "empty playback records cache read misses");
+
+    publishWindow(cache, before.requestedFrame, 1, 4);
+    engine.process(outputs.data(), 4, 512);
+    const auto after = cache->diagnostics(4);
+    check(!after.starving && after.refillEvents == 1,
+          "first fully readable frame closes the starvation episode");
+    check(std::abs(audio[0][0]) < 0.01f,
+          "refill onset starts from the previous silent state instead of jumping");
+    check(std::abs(audio[0][400]) > 0.05f,
+          "refill transition reaches audible cached audio after the fade window");
+    checkFinite(audio, "refill transition emitted non-finite output");
 }
 }
 
@@ -162,6 +215,7 @@ int main() {
     try {
         runBasicCacheChecks();
         runLongTrackStress();
+        runRefillTransitionCheck();
         std::cout << "PASS: " << checks << " streaming-cache checks\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
