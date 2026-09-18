@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Swir
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
