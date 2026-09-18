@@ -22,14 +22,15 @@ void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-std::unique_ptr<broke::Clip> sineClip(double frequency, float amplitude = 0.25f, int seconds = 4) {
+std::unique_ptr<broke::Clip> sineClip(double frequency, float amplitude = 0.25f, int seconds = 4,
+                                      double sampleRate = outputRate) {
     auto clip = std::make_unique<broke::Clip>();
-    clip->sampleRate = outputRate;
-    const auto frames = static_cast<std::size_t>(outputRate * static_cast<double>(seconds));
+    clip->sampleRate = sampleRate;
+    const auto frames = static_cast<std::size_t>(sampleRate * static_cast<double>(seconds));
     clip->left.resize(frames);
     clip->right.resize(frames);
     for (std::size_t i = 0; i < frames; ++i) {
-        const auto phase = 2.0 * std::numbers::pi * frequency * static_cast<double>(i) / outputRate;
+        const auto phase = 2.0 * std::numbers::pi * frequency * static_cast<double>(i) / sampleRate;
         const auto sample = amplitude * static_cast<float>(std::sin(phase));
         clip->left[i] = sample;
         clip->right[i] = sample;
@@ -150,19 +151,62 @@ ToneMetrics renderTone(double playbackRate) {
     return analyseTone(render(engine, 48000), 1000.0 * playbackRate);
 }
 
-std::vector<float> renderRateConvertedTone(double sourceFrequency, double playbackRate) {
+std::vector<float> renderRateConvertedTone(double sourceFrequency, double playbackRate,
+                                           double sourceSampleRate = outputRate,
+                                           double destinationSampleRate = outputRate) {
     broke::Engine engine;
-    engine.prepare(outputRate);
+    engine.prepare(destinationSampleRate);
     engine.crossfader = 0.0f;
     engine.master = 1.0f;
-    check(engine.submit(0, sineClip(sourceFrequency)), "rate-conversion clip accepted");
+    check(engine.submit(0, sineClip(sourceFrequency, 0.25f, 4, sourceSampleRate)),
+          "rate-conversion clip accepted");
     warmup(engine, blockSize);
     auto& control = engine.control(0);
     control.loop = true;
     control.rate = static_cast<float>(playbackRate);
     control.playing = true;
     warmup(engine);
-    return render(engine, 48000);
+    return render(engine, static_cast<int>(destinationSampleRate));
+}
+
+struct SpectralCase final {
+    const char* name;
+    double sourceSampleRate;
+    double destinationSampleRate;
+    double playbackRate;
+    double passbandFrequency;
+    double stopbandFrequency;
+    double minimumPassbandRms;
+    double maximumStopbandRms;
+    double maximumRatio;
+};
+
+void checkSpectralCase(const SpectralCase& testCase) {
+    const auto passband = renderRateConvertedTone(testCase.passbandFrequency, testCase.playbackRate,
+                                                  testCase.sourceSampleRate,
+                                                  testCase.destinationSampleRate);
+    const auto stopband = renderRateConvertedTone(testCase.stopbandFrequency, testCase.playbackRate,
+                                                  testCase.sourceSampleRate,
+                                                  testCase.destinationSampleRate);
+    const double passbandRms = rmsOf(passband);
+    const double stopbandRms = rmsOf(stopband);
+    const double aliasRatio = passbandRms > 0.0 ? stopbandRms / passbandRms : 1.0;
+    check(passbandRms > testCase.minimumPassbandRms,
+          "bandlimited resampler preserves useful passband level");
+    check(stopbandRms < testCase.maximumStopbandRms,
+          "bandlimited resampler rejects out-of-band energy");
+    check(aliasRatio < testCase.maximumRatio,
+          "out-of-band RMS stays below the spectral regression ratio");
+    std::cout << std::fixed << std::setprecision(6)
+              << "METRIC resampler_case=" << testCase.name
+              << " source_hz=" << testCase.sourceSampleRate
+              << " output_hz=" << testCase.destinationSampleRate
+              << " rate=" << testCase.playbackRate
+              << " passband_hz=" << testCase.passbandFrequency
+              << " stopband_hz=" << testCase.stopbandFrequency
+              << " passband_rms=" << passbandRms
+              << " stopband_rms=" << stopbandRms
+              << " stopband_to_passband=" << aliasRatio << '\n';
 }
 
 float maxDelta(const std::vector<float>& samples, float previous) {
@@ -193,22 +237,18 @@ void run() {
                   << " peak=" << metrics.peak << '\n';
     }
 
-    // At 1.5x, an 8 kHz source remains below the output Nyquist limit (12 kHz),
-    // while a 19 kHz source would fold to an audible alias without a low-pass
-    // before decimation. The ratio makes this a deterministic spectral guard,
-    // not a claim of perceptual transparency.
-    const auto passband = renderRateConvertedTone(8000.0, 1.5);
-    const auto stopband = renderRateConvertedTone(19000.0, 1.5);
-    const double passbandRms = rmsOf(passband);
-    const double stopbandRms = rmsOf(stopband);
-    const double aliasRatio = passbandRms > 0.0 ? stopbandRms / passbandRms : 1.0;
-    check(passbandRms > 0.08, "bandlimited resampler preserves useful 8 kHz passband level at 1.5x");
-    check(stopbandRms < 0.02, "bandlimited resampler rejects out-of-band 19 kHz energy at 1.5x");
-    check(aliasRatio < 0.10, "out-of-band RMS stays below ten percent of passband RMS");
-    std::cout << std::fixed << std::setprecision(6)
-              << "METRIC resampler_1_5x passband_8k_rms=" << passbandRms
-              << " stopband_19k_rms=" << stopbandRms
-              << " stopband_to_passband=" << aliasRatio << '\n';
+    // These fixtures exercise both speed-up and source/output sample-rate
+    // downsampling. Stopband tones are intentionally above the destination
+    // Nyquist region after applying the effective source step, so an unfiltered
+    // converter would fold substantial energy into the audible band. The limits
+    // are deterministic implementation regression gates, not listening claims.
+    const std::array<SpectralCase, 4> spectralCases{{
+        {"48k_1_5x", 48000.0, 48000.0, 1.5, 8000.0, 19000.0, 0.08, 0.02, 0.10},
+        {"44k1_to_48k_1_5x", 44100.0, 48000.0, 1.5, 7000.0, 18000.0, 0.08, 0.05, 0.30},
+        {"96k_to_48k", 96000.0, 48000.0, 1.0, 10000.0, 30000.0, 0.08, 0.03, 0.16},
+        {"192k_to_48k", 192000.0, 48000.0, 1.0, 10000.0, 50000.0, 0.08, 0.03, 0.16},
+    }};
+    for (const auto& testCase : spectralCases) checkSpectralCase(testCase);
 
     broke::Engine engine;
     engine.prepare(outputRate);
