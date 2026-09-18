@@ -7,9 +7,9 @@
 #include <vector>
 
 namespace {
-constexpr juce::int64 inMemoryBytes = 64LL * 1024 * 1024;
 constexpr int previewBuckets = 512;
 constexpr int previewWindow = 2048;
+constexpr int previewSequentialBlock = 65536;
 constexpr int primeChunks = 8;
 constexpr int readAheadChunks = 12;
 
@@ -47,13 +47,46 @@ bool buildSparsePeaks(juce::AudioFormatReader& reader, const std::atomic<bool>& 
     return true;
 }
 
+bool buildSequentialPeaks(juce::AudioFormatReader& reader, const std::atomic<bool>& cancelled,
+                          std::vector<float>& peaks) {
+    peaks.assign(previewBuckets, 0.0f);
+    juce::AudioBuffer<float> scratch(2, previewSequentialBlock);
+    const auto totalFrames = reader.lengthInSamples;
+    for (juce::int64 offset = 0; offset < totalFrames;) {
+        if (cancelled.load()) return false;
+        const int count = static_cast<int>(std::min<juce::int64>(
+            previewSequentialBlock, totalFrames - offset));
+        scratch.clear();
+        float* channels[] {scratch.getWritePointer(0), scratch.getWritePointer(1)};
+        if (!reader.read(channels, 2, offset, count)) return false;
+        if (reader.numChannels == 1)
+            std::copy_n(scratch.getReadPointer(0), count, scratch.getWritePointer(1));
+
+        for (int i = 0; i < count; ++i) {
+            const auto frame = offset + static_cast<juce::int64>(i);
+            const auto bucket = std::min<std::int64_t>(
+                previewBuckets - 1,
+                frame * static_cast<juce::int64>(previewBuckets) / totalFrames);
+            const float left = std::isfinite(channels[0][i]) ? channels[0][i] : 0.0f;
+            const float right = std::isfinite(channels[1][i]) ? channels[1][i] : 0.0f;
+            peaks[static_cast<std::size_t>(bucket)] = std::max(
+                peaks[static_cast<std::size_t>(bucket)],
+                std::min(1.0f, std::max(std::abs(left), std::abs(right))));
+        }
+        offset += count;
+    }
+    return true;
+}
+
 class StreamingTrack final : public juce::Thread {
 public:
     StreamingTrack(std::unique_ptr<juce::AudioFormatReader> input,
                    int sourceChannels,
-                   std::shared_ptr<broke::StreamCache> cacheIn)
+                   std::shared_ptr<broke::StreamCache> cacheIn,
+                   int readAheadDelayMsIn)
         : juce::Thread("BrokeDJ read-ahead"), reader(std::move(input)),
           channels(sourceChannels), cache(std::move(cacheIn)),
+          readAheadDelayMs(std::clamp(readAheadDelayMsIn, 0, 1000)),
           scratch(2, static_cast<int>(broke::StreamCache::chunkFrames)) {}
 
     ~StreamingTrack() override {
@@ -66,7 +99,7 @@ public:
         cache->request(0);
         for (int i = 0; i < primeChunks; ++i) {
             if (cancelled.load()) return false;
-            if (!fillChunk(i)) return false;
+            if (!fillChunk(i, false)) return false;
         }
         return true;
     }
@@ -80,37 +113,65 @@ public:
             const auto centre = requested / static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
             bool didWork = false;
             bool readFailed = false;
+            bool requestChanged = false;
 
+            const auto requestedChunkChanged = [this, centre] {
+                return cache->requestedFrame() / static_cast<std::int64_t>(broke::StreamCache::chunkFrames)
+                    != centre;
+            };
             const auto tryFill = [this, totalChunks, &didWork, &readFailed](std::int64_t chunk) {
                 if (chunk < 0 || chunk >= totalChunks || cache->hasChunk(chunk)) return;
-                if (fillChunk(chunk)) didWork = true;
-                else readFailed = true;
+                if (fillChunk(chunk, true)) didWork = true;
+                else readFailed = !threadShouldExit();
             };
 
             // Seek/refill recovery gets the exact requested region first. Forward
             // read-ahead follows, then one previous chunk for interpolation near
-            // boundaries. Invalid chunks beyond EOF are skipped instead of being
-            // counted as work, preventing an end-of-track busy loop.
+            // boundaries. A new seek preempts stale forward work between chunks,
+            // which keeps recovery latency bounded by at most the in-flight read
+            // rather than by the rest of the old read-ahead window.
             tryFill(centre);
-            for (int offset = 1; offset < readAheadChunks && !threadShouldExit() && !readFailed; ++offset)
+            for (int offset = 1; offset < readAheadChunks && !threadShouldExit() && !readFailed; ++offset) {
+                if (requestedChunkChanged()) {
+                    requestChanged = true;
+                    break;
+                }
                 tryFill(centre + offset);
-            if (!threadShouldExit() && !readFailed) tryFill(centre - 1);
+            }
+            if (!threadShouldExit() && !readFailed && !requestChanged) {
+                if (requestedChunkChanged()) requestChanged = true;
+                else tryFill(centre - 1);
+            }
 
+            if (requestChanged) continue;
             if (readFailed) wait(20);
             else if (!didWork) wait(4);
         }
     }
 
 private:
-    bool fillChunk(std::int64_t chunk) {
+    bool fillChunk(std::int64_t chunk, bool throttled) {
         const auto start = chunk * static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
         if (start < 0 || start >= reader->lengthInSamples) return true;
+        if (throttled && readAheadDelayMs > 0) {
+            int remaining = readAheadDelayMs;
+            while (remaining > 0 && !threadShouldExit()) {
+                const int slice = std::min(remaining, 2);
+                juce::Thread::sleep(slice);
+                remaining -= slice;
+            }
+            if (threadShouldExit()) return false;
+        }
         const int count = static_cast<int>(std::min<juce::int64>(
             static_cast<juce::int64>(broke::StreamCache::chunkFrames),
             reader->lengthInSamples - start));
         scratch.clear();
         float* destinations[] {scratch.getWritePointer(0), scratch.getWritePointer(1)};
         if (!reader->read(destinations, 2, start, count)) return false;
+        for (int i = 0; i < count; ++i) {
+            if (!std::isfinite(destinations[0][i])) destinations[0][i] = 0.0f;
+            if (!std::isfinite(destinations[1][i])) destinations[1][i] = 0.0f;
+        }
         if (channels == 1)
             std::copy_n(scratch.getReadPointer(0), count, scratch.getWritePointer(1));
         cache->publishChunk(chunk, scratch.getReadPointer(0), scratch.getReadPointer(1),
@@ -121,11 +182,13 @@ private:
     std::unique_ptr<juce::AudioFormatReader> reader;
     int channels = 2;
     std::shared_ptr<broke::StreamCache> cache;
+    int readAheadDelayMs = 0;
     juce::AudioBuffer<float> scratch;
 };
 }
 
-DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancelled) {
+DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancelled,
+                         const DecodeOptions& options) {
     DecodeResult result;
     result.name = file.getFileName();
     try {
@@ -141,19 +204,50 @@ DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancel
             return result;
         }
 
-        constexpr juce::int64 bytesPerStereoFrame = static_cast<juce::int64>(sizeof(float) * 2);
-        const bool useStreaming = reader->lengthInSamples > inMemoryBytes / bytesPerStereoFrame;
+        constexpr std::int64_t bytesPerStereoFrame = static_cast<std::int64_t>(sizeof(float) * 2);
+        const auto thresholdBytes = std::max<std::int64_t>(1, options.streamingThresholdBytes);
+        const bool useStreaming = reader->lengthInSamples > thresholdBytes / bytesPerStereoFrame;
 
         if (useStreaming) {
+            if (!buildSparsePeaks(*reader, cancelled, result.peaks)) {
+                if (cancelled.load()) {
+                    result.error = "Import cancelled.";
+                    return result;
+                }
+
+                // Some compressed readers cannot reliably satisfy hundreds of tiny,
+                // non-monotonic preview seeks. Fall back to one bounded-memory
+                // sequential pass on a fresh decoder instead of rejecting a track
+                // that is otherwise playable. This work remains off the audio thread.
+                reader.reset(formats.createReaderFor(file));
+                if (!reader || !validReader(*reader)
+                    || !buildSequentialPeaks(*reader, cancelled, result.peaks)) {
+                    result.error = cancelled.load()
+                        ? "Import cancelled."
+                        : "Read error while building waveform preview.";
+                    return result;
+                }
+            }
+            if (cancelled.load()) {
+                result.error = "Import cancelled.";
+                return result;
+            }
+
+            // Preview extraction may leave a compressed decoder at an arbitrary
+            // position/state. Playback always gets a fresh reader, isolating cache
+            // priming and future read-ahead from waveform-generation behavior.
+            reader.reset(formats.createReaderFor(file));
+            if (!reader || !validReader(*reader)) {
+                result.error = "Cannot reopen the audio decoder for streaming playback.";
+                return result;
+            }
+
             const auto sourceRate = reader->sampleRate;
             const auto sourceFrames = reader->lengthInSamples;
             const auto sourceChannels = static_cast<int>(reader->numChannels);
-            if (!buildSparsePeaks(*reader, cancelled, result.peaks)) {
-                result.error = cancelled.load() ? "Import cancelled." : "Read error while building waveform preview.";
-                return result;
-            }
             auto cache = std::make_shared<broke::StreamCache>(sourceFrames);
-            auto source = std::make_shared<StreamingTrack>(std::move(reader), sourceChannels, cache);
+            auto source = std::make_shared<StreamingTrack>(std::move(reader), sourceChannels, cache,
+                                                           options.readAheadDelayMs);
             if (!source->prime(cancelled)) {
                 result.error = cancelled.load() ? "Import cancelled." : "Read error while priming streaming cache.";
                 return result;

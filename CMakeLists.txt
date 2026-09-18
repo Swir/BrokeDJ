@@ -43,12 +43,32 @@ if(BROKEDJ_BUILD_APP)
         GIT_TAG 72782788ce18c2d4d760b28e0921d6ffc6431102
         GIT_PROGRESS TRUE)
     FetchContent_MakeAvailable(JUCE)
+
+    # Keep file decoding/read-ahead as a testable adapter instead of compiling it
+    # only as part of the GUI executable.
+    add_library(brokedj_decoder STATIC src/app/Decoder.cpp)
+    target_include_directories(brokedj_decoder PUBLIC src)
+    target_compile_definitions(brokedj_decoder PUBLIC JUCE_USE_MP3AUDIOFORMAT=1 JUCE_USE_CURL=0)
+    target_link_libraries(brokedj_decoder PUBLIC brokedj_core juce::juce_audio_formats)
+    if(MSVC)
+        target_compile_options(brokedj_decoder PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(brokedj_decoder PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    endif()
+
+    if(BUILD_TESTING)
+        add_executable(brokedj_decoder_tests tests/DecoderTests.cpp)
+        target_link_libraries(brokedj_decoder_tests PRIVATE brokedj_decoder)
+        add_test(NAME decoder COMMAND brokedj_decoder_tests)
+        set_tests_properties(decoder PROPERTIES TIMEOUT 60)
+    endif()
+
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"
         BUNDLE_ID "io.github.swir.brokedj"
         ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png"
         ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png")
     juce_generate_juce_header(BrokeDJ)
-    target_sources(BrokeDJ PRIVATE src/app/Main.cpp src/app/MainComponent.cpp src/app/Decoder.cpp)
+    target_sources(BrokeDJ PRIVATE src/app/Main.cpp src/app/MainComponent.cpp)
     target_compile_definitions(BrokeDJ PRIVATE
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:BrokeDJ,JUCE_PRODUCT_NAME>"
@@ -56,7 +76,7 @@ if(BROKEDJ_BUILD_APP)
     if(MSVC)
         target_compile_options(BrokeDJ PRIVATE /utf-8)
     endif()
-    target_link_libraries(BrokeDJ PRIVATE brokedj_core juce::juce_audio_utils
+    target_link_libraries(BrokeDJ PRIVATE brokedj_decoder juce::juce_audio_utils
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
     install(TARGETS BrokeDJ RUNTIME DESTINATION . BUNDLE DESTINATION .)
     install(FILES LICENSE README.md THIRD_PARTY_NOTICES.md DESTINATION .)

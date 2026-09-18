@@ -22,22 +22,36 @@ Deterministic streaming coverage verifies:
 - cached streamed audio renders finite, non-zero output through the engine;
 - a seek into an uncached region updates the read-ahead request instead of doing callback I/O.
 
-## Seek/refill hardening package
+## Seek/refill and starvation hardening
 
-PR #5 extends the same test target and read-ahead implementation without changing the roadmap counter. Exact-final-head CI is required before merge.
+PR #5 added deterministic virtual long-track seek/loop/refill coverage and prioritized the exact requested cache region before forward read-ahead. It passed exact-final-head Linux + Windows validation and merged as `7cced0d18fe7d192fa983b482d2637b2204fe0f5`.
 
-The new deterministic coverage uses a **virtual 90-minute stream** backed only by the fixed cache; it does not allocate or decode a 90-minute audio buffer. It verifies:
+PR #6 added lock-free starvation/refill episode counters, readiness-aware Catmull-Rom tap handling and short fade transitions into/out of cache starvation. Final head `915441c73cc6bab7c58579a8343952ca9e1a9bf1` passed run `35338665653` and merged as `58ecdb3b85b8ff395d115097776d5946bf457936`.
 
-- a non-audio `StreamCacheDiagnostics` snapshot reports the exact requested chunk, whether that region is resident and bounded forward cache coverage;
-- repeated distant seeks across the virtual long track keep requested frames in range, output finite and the playhead valid;
-- a streamed whole-track loop can wrap from the final region back to a preloaded start region while remaining in the playing state;
-- an intentionally unfilled seek target is visible as cache starvation and becomes ready after deterministic refill;
-- the background reader prioritizes the exact requested chunk before forward look-ahead after a seek;
-- chunks beyond EOF are skipped by the read-ahead scheduler instead of being counted as work, preventing a potential end-of-track busy loop.
+The deterministic streaming stress uses a **virtual 90-minute stream** backed only by the fixed cache; it does not allocate or decode a 90-minute audio buffer. It verifies repeated distant seeks, a prepared whole-track loop edge, intentional starvation/refill recovery, event accounting and bounded forward cache coverage.
 
-These cache diagnostics describe **read-ahead residency**, not physical audio-interface underruns. A ready requested chunk also does not prove that every Catmull-Rom neighbor, storage device, compressed codec or OS scheduling sequence is dropout-free.
+These cache diagnostics describe **read-ahead residency/playback starvation**, not physical audio-interface underruns. A ready requested chunk also does not prove that every storage device, compressed codec or OS scheduling sequence is dropout-free.
 
-The tests deliberately do **not** claim zero dropouts after arbitrary seeks. Cache-refill onset, slow-storage behavior, compressed-codec seeking, long-file loop edges on real files and worker shutdown during blocked I/O still need explicit stress/listening evidence.
+## Decoder / codec stress package
+
+PR #7 makes the JUCE decoder/read-ahead adapter an independent test target. It uses generated original WAV, AIFF, FLAC and OGG fixtures plus an embedded original synthetic MP3 fixture. Production defaults remain unchanged: tracks above the 64 MiB decoded-stereo threshold use streaming and the artificial reader delay stays zero outside tests.
+
+Coverage includes:
+
+- in-memory and forced-streaming decode through the same production adapter;
+- Unicode-path AIFF import;
+- real JUCE WAV, AIFF, FLAC, OGG and MP3 readers;
+- distant cache refill after seek for generated codecs that exceed the prime window;
+- invalid-file diagnostics and cancellation before publication;
+- controlled slow-reader delay plus last-request-wins read-ahead preemption;
+- starvation/refill diagnostics under intentionally delayed background input;
+- non-finite streamed sample sanitization before cache publication.
+
+The first two Windows PR runs exposed an MP3 forced-streaming regression that Linux core/sanitizer checks could not reveal. The failing path was kept red and unmerged. The decoder now treats waveform generation and streaming playback as independent reader lifetimes; if a compressed reader rejects the sparse non-monotonic preview pattern, waveform construction falls back to a bounded-memory sequential pass on a fresh reader instead of rejecting an otherwise playable file.
+
+Implementation head `0da69e30c7c0a2fee72ae414e640d292c4b9e3fc` passed GitHub Actions run `35346407766`: Linux sanitizer/core/progress checks succeeded and Windows Server 2022 / MSVC x64 completed the native build, all CTest targets including the decoder matrix, no-audio GUI lifecycle smoke, staging and artifact upload. Documentation-only checkpoint commits still require a fresh exact-final-head run before PR #7 may merge.
+
+This fixture matrix is stronger automated codec evidence, but it is not a claim that every real-world file is qualified. Multi-minute source material, mono variants, CBR/VBR MP3 diversity, damaged/truncated files, slow physical storage and reviewed listening remain separate gates.
 
 ## Audio quality hardening coverage
 
@@ -56,7 +70,8 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [x] Windows x64 build and native no-audio smoke mode pass on the merged baseline.
 - [x] SVG progress synchronization and no-legacy-meter check pass on the merged baseline.
 - [x] Bounded streaming/read-ahead PR passes exact-head Linux + Windows CI and is merged.
-- [ ] Seek/refill hardening PR #5 passes exact-final-head Linux + Windows CI and is merged.
+- [x] Seek/refill hardening and starvation/refill smoothing pass exact-head Linux + Windows CI and are merged.
+- [ ] Decoder/codec-stress PR #7 passes exact-final-head Linux + Windows CI and is merged.
 - [ ] Clean Windows 11 machine launches and logs startup correctly.
 - [ ] Mono/stereo WAV, FLAC, OGG, AIFF, CBR/VBR MP3 fixtures decode/stream as expected.
 - [ ] Invalid, truncated and Unicode-path files fail clearly without losing working audio.
