@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#include "core/EngineKeyLockDeckOwner.h"
 #include "core/EngineKeyLockSource.h"
 
 #include <algorithm>
@@ -32,7 +33,7 @@ std::unique_ptr<broke::Clip> makeTone(double sampleRate = 44100.0, int seconds =
     return clip;
 }
 
-void run() {
+void runSourceBoundary() {
     using Source = broke::EngineKeyLockSource;
     using Snapshot = Source::ControlSnapshot;
     constexpr double sourceRate = 44100.0;
@@ -82,9 +83,6 @@ void run() {
         return std::isfinite(value) && std::abs(value) > 0.001f;
     }), "key-lock source preserves production four-output cue routing");
 
-    // A live control target that no longer matches the off-callback stage must
-    // fail closed at the adapter boundary. Engine must remain audible by using
-    // its built-in converter rather than stale key-lock state.
     engine.control(0).rate = 1.10f;
     engine.process(outputs.data(), 4, frames);
     check(!source.lastEngineRenderAccepted(), "unstaged playback-rate change rejects key-lock source");
@@ -94,8 +92,6 @@ void run() {
         return std::isfinite(value) && std::abs(value) > 0.001f;
     }), "unstaged rate change remains audible through immediate fallback");
 
-    // Simulate the owner stopping/serializing audio before restaging the exact
-    // immutable clip at the Engine-reported transport location.
     const double restageCursor = engine.meter(0).position.load() * sourceRate;
     constexpr Snapshot secondControls{1.10, 1.5f, true};
     check(source.stage(*clipIdentity, restageCursor, false, secondControls),
@@ -106,9 +102,6 @@ void run() {
     check(source.lastRenderPath() == Source::RenderPath::stretch,
           "restaged production hook returns to stretch path");
 
-    // Engine seek is intentionally last-request-wins. It moves transport before
-    // asking the selector to render; the selector detects the discontinuity and
-    // renders its production-style fallback instead of stale stretch history.
     engine.control(0).seek = 0.50;
     engine.process(outputs.data(), 4, frames);
     check(source.lastEngineRenderAccepted(), "seek remains inside safe selector boundary");
@@ -119,8 +112,6 @@ void run() {
     check(std::abs(engine.meter(0).position.load() - engine.meter(0).audiblePosition.load()) < 1.0e-6,
           "seek fallback publishes ordinary audible scheduling");
 
-    // Re-prime at the post-seek transport, then prove loop identity is guarded
-    // independently as another discontinuity requiring off-callback restaging.
     const double postSeekCursor = engine.meter(0).position.load() * sourceRate;
     check(source.stage(*clipIdentity, postSeekCursor, false, secondControls),
           "post-seek key-lock state restages explicitly");
@@ -134,7 +125,6 @@ void run() {
     check(std::abs(engine.meter(0).position.load() - engine.meter(0).audiblePosition.load()) < 1.0e-6,
           "loop mismatch uses ordinary production scheduling");
 
-    // Clip replacement must never inherit the previous clip's key-lock state.
     engine.control(0).loop = false;
     check(engine.submit(0, makeTone(sourceRate)), "replacement clip submitted");
     engine.process(outputs.data(), 4, frames); // adopts and pauses
@@ -149,11 +139,100 @@ void run() {
     check(engine.setDeckSourceRenderer(0, nullptr), "key-lock source removes while stopped");
     source.disarm();
 }
+
+void runDeckOwnerHandoff() {
+    using Owner = broke::EngineKeyLockDeckOwner;
+    using Snapshot = Owner::ControlSnapshot;
+    using Status = Owner::StageStatus;
+    constexpr double sourceRate = 44100.0;
+    constexpr double deviceRate = 48000.0;
+    constexpr int frames = 512;
+
+    Owner owner;
+    auto clip = makeTone(sourceRate);
+    const broke::Clip* clipIdentity = clip.get();
+    constexpr Snapshot firstControls{1.0, -2.0f, true};
+
+    check(owner.stage(*clipIdentity, 0.0, false, firstControls) == Status::notConfigured,
+          "deck owner refuses staging before device configuration");
+    check(!owner.configureDevice(0.0, frames), "deck owner rejects invalid device rate");
+    check(owner.configureDevice(deviceRate, frames, 4.0),
+          "deck owner accepts bounded device configuration while stopped");
+    const auto firstGeneration = owner.generation();
+    check(owner.stage(*clipIdentity, 0.0, false, firstControls) == Status::staged,
+          "deck owner publishes first fully prepared key-lock snapshot");
+    check(owner.armed() && owner.generation() == firstGeneration + 1,
+          "first owner publication arms exactly one new generation");
+
+    broke::Engine engine;
+    engine.prepare(deviceRate, frames);
+    check(engine.setDeckSourceRenderer(0, &owner), "deck owner installs once while audio is stopped");
+    check(engine.submit(0, std::move(clip)), "owner-staged immutable clip submits without identity change");
+
+    std::array<std::array<float, frames>, 4> audio{};
+    std::array<float*, 4> outputs{};
+    for (std::size_t channel = 0; channel < outputs.size(); ++channel)
+        outputs[channel] = audio[channel].data();
+
+    engine.process(outputs.data(), 4, frames); // adopt / paused
+    engine.control(0).rate = 1.0f;
+    engine.control(0).gain = 1.0f;
+    engine.master = 1.0f;
+    engine.crossfader = 0.0f;
+    engine.control(0).playing = true;
+    for (int block = 0; block < 40; ++block)
+        engine.process(outputs.data(), 4, frames);
+
+    check(owner.lastRenderAccepted(), "deck owner feeds qualified key-lock blocks into Engine");
+    check(engine.meter(0).position.load() > engine.meter(0).audiblePosition.load(),
+          "owner publication preserves algorithm-latency-compensated meter semantics");
+
+    const double restageCursor = engine.meter(0).position.load() * sourceRate;
+    constexpr Snapshot secondControls{1.0, 2.0f, true};
+    check(owner.stage(*clipIdentity, restageCursor, false, secondControls) == Status::staged,
+          "inactive slot accepts off-callback pitch restage while owner stays installed");
+    for (int block = 0; block < 30; ++block)
+        engine.process(outputs.data(), 4, frames);
+    check(owner.lastRenderAccepted(), "atomically published pitch snapshot becomes active without reinstall");
+
+    const auto armedGeneration = owner.generation();
+    owner.disarm();
+    check(!owner.armed() && owner.generation() == armedGeneration + 1,
+          "disarm publishes immediate fail-closed fallback generation");
+    engine.process(outputs.data(), 4, frames);
+    check(!owner.lastRenderAccepted(), "disarmed owner makes Engine use built-in converter immediately");
+    check(std::abs(engine.meter(0).position.load() - engine.meter(0).audiblePosition.load()) < 1.0e-6,
+          "disarmed owner returns to ordinary production scheduling");
+    check(std::any_of(audio[0].begin(), audio[0].end(), [](float value) {
+        return std::isfinite(value) && std::abs(value) > 0.001f;
+    }), "disarmed owner preserves audible production fallback");
+
+    check(owner.stage(*clipIdentity, engine.meter(0).position.load() * sourceRate,
+                      false, Snapshot{1.0, 0.0f, false}) == Status::disabled,
+          "disabled stage request stays fail-closed without priming a source");
+
+    auto replacement = makeTone(sourceRate);
+    const broke::Clip* replacementIdentity = replacement.get();
+    check(owner.stage(*replacementIdentity, 0.0, false, firstControls) == Status::staged,
+          "replacement immutable clip can stage before mailbox publication");
+    check(engine.submit(0, std::move(replacement)), "replacement clip publishes after owner stage");
+    engine.process(outputs.data(), 4, frames); // adopt / paused
+    engine.control(0).rate = 1.0f;
+    engine.control(0).playing = true;
+    for (int block = 0; block < 30; ++block)
+        engine.process(outputs.data(), 4, frames);
+    check(owner.lastRenderAccepted(), "pre-staged replacement clip activates only after exact identity adoption");
+
+    check(engine.setDeckSourceRenderer(0, nullptr), "deck owner removes while audio is stopped");
+    owner.resetWhenAudioStopped();
+    check(!owner.configured() && !owner.armed(), "stopped-audio reset clears both owner slots");
+}
 }
 
 int main() {
     try {
-        run();
+        runSourceBoundary();
+        runDeckOwnerHandoff();
         std::cout << "PASS: " << checks << " checks\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
