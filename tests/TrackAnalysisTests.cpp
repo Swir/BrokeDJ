@@ -190,6 +190,19 @@ void runBeatGridOverrideStore() {
     check(std::abs(loaded.timeAtBeat(64.0) - grid.timeAtBeat(64.0)) < 1.0e-9,
           "manual grid preserves continuous beat-time mapping");
 
+    broke::BeatAnalysisResult detected;
+    detected.valid = true;
+    detected.bpm = 118.0;
+    detected.beatZeroSeconds = 0.250;
+    detected.confidence = 0.75;
+    detected.segments.push_back({0.250, 118.0});
+    const auto selectedManual = selectTrackBeatGrid(source, detected, store);
+    check(selectedManual.manualOverride && selectedManual.grid.valid(),
+          "manual override wins over detector grid for matching source identity");
+    check(selectedManual.grid.segments().size() == 3
+          && std::abs(selectedManual.grid.segments().front().bpm - 124.0) < 1.0e-9,
+          "selected manual grid preserves user-authored tempo map");
+
     juce::Array<juce::File> overrideFiles;
     overrideRoot.findChildFiles(overrideFiles, juce::File::findFiles, false, "*.grid");
     check(overrideFiles.size() == 1, "one manual-grid override record is written");
@@ -212,6 +225,11 @@ void runBeatGridOverrideStore() {
           "manual-grid source identity modification succeeds");
     broke::BeatGrid stale;
     check(!store.load(source, stale), "source identity change invalidates manual grid override");
+    const auto selectedDetected = selectTrackBeatGrid(source, detected, store);
+    check(!selectedDetected.manualOverride && selectedDetected.grid.valid(),
+          "stale manual override falls back to validated detector grid");
+    check(std::abs(selectedDetected.grid.segments().front().bpm - 118.0) < 1.0e-9,
+          "detector grid is preserved after stale override rejection");
 
     check(store.erase(source), "manual-grid override can be erased");
     check(!overrideFiles[0].existsAsFile(), "manual-grid erase removes persisted override");
