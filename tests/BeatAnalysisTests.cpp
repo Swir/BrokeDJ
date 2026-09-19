@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "core/BeatAnalysis.h"
 #include "core/BeatGridPerformance.h"
+#include "core/PerformanceDeckOwner.h"
 
 #include <algorithm>
 #include <cmath>
@@ -152,6 +153,76 @@ void editableBeatGridSupportsTempoChanges() {
     check(transactional.valid(), "failed import does not destroy the existing grid");
 }
 
+void tempoSegmentMovesAreTransactionalAcrossOwner() {
+    broke::BeatGrid grid;
+    check(grid.reset(0.5, 120.0), "tempo editor fixture initializes");
+    check(grid.insertTempoChangeAtBeat(8.0, 96.0), "first editor segment is inserted");
+    check(grid.insertTempoChangeAtBeat(16.0, 108.0), "second editor segment is inserted");
+    check(std::abs(grid.tempoChangeBeat(1) - 8.0) < 1.0e-9
+          && std::abs(grid.tempoChangeBeat(2) - 16.0) < 1.0e-9,
+          "tempo segment boundaries expose stable musical beat positions");
+
+    const auto beforeInvalid = grid.segments();
+    check(!grid.moveTempoChangeToBeat(0, 4.0), "base segment boundary cannot be moved");
+    check(!grid.moveTempoChangeToBeat(1, 0.0), "tempo boundary cannot be moved onto beat zero");
+    check(grid.segments().size() == beforeInvalid.size()
+          && std::abs(grid.segments()[1].startSeconds - beforeInvalid[1].startSeconds) < 1.0e-12,
+          "rejected boundary moves leave the complete tempo map untouched");
+
+    check(grid.moveTempoChangeToBeat(1, 6.0), "later tempo boundary can move to an exact beat");
+    check(std::abs(grid.tempoChangeBeat(1) - 6.0) < 1.0e-9,
+          "moved tempo boundary resolves to the requested musical beat");
+    check(grid.replaceTempoChange(1, 7.0, 102.0),
+          "tempo boundary position and BPM can be replaced transactionally");
+    check(std::abs(grid.tempoChangeBeat(1) - 7.0) < 1.0e-9
+          && std::abs(grid.segments()[1].bpm - 102.0) < 1.0e-9,
+          "combined tempo edit publishes both values together");
+
+    const auto safeBeat = grid.tempoChangeBeat(1);
+    const auto safeBpm = grid.segments()[1].bpm;
+    check(!grid.replaceTempoChange(1, 0.0, 140.0),
+          "invalid combined tempo edit fails closed");
+    check(std::abs(grid.tempoChangeBeat(1) - safeBeat) < 1.0e-12
+          && std::abs(grid.segments()[1].bpm - safeBpm) < 1.0e-12,
+          "failed combined edit preserves the previous reviewed values");
+    check(std::isnan(grid.tempoChangeBeat(99)), "out-of-range segment beat query returns NaN");
+
+    broke::Engine engine;
+    broke::PerformanceDeckOwner owner(engine, 0);
+    check(owner.setReviewedGrid(grid) == broke::PerformanceDeckOwner::Result::applied,
+          "deck owner accepts reviewed variable-tempo grid");
+    check(owner.insertReviewedTempoChange(24.0, 126.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "deck owner inserts a reviewed tempo segment transactionally");
+    const auto insertedCount = owner.reviewedGrid().segments().size();
+    check(insertedCount == 4, "deck owner publishes inserted segment only after validation");
+    check(owner.setReviewedSegmentBpm(insertedCount - 1, 128.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "deck owner edits reviewed segment BPM");
+    check(std::abs(owner.reviewedGrid().segments().back().bpm - 128.0) < 1.0e-9,
+          "owner BPM edit is visible in reviewed snapshot");
+    check(owner.moveReviewedTempoChange(insertedCount - 1, 22.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "deck owner moves reviewed segment boundary");
+    check(std::abs(owner.reviewedGrid().tempoChangeBeat(insertedCount - 1) - 22.0) < 1.0e-9,
+          "owner boundary move preserves requested beat position");
+
+    const auto ownerBeforeReject = owner.reviewedGrid().segments();
+    check(owner.removeReviewedTempoChange(0) == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "deck owner refuses removal of base segment");
+    check(owner.insertReviewedTempoChange(0.0, 120.0)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "deck owner refuses tempo change at beat zero");
+    check(owner.reviewedGrid().segments().size() == ownerBeforeReject.size()
+          && std::abs(owner.reviewedGrid().segments().back().bpm - ownerBeforeReject.back().bpm) < 1.0e-12,
+          "rejected owner edits cannot partially replace reviewed grid");
+    check(owner.removeReviewedTempoChange(insertedCount - 1)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "deck owner removes a later reviewed tempo segment");
+    check(owner.reviewedGrid().segments().size() == insertedCount - 1,
+          "reviewed snapshot publishes segment removal");
+}
+
 void performancePlansRespectReviewedGrid() {
     broke::BeatGrid grid;
     check(grid.reset(0.5, 120.0), "performance fixture grid initializes");
@@ -282,6 +353,7 @@ int main() {
         checkEstimate(90.0, 1.10, false);
         chunkingIsDeterministic();
         editableBeatGridSupportsTempoChanges();
+        tempoSegmentMovesAreTransactionalAcrossOwner();
         performancePlansRespectReviewedGrid();
         nonPeriodicMaterialDoesNotFabricateTempo();
         invalidAndNonFiniteInputsFailSafely();
