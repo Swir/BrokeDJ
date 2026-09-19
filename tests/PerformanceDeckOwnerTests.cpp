@@ -100,6 +100,84 @@ void hotCuesUseReviewedGridAndSafeTransportRules() {
           "unquantized cue preserves requested source time");
 }
 
+void beatJumpAndSyncAreBoundedReviewedGridActions() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner follower(engine, 0);
+    broke::PerformanceDeckOwner master(engine, 1);
+
+    broke::BeatGrid followerGrid;
+    broke::BeatGrid masterGrid;
+    check(followerGrid.reset(0.0, 120.0), "follower performance grid initializes");
+    check(masterGrid.reset(0.0, 128.0), "master performance grid initializes");
+    check(follower.setReviewedGrid(followerGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "follower accepts reviewed grid");
+    check(master.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "master accepts reviewed grid");
+
+    check(follower.setWholeTrackLoop(true) == broke::PerformanceDeckOwner::Result::applied,
+          "beat-jump fixture starts in whole-track loop mode");
+    check(follower.jumpBeatsAt(4.25, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "beat jump applies from reviewed fractional beat phase");
+    check(std::abs(engine.control(0).seek.load() - 0.3125) < 1.0e-12,
+          "beat jump preserves phase and publishes normalized target");
+    check(engine.control(0).loop.load() && !engine.loopRegionEnabled(0),
+          "beat jump preserves explicit whole-track loop mode");
+
+    const double preservedSeek = engine.control(0).seek.load();
+    check(follower.jumpBeatsAt(0.25, 20.0, -4.0)
+              == broke::PerformanceDeckOwner::Result::outsideTrack,
+          "beat jump outside track fails closed");
+    check(std::abs(engine.control(0).seek.load() - preservedSeek) < 1.0e-12,
+          "failed beat jump leaves existing transport mailbox unchanged");
+
+    check(follower.armBeatLoopAt(4.25, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "beat-jump fixture arms reviewed loop");
+    check(follower.jumpBeatsAt(4.25, 20.0, -2.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "beat jump works while a reviewed loop is armed");
+    check(!follower.beatLoopActive() && !engine.loopRegionEnabled(0)
+              && !engine.control(0).loop.load(),
+          "beat jump exits beat-derived loop before transport jump");
+
+    engine.control(0).seek.store(-1.0);
+    engine.control(0).rate.store(1.0f);
+    check(follower.armBeatLoopAt(4.25, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "sync fixture arms reviewed loop");
+    check(follower.syncToAt(master, 4.25, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "bounded one-shot sync applies reviewed tempo and phase plan");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - (128.0 / 120.0)) < 1.0e-6,
+          "sync publishes reviewed tempo ratio inside deck rate envelope");
+    check(std::abs(engine.control(0).seek.load() - (4.266666666666667 / 20.0)) < 1.0e-9,
+          "sync publishes bounded reviewed phase target");
+    check(!follower.beatLoopActive() && !engine.loopRegionEnabled(0)
+              && !engine.control(0).loop.load(),
+          "sync exits stale beat-derived loop before phase alignment");
+
+    engine.control(0).rate.store(0.91f);
+    engine.control(0).seek.store(0.123);
+    check(follower.syncToAt(master, 4.25, 20.0, 4.0, 20.0, 0.20, 0.01)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "sync refuses phase correction larger than caller safety bound");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 0.91) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - 0.123) < 1.0e-12,
+          "rejected sync leaves rate and seek controls unchanged transactionally");
+    check(follower.syncToAt(follower, 4.25, 20.0, 4.25, 20.0)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "deck cannot sync to itself");
+
+    broke::Engine otherEngine;
+    broke::PerformanceDeckOwner foreignMaster(otherEngine, 0);
+    check(foreignMaster.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "foreign-engine master accepts its own reviewed grid");
+    check(follower.syncToAt(foreignMaster, 4.25, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "sync refuses owners from different engine instances");
+}
+
 class BusyRenderer final : public broke::DeckSourceRenderer {
 public:
     bool render(const broke::Clip&, double, bool, double,
@@ -131,6 +209,9 @@ void failClosedBoundariesDoNotDriftControls() {
     check(invalid.storeHotCueAt(0, 1.0, 10.0, false)
               == broke::PerformanceDeckOwner::Result::invalidDeck,
           "invalid deck cannot store cues");
+    check(invalid.jumpBeatsAt(1.0, 10.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::invalidDeck,
+          "invalid deck cannot beat jump");
 
     broke::Engine resetEngine;
     broke::PerformanceDeckOwner resetOwner(resetEngine, 0);
@@ -155,6 +236,7 @@ int main() {
     try {
         reviewedBeatLoopOwnershipIsTransactional();
         hotCuesUseReviewedGridAndSafeTransportRules();
+        beatJumpAndSyncAreBoundedReviewedGridActions();
         failClosedBoundariesDoNotDriftControls();
         std::cout << "PerformanceDeckOwnerTests: " << checks << " checks passed\n";
         return EXIT_SUCCESS;
