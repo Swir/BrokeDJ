@@ -80,6 +80,20 @@ For an offline build of the optional time-stretch prototype, also prepare the ex
 
 `BrokeDJ --smoke-test` opens the native window with audio-device initialization disabled and exits automatically. This checks the GUI lifecycle only. It does not test playback, sound quality, audio drivers, headphones or latency.
 
+## Silent audio-device capability probe
+
+`BrokeDJ --device-probe` scans the JUCE audio backends and output-device descriptors visible to the current Windows machine and writes `BrokeDJ-device-probe.txt` into the current working directory. The probe deliberately **does not open an audio device, start an audio callback, or emit audio**. It records backend/device names, advertised output-channel count, channel names, sample-rate/buffer-size lists and whether a descriptor exposes at least four output channels.
+
+```powershell
+cd .\build\windows\BrokeDJ_artefacts\Release
+.\BrokeDJ.exe --device-probe
+Get-Content .\BrokeDJ-device-probe.txt
+```
+
+Treat `four_output_candidate=yes` only as a capability candidate. It does not prove that master 1/2 and private cue 3/4 are physically isolated, that device switching is reliable, or that latency/xrun/listening gates pass. Those M1 checks still require a user-controlled manual session on the real interface. Review the local report before sharing it because hardware device names may identify your setup.
+
+`--device-probe-ci` is the non-opening enumeration-only variant used by Windows CI. A CI pass proves the diagnostic path starts and writes a report on that runner; it is not hardware qualification.
+
 ## Packaging
 
 After a successful build, `cpack --config build/windows/CPackConfig.cmake -C Release` creates a development ZIP. Corresponding source, third-party license material and manual release evidence are required before a public production release. No updater or code-signing credentials are configured. No secret or token is needed for ordinary local builds.
