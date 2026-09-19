@@ -23,9 +23,9 @@ struct TrackAnalysisOptions final {
     int readBlockFrames = 65536;
 };
 
-// Persistent analysis cache. Cache records intentionally contain only source
-// size/timestamp plus derived musical metadata; local path/file names are not
-// copied into the payload. The cache is never read or written by the audio
+// Persistent detector-result cache. Cache records intentionally contain only
+// source size/timestamp plus derived musical metadata; local path/file names are
+// not copied into the payload. The cache is never read or written by the audio
 // callback. Beat and key results are independently optional so a strong tonal
 // result can be cached even when the tempo detector correctly declines a track.
 class TrackAnalysisCache final {
@@ -44,6 +44,27 @@ public:
 
 private:
     [[nodiscard]] juce::File cacheFileFor(const juce::File& source) const;
+    juce::File root;
+};
+
+// User-authored beat-grid corrections are deliberately stored separately from
+// detector output. Records are tied to the current source-file identity, omit
+// raw local paths/names from their payload and are only accessed off callback.
+// A changed source file invalidates the override instead of silently applying an
+// old grid to different audio.
+class TrackBeatGridOverrideStore final {
+public:
+    explicit TrackBeatGridOverrideStore(juce::File root = defaultRoot());
+
+    [[nodiscard]] bool load(const juce::File& source, broke::BeatGrid& grid) const;
+    [[nodiscard]] bool store(const juce::File& source, const broke::BeatGrid& grid) const;
+    [[nodiscard]] bool erase(const juce::File& source) const;
+    [[nodiscard]] const juce::File& rootDirectory() const noexcept { return root; }
+
+    [[nodiscard]] static juce::File defaultRoot();
+
+private:
+    [[nodiscard]] juce::File overrideFileFor(const juce::File& source) const;
     juce::File root;
 };
 
