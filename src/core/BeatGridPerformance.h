@@ -37,6 +37,8 @@ struct BeatSyncPlan final {
     double phaseErrorBeats = 0.0;
     double followerBpm = 0.0;
     double masterBpm = 0.0;
+    double masterPlaybackRate = 1.0;
+    double masterEffectiveBpm = 0.0;
 };
 
 [[nodiscard]] inline double beatGridBpmAtTime(const BeatGrid& grid, double seconds) noexcept {
@@ -120,19 +122,23 @@ struct BeatSyncPlan final {
 }
 
 // Build a one-shot deck-sync plan from two reviewed grids. The returned rate is
-// a transport command candidate, not an instruction to mutate audio state in
-// the callback. Phase alignment is expressed as a target follower time so the
-// owner layer can decide whether/when a seek is musically acceptable.
+// an absolute follower transport-rate command candidate. Master playback rate
+// is part of effective master tempo; source-grid phase still comes from the
+// master's current source position. Phase alignment is expressed as a target
+// follower time so the owner layer can decide whether/when a seek is acceptable.
 [[nodiscard]] inline BeatSyncPlan planBeatSync(const BeatGrid& follower,
                                                double followerSeconds,
                                                const BeatGrid& master,
                                                double masterSeconds,
-                                               double maxRateDelta = 0.5) noexcept {
+                                               double maxRateDelta = 0.5,
+                                               double masterPlaybackRate = 1.0) noexcept {
     BeatSyncPlan plan;
     if (!follower.valid() || !master.valid()
         || !std::isfinite(followerSeconds) || followerSeconds < 0.0
         || !std::isfinite(masterSeconds) || masterSeconds < 0.0
-        || !std::isfinite(maxRateDelta) || maxRateDelta < 0.0 || maxRateDelta > 0.5) {
+        || !std::isfinite(maxRateDelta) || maxRateDelta < 0.0 || maxRateDelta > 0.5
+        || !std::isfinite(masterPlaybackRate)
+        || masterPlaybackRate < 0.5 || masterPlaybackRate > 1.5) {
         return plan;
     }
 
@@ -140,17 +146,24 @@ struct BeatSyncPlan final {
     const double masterBpm = beatGridBpmAtTime(master, masterSeconds);
     const double followerBeat = follower.beatAtTime(followerSeconds);
     const double masterBeat = master.beatAtTime(masterSeconds);
+    const double masterEffectiveBpm = masterBpm * masterPlaybackRate;
     if (!std::isfinite(followerBpm) || !std::isfinite(masterBpm)
+        || !std::isfinite(masterEffectiveBpm)
         || !std::isfinite(followerBeat) || !std::isfinite(masterBeat)
-        || followerBpm <= 0.0 || masterBpm <= 0.0) {
+        || followerBpm <= 0.0 || masterBpm <= 0.0 || masterEffectiveBpm <= 0.0) {
         return plan;
     }
 
-    const double rate = masterBpm / followerBpm;
+    const double rate = masterEffectiveBpm / followerBpm;
     const double minRate = 1.0 - maxRateDelta;
     const double maxRate = 1.0 + maxRateDelta;
-    if (!std::isfinite(rate) || rate < minRate || rate > maxRate)
+    constexpr double rateBoundaryTolerance = 1.0e-6;
+    if (!std::isfinite(rate)
+        || rate < minRate - rateBoundaryTolerance
+        || rate > maxRate + rateBoundaryTolerance) {
         return plan;
+    }
+    const double boundedRate = std::clamp(rate, minRate, maxRate);
 
     const double masterPhase = masterBeat - std::floor(masterBeat);
     const double targetBeat = std::round(followerBeat - masterPhase) + masterPhase;
@@ -159,13 +172,15 @@ struct BeatSyncPlan final {
         return plan;
 
     plan.valid = true;
-    plan.followerRate = rate;
+    plan.followerRate = boundedRate;
     plan.followerTargetSeconds = targetSeconds;
     plan.followerTargetBeat = targetBeat;
     plan.masterBeat = masterBeat;
     plan.phaseErrorBeats = targetBeat - followerBeat;
     plan.followerBpm = followerBpm;
     plan.masterBpm = masterBpm;
+    plan.masterPlaybackRate = masterPlaybackRate;
+    plan.masterEffectiveBpm = masterEffectiveBpm;
     return plan;
 }
 
