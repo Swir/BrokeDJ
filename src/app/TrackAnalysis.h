@@ -6,6 +6,7 @@
 #include "core/KeyAnalysis.h"
 
 #include <atomic>
+#include <utility>
 #include <juce_audio_formats/juce_audio_formats.h>
 
 struct TrackRhythmAnalysis final {
