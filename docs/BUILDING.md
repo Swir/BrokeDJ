@@ -33,6 +33,16 @@ ctest --test-dir build/core --output-on-failure
 
 The sanitizer switch applies to GCC/Clang; MSVC uses the ordinary core tests here. Thread stress plus ASan/UBSan does not replace a ThreadSanitizer run or hardware validation.
 
+## Local BPM / key corpus validator
+
+Normal app builds also compile the developer-only `brokedj_analysis_validator` target. It is not installed with BrokeDJ and does not require an audio device. Use it with a local manifest and music you are allowed to test:
+
+```powershell
+.\build\windows\Release\brokedj_analysis_validator.exe .\local-corpus\manifest.tsv
+```
+
+The tool runs the current offline BPM/key detector path without using the persistent analysis cache, reports stable manifest IDs rather than source paths and exits non-zero when a supplied reference fails. The repository intentionally does not bundle a music corpus. See [`ANALYSIS_VALIDATION.md`](ANALYSIS_VALIDATION.md) for the manifest contract and evidence rules.
+
 ## Opt-in time-stretch/key-lock prototype
 
 The M2 research adapter is deliberately disabled by default so ordinary BrokeDJ playback remains independent of the experimental dependency. To build its deterministic ratio/pitch/seek, owner-lifecycle and realtime-contract tests:

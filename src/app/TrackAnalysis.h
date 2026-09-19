@@ -6,6 +6,7 @@
 #include "core/KeyAnalysis.h"
 
 #include <atomic>
+#include <utility>
 #include <juce_audio_formats/juce_audio_formats.h>
 
 struct TrackRhythmAnalysis final {
@@ -67,6 +68,30 @@ private:
     [[nodiscard]] juce::File overrideFileFor(const juce::File& source) const;
     juce::File root;
 };
+
+struct TrackBeatGridSelection final {
+    broke::BeatGrid grid;
+    bool manualOverride = false;
+};
+
+// Worker-only resolution contract used by the native app: a valid user override
+// wins over detector output for the exact current source identity. If no valid
+// override exists, the detected grid is used when valid. No file I/O belongs in
+// the audio callback.
+[[nodiscard]] inline TrackBeatGridSelection selectTrackBeatGrid(
+    const juce::File& source,
+    const broke::BeatAnalysisResult& detected,
+    const TrackBeatGridOverrideStore& overrides) {
+    TrackBeatGridSelection selection;
+    broke::BeatGrid manual;
+    if (overrides.load(source, manual) && manual.valid()) {
+        selection.grid = std::move(manual);
+        selection.manualOverride = true;
+        return selection;
+    }
+    selection.grid = broke::BeatGrid(detected);
+    return selection;
+}
 
 // Sequential worker-only analysis. Decoding and cache I/O are deliberately
 // separate from playback and the realtime callback; cancellation is checked
