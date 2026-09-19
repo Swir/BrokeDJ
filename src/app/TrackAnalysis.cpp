@@ -120,6 +120,10 @@ bool TrackAnalysisCache::load(const juce::File& source,
         }
         decoded.segments.push_back({start, segmentBpm});
     }
+    // Treat the cache as untrusted local state. Range checks are not enough:
+    // segment zero must equal beat zero and later tempo boundaries must be
+    // strictly ordered. Reuse the core grid validator before publishing it.
+    if (!broke::BeatGrid(decoded).valid()) return false;
     result = std::move(decoded);
     return true;
 }
@@ -132,7 +136,8 @@ bool TrackAnalysisCache::store(const juce::File& source,
         || !finiteRange(result.confidence, 0.0, 1.0)
         || !finiteRange(result.analyzedSeconds, 0.0, 4.0 * 60.0 * 60.0)
         || result.segments.empty()
-        || result.segments.size() > static_cast<std::size_t>(maxCachedSegments)) {
+        || result.segments.size() > static_cast<std::size_t>(maxCachedSegments)
+        || !broke::BeatGrid(result).valid()) {
         return false;
     }
     for (const auto& segment : result.segments) {

@@ -45,6 +45,8 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     configureLabel(heading, "DECK " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + d)) + (d % 2 == 0 ? "  /  LEFT" : "  /  RIGHT"), 16);
     configureLabel(track, text("No track loaded", "Nie wczytano utworu"), 14);
     configureLabel(time, "00:00 / 00:00", 12);
+    configureLabel(rhythm, text("BPM —  /  GRID —", "BPM —  /  SIATKA —"), 11);
+    rhythm.setColour(juce::Label::textColourId, muted);
     time.setJustificationType(juce::Justification::centredRight);
     load.setButtonText(text("Load", "Wczytaj"));
     play.setButtonText("PLAY"); rewind.setButtonText("CUE 0");
@@ -71,7 +73,7 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
         engine.control(index).seek = position;
         if (onSeekRequested) onSeekRequested(position);
     };
-    for (juce::Component* child : std::array<juce::Component*, 9>{&heading, &track, &time, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
+    for (juce::Component* child : std::array<juce::Component*, 10>{&heading, &track, &time, &rhythm, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
     const std::array<juce::String, 7> names {text("Gain", "Głośność"), text("Rate %", "Tempo %"), "LOW", "MID", "HIGH", "ECHO", "DRIVE"};
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         auto& knob = knobs[i];
@@ -112,6 +114,29 @@ void DeckPanel::setTrack(const juce::String& name, std::vector<float> peaks) {
     track.setText(name, juce::dontSendNotification); track.setTooltip(name);
     waveform.peaks = std::move(peaks); waveform.repaint();
 }
+void DeckPanel::setRhythmPending() {
+    rhythm.setText(text("Analyzing BPM / beat grid…", "Analiza BPM / siatki rytmu…"), juce::dontSendNotification);
+    rhythm.setTooltip(text("Offline analysis runs in a background worker and never in the audio callback.",
+                           "Analiza offline działa w tle i nigdy w callbacku audio."));
+}
+void DeckPanel::setRhythmAnalysis(const TrackRhythmAnalysis& analysis) {
+    if (!analysis.beat.valid) {
+        rhythm.setText(text("BPM —  /  GRID —", "BPM —  /  SIATKA —"), juce::dontSendNotification);
+        rhythm.setTooltip(analysis.error.isNotEmpty()
+            ? analysis.error
+            : text("No reliable rhythm estimate was published.", "Nie opublikowano wiarygodnego wyniku rytmu."));
+        return;
+    }
+    const int confidence = juce::jlimit(0, 100, static_cast<int>(std::lround(analysis.beat.confidence * 100.0)));
+    const auto gridText = "BPM " + juce::String(analysis.beat.bpm, 1)
+        + "  /  GRID +" + juce::String(analysis.beat.beatZeroSeconds, 3) + " s"
+        + "  /  " + juce::String(confidence) + "%";
+    rhythm.setText(gridText, juce::dontSendNotification);
+    auto tooltip = text("Offline rhythm estimate. Grid editing and sync are not enabled yet.",
+                        "Szacunek rytmu offline. Edycja siatki i sync nie są jeszcze włączone.");
+    if (analysis.cacheHit) tooltip += text(" Loaded from local analysis cache.", " Wczytano z lokalnego cache analizy.");
+    rhythm.setTooltip(tooltip);
+}
 void DeckPanel::refresh() {
     const auto& meter = engine.meter(index);
     const auto duration = meter.duration.load(), position = meter.position.load();
@@ -127,8 +152,9 @@ void DeckPanel::paint(juce::Graphics& g) {
 void DeckPanel::resized() {
     auto area = getLocalBounds().reduced(14);
     auto top = area.removeFromTop(24); time.setBounds(top.removeFromRight(160)); heading.setBounds(top);
-    track.setBounds(area.removeFromTop(24)); area.removeFromTop(4);
-    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 146)));
+    track.setBounds(area.removeFromTop(24));
+    rhythm.setBounds(area.removeFromTop(18)); area.removeFromTop(4);
+    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 164)));
     area.removeFromTop(8);
     auto buttons = area.removeFromTop(30);
     std::array<juce::TextButton*, 5> list {&load, &play, &rewind, &loop, &cue};
@@ -210,9 +236,11 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
 }
 MainComponent::~MainComponent() {
     stopTimer(); cancelled->store(true);
+    for (auto& stop : analysisCancelled) if (stop) stop->store(true);
     if (audioSettings) delete audioSettings.getComponent();
     chooser.reset(); shutdownAudio();
     loaders.removeAllJobs(true, -1);
+    analyzers.removeAllJobs(true, -1);
     engine.collectRetired(); setLookAndFeel(nullptr);
 }
 void MainComponent::prepareToPlay(int, double rate) {
@@ -314,7 +342,7 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
     loaders.addJob([safe, stop, file, deck] {
         auto result = std::make_shared<DecodeResult>(decodeTrack(file, *stop));
         if (stop->load()) return;
-        juce::MessageManager::callAsync([safe, result, deck] {
+        juce::MessageManager::callAsync([safe, result, deck, file] {
             if (!safe) return;
             safe->loading[deck] = false; safe->decks[deck]->setLoading(false);
             auto* submittedClip = result->clip.get();
@@ -324,11 +352,40 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
                     safe->keyLockLifecycle.noteClipSubmitted(deck, submittedClip);
 #endif
                 safe->decks[deck]->setTrack(result->name, std::move(result->peaks));
+                safe->startTrackAnalysis(deck, file);
                 safe->statusMessage(text("Loaded: ", "Wczytano: ") + result->name);
             } else {
                 safe->decks[deck]->setTrack(text("Import failed — previous audio kept", "Błąd importu — poprzednie audio zachowane"), {});
                 safe->statusMessage(result->error.isNotEmpty() ? result->error : text("Import failed.", "Błąd importu."));
             }
+        });
+    });
+}
+void MainComponent::startTrackAnalysis(std::size_t deck, const juce::File& file) {
+    if (deck >= broke::deckCount || !file.existsAsFile()) return;
+    if (analysisCancelled[deck]) analysisCancelled[deck]->store(true);
+    auto stop = std::make_shared<std::atomic<bool>>(false);
+    analysisCancelled[deck] = stop;
+    beatGrids[deck] = {};
+    decks[deck]->setRhythmPending();
+
+    juce::Component::SafePointer<MainComponent> safe(this);
+    analyzers.addJob([safe, stop, file, deck] {
+        TrackAnalysisCache cache;
+        auto result = std::make_shared<TrackRhythmAnalysis>(
+            analyzeTrackRhythmCached(file, *stop, cache));
+        if (stop->load()) return;
+
+        broke::BeatGrid grid(result->beat);
+        if (result->beat.valid && !grid.valid()) {
+            result->beat = {};
+            result->error = "Detected rhythm metadata failed beat-grid validation.";
+        }
+        juce::MessageManager::callAsync([safe, stop, result, grid, deck] {
+            if (!safe || stop->load() || safe->analysisCancelled[deck] != stop) return;
+            safe->analysisCancelled[deck].reset();
+            safe->beatGrids[deck] = grid.valid() ? grid : broke::BeatGrid{};
+            safe->decks[deck]->setRhythmAnalysis(*result);
         });
     });
 }

@@ -18,22 +18,25 @@ Windows 11 x64 first · Native C++ audio · No subscription, ads, or mandatory a
 
 </div>
 
-> **Development build 0.1.0, not a production release.** BrokeDJ is being built toward a full four-deck DJ workstation. VST3 hosting, beat sync, key lock, a full effects collection, a sampler, stems and a persistent music library are planned, not finished features. Do not use this build as your only system at a live event.
+> **Development build 0.1.0, not a production release.** BrokeDJ is being built toward a full four-deck DJ workstation. VST3 hosting, beat sync, production key lock, a full effects collection, a sampler, stems and a persistent music library are planned, not finished features. Do not use this build as your only system at a live event.
 
 ## Current build
 
 | Area | Implemented in source | Validation / limits |
 |---|---|---|
-| Audio core | Four stereo decks; variable-rate playback; start/pause; seek; whole-track loop; hybrid rate conversion with Catmull-Rom when no downsampling filter is needed and a prepared band-limited windowed-sinc path for speed-up/downsampling; smoothed transport/EQ/FX transitions | Core tests cover deterministic transport and automation behavior. Rate changes pitch; no key lock or beat grid. |
+| Audio core | Four stereo decks; variable-rate playback; start/pause; seek; whole-track loop; hybrid rate conversion with Catmull-Rom when no downsampling filter is needed and a prepared band-limited windowed-sinc path for speed-up/downsampling; smoothed transport/EQ/FX transitions | Core tests cover deterministic transport and automation behavior. Ordinary rate changes pitch; production key lock remains gated. |
+| Rhythm analysis | Bounded offline BPM and beat-grid anchor analysis after a successful load; local privacy-preserving analysis cache; JUCE-independent editable variable-tempo grid model | Analysis runs outside the audio callback and may decline low-confidence material. Current automated accuracy evidence is synthetic/deterministic; manual grid editing, musical key detection and sync are not user-facing yet. |
 | Mixer | Channel gain; basic three-band EQ; equal-power crossfader; master gain; smooth master/cue output safety stage | A/C are assigned left, B/D right. The safety stage is not a transparent/look-ahead limiter; the mixer is not yet fully configurable. |
 | Effects | Fixed 250 ms feedback echo and saturation per deck | Two effects, not 40 presets disguised as effects. Beat sync and effect chains are pending. |
 | Cue | Pre-fader, post-EQ/FX stereo headphone bus | Outputs 3/4 only. Two-output devices do not receive cue mixed into master. Physical hardware validation pending. |
 | Import | Background import of local WAV, AIFF, FLAC, OGG and MP3 through JUCE. Small tracks use the in-memory path; larger tracks use a bounded background read-ahead cache with a sparse waveform preview. | Mono/stereo, 8–384 kHz. The old fixed 256 MiB decoded-whole-track ceiling is retired for the streaming path, but long-file seek/loop/slow-storage underrun behavior still needs stress and listening validation. |
-| Interface | Four deck panels, waveforms, drag/drop, audio settings and clickable `by Swir` credit | Native JUCE source; Windows CI builds and headless GUI lifecycle smoke tests, while clean-machine/manual usability qualification remains separate. |
-| Language | Polish selected for a Polish system; otherwise English | Decoder diagnostics currently fall back to English. No global translation claim. |
-| Reliability | Immutable clip handoff; deferred destruction; smooth bounded output safety; shutdown cancellation; smoothed control automation; bounded stream cache for large tracks | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
+| Interface | Four deck panels, waveforms, per-deck BPM/grid status, drag/drop, audio settings and clickable `by Swir` credit | Native JUCE source; Windows CI builds and headless GUI lifecycle smoke tests, while clean-machine/manual usability qualification remains separate. |
+| Language | Polish selected for a Polish system; otherwise English | Decoder/analysis diagnostics may fall back to English. No global translation claim. |
+| Reliability | Immutable clip handoff; deferred destruction; smooth bounded output safety; shutdown cancellation; smoothed control automation; bounded stream cache; cancellable background rhythm analysis | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
 
-The master/cue safety curve leaves the normal region unchanged and progressively compresses only the top output region toward a 0.98 ceiling. It is **not** a transparent look-ahead or true-peak limiter. The clipping warning is based on the signal before this protection, so lower gain when it appears. The waveform is an amplitude preview, not detected beats or musical phrases. Variable-rate playback now uses a prepared 24-tap Blackman-windowed sinc filter bank when the effective source step exceeds one frame per output sample, reducing out-of-band energy before downsampling; the lower-cost Catmull-Rom path remains for steps that do not need that anti-alias filter. This is still pitch-changing resampling, **not** time-stretch/key lock or proof of inaudibility on all material. The large-track cache prevents full-file RAM growth; it does not yet prove dropout-free playback on every disk, codec or seek pattern.
+The master/cue safety curve leaves the normal region unchanged and progressively compresses only the top output region toward a 0.98 ceiling. It is **not** a transparent look-ahead or true-peak limiter. The clipping warning is based on the signal before this protection, so lower gain when it appears. The waveform remains an amplitude preview; detected BPM/grid metadata is reported separately and is not a phrase/structure waveform. Variable-rate playback uses a prepared 24-tap Blackman-windowed sinc filter bank when the effective source step exceeds one frame per output sample, reducing out-of-band energy before downsampling; the lower-cost Catmull-Rom path remains for steps that do not need that anti-alias filter. This ordinary path is still pitch-changing resampling. The opt-in key-lock research stack is not yet a release-ready product control. The large-track cache prevents full-file RAM growth; it does not prove dropout-free playback on every disk, codec or seek pattern.
+
+The rhythm-analysis worker reduces decoded audio to a bounded onset envelope, estimates tempo/phase, and publishes a result only when its deterministic confidence gates pass. Analysis and cache I/O use a dedicated background worker after playback has already become available. Rapid replacement and shutdown cancel stale work. Cache payloads store source size/timestamp plus derived metadata, not the raw source pathname. These safeguards do not establish arbitrary-music BPM accuracy; broader real-music validation and manual correction remain M2 work.
 
 ## Project status
 
@@ -57,16 +60,18 @@ Source of truth: [`docs/progress.json`](docs/progress.json). This number is not 
 |---|---|
 | Four native decks | Independent stereo playback engines and deck controls |
 | Safer transport | Short transition crossfades around play/pause/seek discontinuities instead of abrupt jumps |
-| Improved rate conversion | Catmull-Rom interpolation for non-downsampling playback plus prepared band-limited windowed-sinc filtering when speed-up/downsampling requires anti-alias protection; key lock remains a future milestone |
+| Improved rate conversion | Catmull-Rom interpolation for non-downsampling playback plus prepared band-limited windowed-sinc filtering when speed-up/downsampling requires anti-alias protection; production key lock remains gated |
+| Background rhythm analysis | Cancellable off-thread BPM/grid estimation with confidence gating and a local derived-metadata cache; the deck can become playable before analysis finishes |
+| Editable grid foundation | JUCE-independent beat↔time mapping, beat-zero/BPM correction and bounded variable-tempo segments for later manual grid tools, quantization and sync |
 | Bounded long-track playback | Large local tracks use a fixed-size, lock-free sample cache filled by a background reader instead of decoding the entire track into RAM |
 | Independent headphone cue | Dedicated logical outputs 3/4 when the selected interface provides four output channels |
 | Safer output ceiling | A smooth allocation-free master/cue safety curve bounds extreme output while preserving pre-protection overload diagnostics |
-| Real-time-safe core direction | No disk/network I/O, decoding, allocation or blocking mutex in the audio callback |
+| Real-time-safe core direction | No disk/network I/O, decoding, analysis, allocation or blocking mutex in the audio callback |
 | Honest validation | Core, Windows build, GUI smoke and hardware/manual gates are reported separately |
 
 ## Product destination
 
-**Performance:** four fully equipped decks, corrected beat grids, tempo/key analysis, key lock, hotcues, beat loops, slip, reverse and scratch workflows.
+**Performance:** four fully equipped decks, user-correctable beat grids, tempo/key analysis, key lock, hotcues, beat loops, slip, reverse and scratch workflows.
 
 **Sound:** a configurable mixer, approximately 30–40 genuinely distinct built-in effects, serial/parallel chains, effect sends, XY/macros, presets and external VST3 effects. The VST3 scanner, isolation model and licensing review are separate engineering gates.
 
@@ -103,7 +108,7 @@ ctest --test-dir build/core --output-on-failure
 
 ## First session
 
-Open **Audio settings** and select your output device. Start with low hardware volume. Load a file onto a deck or drop it onto its panel, wait for import/cache preparation, then press PLAY. Click its waveform to seek. CUE 0 pauses and returns to the start; LOOP repeats the **whole track**. Turn ECHO or DRIVE to hear the two initial effects.
+Open **Audio settings** and select your output device. Start with low hardware volume. Load a file onto a deck or drop it onto its panel, wait for import/cache preparation, then press PLAY. Playback does not wait for rhythm analysis; when the background analyzer accepts a stable estimate, the deck shows BPM, grid anchor and confidence. Click its waveform to seek. CUE 0 pauses and returns to the start; LOOP repeats the **whole track**. Turn ECHO or DRIVE to hear the two initial effects.
 
 The crossfader sends A/C to the left side and B/D to the right. For independent stereo headphone cue, enable four output channels and connect an appropriate interface: master goes to logical outputs 1/2, headphones to 3/4. A normal two-channel output cannot provide two independent stereo pairs.
 
@@ -118,20 +123,21 @@ There is no manually qualified release yet. Successful GitHub Actions builds pro
 | No sound | Open audio settings; verify the selected device, channel gain, master and crossfader. Inspect the master status. |
 | No headphone cue | Enable four outputs. Cue is deliberately not folded into a two-channel master. |
 | Track will not load | Check codec, corruption, mono/stereo channel count and 8–384 kHz sample rate. The previous working audio is retained on import failure. |
+| BPM / GRID remains `—` | Playback is independent of analysis. Silence, non-periodic material, cancellation or a low-confidence result is deliberately not published; current detector evidence is not a guarantee for arbitrary music. |
 | Gap after a long-file seek | The bounded cache requests the new region asynchronously. Read-ahead/underrun recovery and loop-edge stress testing are still active hardening work. |
-| Tempo affects pitch | Expected in this build; high-quality key lock/time-stretch is a future gate. |
+| Tempo affects pitch | Expected on the normal playback path; the key-lock stack remains an opt-in development path without a production GUI control. |
 | Build cannot fetch JUCE | Check Git/proxy/network configuration or use an offline checkout as described in the build guide. |
 | Audible discontinuity remains | Record exact file/rate/action details. Transport smoothing reduces abrupt changes but hardware/codec stress validation is still ongoing. |
 
-Runtime diagnostics use JUCE's application log directory under `BrokeDJ/BrokeDJ.log`. Logs can contain local filenames; review them before posting an issue.
+Runtime diagnostics use JUCE's application log directory under `BrokeDJ/BrokeDJ.log`. Logs can contain local filenames; review them before posting an issue. Analysis cache payloads themselves intentionally omit the raw source pathname.
 
 ## Repository structure
 
 | Location | Responsibility |
 |---|---|
-| `src/core/` | JUCE-independent engine, controls, meters, immutable clip handoff and bounded stream cache |
-| `src/app/` | Native interface, decoder/read-ahead workers and device integration |
-| `tests/` | Deterministic core, quality-transition, streaming-cache, render-metric and concurrent handoff tests |
+| `src/core/` | JUCE-independent engine, controls, meters, immutable clip handoff, bounded stream cache, offline rhythm analysis and editable beat-grid model |
+| `src/app/` | Native interface, decoder/read-ahead workers, rhythm-analysis/cache adapter and device integration |
+| `tests/` | Deterministic core, rhythm/grid, codec/cache, quality-transition, render-metric and concurrent handoff tests |
 | `assets/readme/` | README PRO hero and generated SVG-only progress visuals |
 | `docs/` | Architecture, build instructions, validation and progress evidence |
 | `.github/workflows/` | Windows build, core tests and development artifact packaging |
@@ -142,7 +148,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/ARCHITECTURE.md`](docs/ARCHITE
 
 ## 🔎 Search Keywords
 
-`open source DJ software` • `Windows 11 DJ mixer` • `C++ JUCE audio workstation` • `four deck DJ software` • `native DJ application` • `DJ headphone cue` • `DJ audio effects` • `real time audio C++` • `band limited audio resampling` • `bounded audio streaming` • `DJ read ahead cache` • `open source music mixing` • `DJ software Windows x64` • `CMake audio application` • `BrokeDJ` • `Swir DJ software`
+`open source DJ software` • `Windows 11 DJ mixer` • `C++ JUCE audio workstation` • `four deck DJ software` • `DJ BPM analysis` • `editable beat grid` • `native DJ application` • `DJ headphone cue` • `DJ audio effects` • `real time audio C++` • `band limited audio resampling` • `bounded audio streaming` • `DJ read ahead cache` • `open source music mixing` • `DJ software Windows x64` • `BrokeDJ` • `Swir DJ software`
 
 <div align="center">
 

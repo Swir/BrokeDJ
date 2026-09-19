@@ -93,6 +93,23 @@ void runAnalysisAndCache() {
           "cache does not expose source path");
     check(cacheText.contains("segmentCount=1"), "cache persists beat-grid segment metadata");
 
+    auto variableTempo = first.beat;
+    variableTempo.segments.push_back({first.beat.beatZeroSeconds + 4.0, 100.0});
+    check(broke::BeatGrid(variableTempo).valid(), "variable-tempo cache fixture is a valid grid");
+    check(cache.store(source, variableTempo), "valid variable-tempo map is cacheable");
+    broke::BeatAnalysisResult loadedVariable;
+    check(cache.load(source, loadedVariable), "variable-tempo cache record reloads");
+    check(loadedVariable.segments.size() == 2
+          && std::abs(loadedVariable.segments[1].bpm - 100.0) < 1.0e-9,
+          "cache round-trips variable-tempo segments");
+
+    auto malformed = variableTempo;
+    malformed.segments[1].startSeconds = malformed.segments[0].startSeconds;
+    check(!cache.store(source, malformed), "malformed tempo-map ordering is rejected before cache write");
+    broke::BeatAnalysisResult stillValid;
+    check(cache.load(source, stillValid) && stillValid.segments.size() == 2,
+          "rejected cache write preserves the prior valid record");
+
     const auto changedTime = source.getLastModificationTime() + juce::RelativeTime::seconds(5.0);
     check(source.setLastModificationTime(changedTime), "fixture modification time changes");
     const auto third = analyzeTrackRhythmCached(source, cancelled, cache, options);

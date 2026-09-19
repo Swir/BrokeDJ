@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
+#include <utility>
 
 namespace broke {
 namespace {
@@ -13,6 +15,7 @@ constexpr double minimumConfidence = 0.18;
 constexpr double minimumPhaseStrength = 0.12;
 constexpr std::size_t minimumEnvelopePoints = 32;
 constexpr std::size_t minimumBeatPairs = 3;
+constexpr double gridTimeEpsilon = 1.0e-8;
 
 [[nodiscard]] bool finitePositive(double value) noexcept {
     return std::isfinite(value) && value > 0.0;
@@ -40,7 +43,180 @@ constexpr std::size_t minimumBeatPairs = 3;
     return std::clamp(dot / std::sqrt(a2 * b2), 0.0, 1.0);
 }
 
+[[nodiscard]] double invalidGridValue() noexcept {
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
 } // namespace
+
+BeatGrid::BeatGrid(const BeatAnalysisResult& analysis) {
+    static_cast<void>(reset(analysis));
+}
+
+bool BeatGrid::validBpm(double bpm) noexcept {
+    return std::isfinite(bpm) && bpm >= 30.0 && bpm <= 300.0;
+}
+
+bool BeatGrid::validate() const noexcept {
+    if (!std::isfinite(beatZero) || beatZero < 0.0
+        || tempoMap.empty() || tempoMap.size() > maxSegments
+        || !std::isfinite(tempoMap.front().startSeconds)
+        || std::abs(tempoMap.front().startSeconds - beatZero) > gridTimeEpsilon)
+        return false;
+
+    double previousStart = beatZero - 1.0;
+    for (std::size_t i = 0; i < tempoMap.size(); ++i) {
+        const auto& segment = tempoMap[i];
+        if (!std::isfinite(segment.startSeconds) || segment.startSeconds < beatZero
+            || !validBpm(segment.bpm))
+            return false;
+        if (i > 0 && segment.startSeconds <= previousStart + gridTimeEpsilon)
+            return false;
+        previousStart = segment.startSeconds;
+    }
+    return true;
+}
+
+bool BeatGrid::valid() const noexcept {
+    return validate();
+}
+
+bool BeatGrid::reset(double beatZeroSecondsIn, double bpm) {
+    BeatGrid candidate;
+    candidate.beatZero = beatZeroSecondsIn;
+    candidate.tempoMap.push_back({beatZeroSecondsIn, bpm});
+    if (!candidate.validate()) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool BeatGrid::reset(const BeatAnalysisResult& analysis) {
+    if (!analysis.valid || !std::isfinite(analysis.beatZeroSeconds)
+        || analysis.beatZeroSeconds < 0.0 || !validBpm(analysis.bpm))
+        return false;
+
+    BeatGrid candidate;
+    candidate.beatZero = analysis.beatZeroSeconds;
+    if (analysis.segments.empty()) {
+        candidate.tempoMap.push_back({analysis.beatZeroSeconds, analysis.bpm});
+    } else {
+        if (analysis.segments.size() > maxSegments) return false;
+        candidate.tempoMap = analysis.segments;
+    }
+    if (!candidate.validate()) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool BeatGrid::setBeatZero(double seconds) {
+    if (!validate() || !std::isfinite(seconds) || seconds < 0.0) return false;
+    BeatGrid candidate = *this;
+    const double delta = seconds - candidate.beatZero;
+    candidate.beatZero = seconds;
+    for (auto& segment : candidate.tempoMap)
+        segment.startSeconds += delta;
+    if (!candidate.validate()) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool BeatGrid::setSegmentBpm(std::size_t index, double bpm) {
+    if (!validate() || index >= tempoMap.size() || !validBpm(bpm)) return false;
+    BeatGrid candidate = *this;
+    candidate.tempoMap[index].bpm = bpm;
+    if (!candidate.validate()) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool BeatGrid::insertTempoChangeAtBeat(double beat, double bpm) {
+    if (!validate() || !std::isfinite(beat) || beat <= 0.0 || !validBpm(bpm)
+        || tempoMap.size() >= maxSegments)
+        return false;
+
+    const double seconds = timeAtBeat(beat);
+    if (!std::isfinite(seconds) || seconds <= beatZero + gridTimeEpsilon) return false;
+
+    const auto insertion = std::lower_bound(
+        tempoMap.begin(), tempoMap.end(), seconds,
+        [](const BeatGridSegment& segment, double value) {
+            return segment.startSeconds < value;
+        });
+    if (insertion != tempoMap.end()
+        && std::abs(insertion->startSeconds - seconds) <= gridTimeEpsilon)
+        return false;
+    if (insertion != tempoMap.begin()) {
+        const auto previous = std::prev(insertion);
+        if (std::abs(previous->startSeconds - seconds) <= gridTimeEpsilon)
+            return false;
+    }
+
+    BeatGrid candidate = *this;
+    const auto offset = static_cast<std::size_t>(std::distance(tempoMap.begin(), insertion));
+    candidate.tempoMap.insert(candidate.tempoMap.begin() + static_cast<std::ptrdiff_t>(offset),
+                              {seconds, bpm});
+    if (!candidate.validate()) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool BeatGrid::removeTempoChange(std::size_t index) {
+    if (!validate() || index == 0 || index >= tempoMap.size()) return false;
+    BeatGrid candidate = *this;
+    candidate.tempoMap.erase(candidate.tempoMap.begin() + static_cast<std::ptrdiff_t>(index));
+    if (!candidate.validate()) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+double BeatGrid::beatAtTime(double seconds) const noexcept {
+    if (!validate() || !std::isfinite(seconds)) return invalidGridValue();
+    if (seconds < beatZero)
+        return (seconds - beatZero) * tempoMap.front().bpm / 60.0;
+
+    double beats = 0.0;
+    for (std::size_t i = 0; i < tempoMap.size(); ++i) {
+        const auto& segment = tempoMap[i];
+        if (i + 1 == tempoMap.size())
+            return beats + (seconds - segment.startSeconds) * segment.bpm / 60.0;
+
+        const double nextStart = tempoMap[i + 1].startSeconds;
+        if (seconds < nextStart)
+            return beats + (seconds - segment.startSeconds) * segment.bpm / 60.0;
+        beats += (nextStart - segment.startSeconds) * segment.bpm / 60.0;
+    }
+    return invalidGridValue();
+}
+
+double BeatGrid::timeAtBeat(double beat) const noexcept {
+    if (!validate() || !std::isfinite(beat)) return invalidGridValue();
+    if (beat < 0.0)
+        return beatZero + beat * 60.0 / tempoMap.front().bpm;
+
+    double beats = 0.0;
+    for (std::size_t i = 0; i < tempoMap.size(); ++i) {
+        const auto& segment = tempoMap[i];
+        if (i + 1 == tempoMap.size())
+            return segment.startSeconds + (beat - beats) * 60.0 / segment.bpm;
+
+        const double nextStart = tempoMap[i + 1].startSeconds;
+        const double segmentBeats = (nextStart - segment.startSeconds) * segment.bpm / 60.0;
+        if (beat <= beats + segmentBeats)
+            return segment.startSeconds + (beat - beats) * 60.0 / segment.bpm;
+        beats += segmentBeats;
+    }
+    return invalidGridValue();
+}
+
+double BeatGrid::quantizeTime(double seconds, double beatStep) const noexcept {
+    if (!validate() || !std::isfinite(seconds) || !std::isfinite(beatStep)
+        || beatStep <= 0.0 || beatStep > 64.0)
+        return invalidGridValue();
+    const double beat = beatAtTime(seconds);
+    if (!std::isfinite(beat)) return invalidGridValue();
+    const double quantizedBeat = std::round(beat / beatStep) * beatStep;
+    return timeAtBeat(quantizedBeat);
+}
 
 BeatAnalysisAccumulator::BeatAnalysisAccumulator(double sampleRate, BeatAnalysisOptions input)
     : options(input), sourceRate(sampleRate) {
