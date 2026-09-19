@@ -63,6 +63,11 @@ if(BUILD_TESTING)
     target_link_libraries(brokedj_key_analysis_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME key_analysis COMMAND brokedj_key_analysis_tests)
     set_tests_properties(key_analysis PROPERTIES TIMEOUT 60)
+
+    add_executable(brokedj_performance_deck_owner_tests tests/PerformanceDeckOwnerTests.cpp)
+    target_link_libraries(brokedj_performance_deck_owner_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME performance_deck_owner COMMAND brokedj_performance_deck_owner_tests)
+    set_tests_properties(performance_deck_owner PROPERTIES TIMEOUT 30)
 endif()
 
 if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
