@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -178,6 +179,60 @@ void beatJumpAndSyncAreBoundedReviewedGridActions() {
           "sync refuses owners from different engine instances");
 }
 
+void syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner follower(engine, 0);
+    broke::PerformanceDeckOwner master(engine, 1);
+
+    broke::BeatGrid followerGrid;
+    broke::BeatGrid masterGrid;
+    check(followerGrid.reset(0.0, 120.0), "rate-aware follower grid initializes");
+    check(masterGrid.reset(0.0, 120.0), "rate-aware master grid initializes");
+    check(follower.setReviewedGrid(followerGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "rate-aware follower accepts reviewed grid");
+    check(master.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "rate-aware master accepts reviewed grid");
+
+    engine.control(1).rate.store(0.8f);
+    check(follower.syncToAt(master, 4.0, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "sync follows slowed master effective tempo");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 0.8) < 1.0e-6,
+          "slowed master publishes 0.8x follower rate");
+
+    engine.control(1).rate.store(1.2f);
+    check(follower.syncToAt(master, 4.0, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "sync follows accelerated master at inclusive safety boundary");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 1.2) < 1.0e-6,
+          "accelerated master publishes bounded 1.2x follower rate");
+
+    engine.control(0).rate.store(0.93f);
+    engine.control(0).seek.store(0.234);
+    engine.control(1).rate.store(1.21f);
+    check(follower.syncToAt(master, 4.0, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "sync rejects master effective tempo outside caller rate envelope");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 0.93) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - 0.234) < 1.0e-12,
+          "rate-envelope rejection leaves follower controls unchanged");
+
+    engine.control(1).rate.store(std::numeric_limits<float>::quiet_NaN());
+    check(follower.syncToAt(master, 4.0, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "sync rejects non-finite master playback rate");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 0.93) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - 0.234) < 1.0e-12,
+          "non-finite master rate fails closed without follower drift");
+
+    const auto directPlan = broke::planBeatSync(followerGrid, 4.0, masterGrid, 4.0, 0.20, 1.10);
+    check(directPlan.valid && std::abs(directPlan.followerRate - 1.10) < 1.0e-12,
+          "planner exposes rate-aware absolute follower command");
+    check(std::abs(directPlan.masterEffectiveBpm - 132.0) < 1.0e-12
+              && std::abs(directPlan.masterPlaybackRate - 1.10) < 1.0e-12,
+          "planner reports effective master tempo snapshot for diagnostics");
+}
+
 class BusyRenderer final : public broke::DeckSourceRenderer {
 public:
     bool render(const broke::Clip&, double, bool, double,
@@ -237,6 +292,7 @@ int main() {
         reviewedBeatLoopOwnershipIsTransactional();
         hotCuesUseReviewedGridAndSafeTransportRules();
         beatJumpAndSyncAreBoundedReviewedGridActions();
+        syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope();
         failClosedBoundariesDoNotDriftControls();
         std::cout << "PerformanceDeckOwnerTests: " << checks << " checks passed\n";
         return EXIT_SUCCESS;

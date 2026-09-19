@@ -264,8 +264,10 @@ public:
 
     // Apply one bounded sync decision to this follower deck. Both grids must be
     // reviewed snapshots from owners attached to the same Engine. Validation is
-    // completed before controls mutate. The current production Engine de-clicks
-    // the resulting seek/rate discontinuity; this is not continuous phase-lock.
+    // completed before controls mutate. Master rate is sampled once so the
+    // follower matches the master's effective tempo, not merely its source BPM.
+    // The current production Engine de-clicks the resulting seek/rate
+    // discontinuity; this is not continuous phase-lock.
     [[nodiscard]] Result syncToAt(const PerformanceDeckOwner& master,
                                   double followerSeconds, double followerDurationSeconds,
                                   double masterSeconds, double masterDurationSeconds,
@@ -286,8 +288,16 @@ public:
         if (followerSeconds >= followerDurationSeconds || masterSeconds >= masterDurationSeconds)
             return Result::outsideTrack;
 
+        const double masterPlaybackRate = static_cast<double>(
+            engine.control(master.deck).rate.load(std::memory_order_acquire));
+        if (!std::isfinite(masterPlaybackRate)
+            || masterPlaybackRate < 0.5 || masterPlaybackRate > 1.5) {
+            return Result::invalidRequest;
+        }
+
         const auto plan = planBeatSync(grid, followerSeconds,
-                                       master.grid, masterSeconds, maxRateDelta);
+                                       master.grid, masterSeconds,
+                                       maxRateDelta, masterPlaybackRate);
         if (!plan.valid || !std::isfinite(plan.followerRate)
             || !std::isfinite(plan.followerTargetSeconds)
             || !std::isfinite(plan.phaseErrorBeats)) {
