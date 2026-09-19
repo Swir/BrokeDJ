@@ -64,6 +64,52 @@ public:
         return Result::applied;
     }
 
+    // Reviewed tempo-map edits are owned here rather than mutating a grid behind
+    // the performance boundary. Every operation edits a candidate copy first;
+    // only a fully valid candidate replaces the live reviewed snapshot. A valid
+    // replacement deliberately disarms a beat-derived loop because its source-
+    // time bounds were calculated from the old map. Invalid edits leave both the
+    // map and active loop untouched.
+    [[nodiscard]] Result setReviewedSegmentBpm(std::size_t index, double bpm) {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!hasReviewedGrid()) return Result::gridUnavailable;
+        auto candidate = grid;
+        if (!candidate.setSegmentBpm(index, bpm)) return Result::invalidRequest;
+        return setReviewedGrid(candidate);
+    }
+
+    [[nodiscard]] Result insertReviewedTempoChange(double beat, double bpm) {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!hasReviewedGrid()) return Result::gridUnavailable;
+        auto candidate = grid;
+        if (!candidate.insertTempoChangeAtBeat(beat, bpm)) return Result::invalidRequest;
+        return setReviewedGrid(candidate);
+    }
+
+    [[nodiscard]] Result moveReviewedTempoChange(std::size_t index, double beat) {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!hasReviewedGrid()) return Result::gridUnavailable;
+        auto candidate = grid;
+        if (!candidate.moveTempoChangeToBeat(index, beat)) return Result::invalidRequest;
+        return setReviewedGrid(candidate);
+    }
+
+    [[nodiscard]] Result replaceReviewedTempoChange(std::size_t index, double beat, double bpm) {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!hasReviewedGrid()) return Result::gridUnavailable;
+        auto candidate = grid;
+        if (!candidate.replaceTempoChange(index, beat, bpm)) return Result::invalidRequest;
+        return setReviewedGrid(candidate);
+    }
+
+    [[nodiscard]] Result removeReviewedTempoChange(std::size_t index) {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!hasReviewedGrid()) return Result::gridUnavailable;
+        auto candidate = grid;
+        if (!candidate.removeTempoChange(index)) return Result::invalidRequest;
+        return setReviewedGrid(candidate);
+    }
+
     void clearReviewedGrid() noexcept {
         if (activeBeatLoopBeats > 0.0) disarmLoop();
         grid = BeatGrid{};
