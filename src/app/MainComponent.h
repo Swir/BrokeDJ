@@ -11,6 +11,7 @@
 #endif
 
 #include <cstdint>
+#include <optional>
 
 juce::String text(const char* english, const char* polish);
 class Waveform final : public juce::Component {
@@ -40,6 +41,9 @@ public:
     std::function<void(bool)> onWholeTrackLoopRequested;
     std::function<bool(double, bool)> onBeatLoopRequested;
     std::function<void(std::size_t, bool)> onHotCueRequested;
+    std::function<void(double)> onBeatJumpRequested;
+    std::function<void(bool)> onSyncMasterRequested;
+    std::function<void()> onSyncRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
     void setRhythmPending();
@@ -47,7 +51,7 @@ public:
     void setBeatGrid(const broke::BeatGrid&, bool manual);
     void setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats,
                              const broke::PerformanceDeckOwner::HotCueBank& hotCues,
-                             bool trackReady);
+                             bool trackReady, bool isSyncMaster, bool syncAvailable);
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -62,6 +66,8 @@ private:
     juce::TextButton load, play, rewind, loop, beatLoop, cue;
     juce::ComboBox beatLoopLength;
     std::array<juce::TextButton, broke::PerformanceDeckOwner::hotCueCount> hotCuePads;
+    juce::TextButton jumpBack, jumpForward, syncMaster, sync;
+    juce::ComboBox jumpLength;
     std::array<juce::Slider, 7> knobs;
     std::array<juce::Label, 7> knobNames;
     juce::Slider gridZero, gridBpm;
@@ -91,6 +97,9 @@ private:
     void setWholeTrackLoop(std::size_t, bool enabled);
     [[nodiscard]] bool setBeatLoop(std::size_t, double beats, bool enabled);
     void handleHotCue(std::size_t deck, std::size_t slot, bool clear);
+    [[nodiscard]] bool jumpBeats(std::size_t deck, double beats);
+    void setSyncMaster(std::size_t deck, bool enabled);
+    [[nodiscard]] bool syncDeck(std::size_t followerDeck);
     void restoreHotCues(std::size_t deck, const juce::File& file, double trackDurationSeconds,
                         std::uint64_t generation);
     void persistHotCues(std::size_t deck, const juce::File& file, std::uint64_t generation,
@@ -108,6 +117,7 @@ private:
 #endif
     std::array<std::unique_ptr<broke::PerformanceDeckOwner>, broke::deckCount> performanceDecks;
     std::array<std::unique_ptr<DeckPanel>, broke::deckCount> decks;
+    std::optional<std::size_t> syncMasterDeck;
     std::array<bool, broke::deckCount> loading{};
     std::array<juce::File, broke::deckCount> deckFiles;
     std::array<broke::BeatGrid, broke::deckCount> detectedBeatGrids;

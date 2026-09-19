@@ -28,6 +28,9 @@ int beatLoopIdForBeats(double beats) noexcept {
 std::size_t setHotCueCount(const broke::PerformanceDeckOwner::HotCueBank& cues) noexcept {
     return static_cast<std::size_t>(std::count_if(cues.begin(), cues.end(), [](const auto& cue) { return cue.set; }));
 }
+juce::String deckLetter(std::size_t deck) {
+    return juce::String::charToString(static_cast<juce::juce_wchar>('A' + static_cast<int>(deck)));
+}
 }
 juce::String text(const char* english, const char* polish) {
     static const bool usePolish = juce::SystemStats::getUserLanguage().startsWithIgnoreCase("pl");
@@ -85,7 +88,7 @@ void Waveform::mouseDown(const juce::MouseEvent& event) {
     if (!peaks.empty() && onSeek) onSeek(juce::jlimit(0.0, 1.0, static_cast<double>(event.x) / std::max(1, getWidth())));
 }
 DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
-    configureLabel(heading, "DECK " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + d)) + (d % 2 == 0 ? "  /  LEFT" : "  /  RIGHT"), 16);
+    configureLabel(heading, "DECK " + deckLetter(d) + (d % 2 == 0 ? "  /  LEFT" : "  /  RIGHT"), 16);
     configureLabel(track, text("No track loaded", "Nie wczytano utworu"), 14);
     configureLabel(time, "00:00 / 00:00", 12);
     configureLabel(rhythm, text("BPM —  /  GRID —  /  KEY —", "BPM —  /  SIATKA —  /  TONACJA —"), 11);
@@ -99,9 +102,18 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     for (int i = 0; i < 5; ++i) {
         constexpr std::array<const char*, 5> labels{"1", "2", "4", "8", "16"};
         beatLoopLength.addItem(labels[static_cast<std::size_t>(i)], i + 1);
+        jumpLength.addItem(labels[static_cast<std::size_t>(i)], i + 1);
     }
     beatLoopLength.setSelectedId(3, juce::dontSendNotification);
+    jumpLength.setSelectedId(3, juce::dontSendNotification);
     beatLoop.setEnabled(false); beatLoopLength.setEnabled(false);
+    jumpBack.setButtonText(text("JUMP -", "SKOK -"));
+    jumpForward.setButtonText(text("JUMP +", "SKOK +"));
+    syncMaster.setButtonText("MASTER");
+    sync.setButtonText("SYNC");
+    syncMaster.setClickingTogglesState(true);
+    jumpBack.setEnabled(false); jumpForward.setEnabled(false); jumpLength.setEnabled(false);
+    syncMaster.setEnabled(false); sync.setEnabled(false);
     load.onClick = [this] { if (onBrowse) onBrowse(); };
     play.onClick = [this] {
         auto& p = engine.control(index).playing;
@@ -139,6 +151,18 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
             if (onKeyLockControlChanged) onKeyLockControlChanged();
         }
     };
+    jumpBack.onClick = [this] {
+        if (onBeatJumpRequested)
+            onBeatJumpRequested(-beatLoopBeatsForId(jumpLength.getSelectedId()));
+    };
+    jumpForward.onClick = [this] {
+        if (onBeatJumpRequested)
+            onBeatJumpRequested(beatLoopBeatsForId(jumpLength.getSelectedId()));
+    };
+    syncMaster.onClick = [this] {
+        if (onSyncMasterRequested) onSyncMasterRequested(syncMaster.getToggleState());
+    };
+    sync.onClick = [this] { if (onSyncRequested) onSyncRequested(); };
     cue.onClick = [this] { engine.control(index).headphone = cue.getToggleState(); };
     waveform.onSeek = [this](double position) {
         engine.control(index).seek = position;
@@ -146,6 +170,8 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     };
     for (juce::Component* child : std::array<juce::Component*, 10>{&heading, &track, &time, &rhythm, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
     addAndMakeVisible(beatLoop); addAndMakeVisible(beatLoopLength);
+    addAndMakeVisible(jumpBack); addAndMakeVisible(jumpLength); addAndMakeVisible(jumpForward);
+    addAndMakeVisible(syncMaster); addAndMakeVisible(sync);
 
     for (std::size_t i = 0; i < hotCuePads.size(); ++i) {
         auto& pad = hotCuePads[i];
@@ -223,11 +249,16 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     gridBpm.setTooltip(gridTooltip);
     gridReset.setTooltip(text("Erase the local manual override and return to the detected grid for this file.",
                               "Usuń lokalną ręczną korektę i wróć do wykrytej siatki dla tego pliku."));
-    knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Key lock has no GUI control yet.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Key lock nie ma jeszcze kontrolki GUI."));
+    knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Sync can update this control without feeding a second rate command back into the Engine.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Sync może zaktualizować tę kontrolkę bez wysyłania drugiej komendy tempa do silnika."));
     knobs[5].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
     loop.setTooltip(text("Loops the whole track. Beat-length looping is a separate reviewed-grid control.", "Zapętla cały utwór. Pętla beatowa ma osobną kontrolkę opartą o zweryfikowaną siatkę."));
     beatLoop.setTooltip(text("Arm/disarm a reviewed-grid musical loop at the current transport position.", "Włącz/wyłącz muzyczną pętlę z siatki rytmu w bieżącej pozycji."));
     beatLoopLength.setTooltip(text("Beat-loop length: 1, 2, 4, 8 or 16 beats.", "Długość pętli: 1, 2, 4, 8 lub 16 beatów."));
+    jumpBack.setTooltip(text("Jump backward by the selected number of beats while preserving fractional beat phase. Requires a reviewed grid.", "Skocz wstecz o wybraną liczbę beatów z zachowaniem fazy. Wymaga zweryfikowanej siatki."));
+    jumpForward.setTooltip(text("Jump forward by the selected number of beats while preserving fractional beat phase. Requires a reviewed grid.", "Skocz do przodu o wybraną liczbę beatów z zachowaniem fazy. Wymaga zweryfikowanej siatki."));
+    jumpLength.setTooltip(text("Beat Jump distance: 1, 2, 4, 8 or 16 beats.", "Dystans Beat Jump: 1, 2, 4, 8 lub 16 beatów."));
+    syncMaster.setTooltip(text("Select this deck as the explicit Sync master. Only one reviewed-grid deck is master at a time.", "Ustaw ten deck jako jawny master Sync. Jednocześnie masterem może być tylko jeden deck ze zweryfikowaną siatką."));
+    sync.setTooltip(text("One-shot reviewed-grid Sync to the selected master: bounded tempo match plus limited phase correction. This is not continuous phase lock.", "Jednorazowy Sync do wybranego mastera: ograniczone dopasowanie tempa i fazy na zweryfikowanej siatce. To nie jest ciągła blokada fazy."));
     cue.setTooltip(text("Cue uses outputs 3/4 only. Enable four outputs in Audio settings.", "Odsłuch używa tylko wyjść 3/4. Włącz cztery wyjścia w ustawieniach audio."));
 }
 void DeckPanel::setLoading(bool isLoading) {
@@ -244,7 +275,7 @@ void DeckPanel::setRhythmPending() {
     manualBeatGrid = false;
     gridZero.setEnabled(false); gridBpm.setEnabled(false); gridReset.setEnabled(false);
     broke::PerformanceDeckOwner::HotCueBank emptyCues{};
-    setPerformanceState(false, false, 0.0, emptyCues, false);
+    setPerformanceState(false, false, 0.0, emptyCues, false, false, false);
     waveform.setBeatGrid({}, false);
     rhythm.setText(text("Analyzing BPM / beat grid / key…", "Analiza BPM / siatki rytmu / tonacji…"), juce::dontSendNotification);
     rhythm.setTooltip(text("Offline musical analysis runs in a background worker and never in the audio callback.",
@@ -267,12 +298,18 @@ void DeckPanel::setBeatGrid(const broke::BeatGrid& grid, bool manual) {
 }
 void DeckPanel::setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats,
                                     const broke::PerformanceDeckOwner::HotCueBank& hotCues,
-                                    bool trackReady) {
+                                    bool trackReady, bool isSyncMaster, bool syncAvailable) {
     beatLoop.setEnabled(gridAvailable);
     beatLoopLength.setEnabled(gridAvailable);
     beatLoop.setToggleState(beatLoopIsActive, juce::dontSendNotification);
     if (beatLoopIsActive)
         beatLoopLength.setSelectedId(beatLoopIdForBeats(beatLoopBeats), juce::dontSendNotification);
+    jumpBack.setEnabled(gridAvailable && trackReady);
+    jumpForward.setEnabled(gridAvailable && trackReady);
+    jumpLength.setEnabled(gridAvailable && trackReady);
+    syncMaster.setEnabled(gridAvailable && trackReady);
+    syncMaster.setToggleState(isSyncMaster, juce::dontSendNotification);
+    sync.setEnabled(syncAvailable);
     for (std::size_t i = 0; i < hotCuePads.size(); ++i) {
         auto& pad = hotCuePads[i];
         pad.setEnabled(trackReady);
@@ -304,8 +341,8 @@ void DeckPanel::refreshRhythmDisplay() {
     auto tooltip = manualBeatGrid
         ? text("Manual beat-grid override is active for this exact local file. Key metadata remains the offline estimate.",
                "Aktywna jest ręczna korekta siatki dla dokładnie tego lokalnego pliku. Tonacja pozostaje wynikiem analizy offline.")
-        : text("Offline tempo/grid and musical-key estimates. Current accuracy evidence is deterministic/synthetic; sync is not enabled yet.",
-               "Szacunki offline tempa/siatki i tonacji. Obecna walidacja dokładności jest deterministyczna/syntetyczna; sync nie jest jeszcze włączony.");
+        : text("Offline tempo/grid and musical-key estimates. Beat Loop, Beat Jump and one-shot Sync use only a reviewed grid; current detector accuracy evidence is still deterministic/synthetic.",
+               "Szacunki offline tempa/siatki i tonacji. Beat Loop, Beat Jump i jednorazowy Sync używają tylko zweryfikowanej siatki; obecna walidacja detektora nadal jest deterministyczna/syntetyczna.");
     if (rhythmAnalysis.beat.valid) {
         const int confidence = juce::jlimit(0, 100,
             static_cast<int>(std::lround(rhythmAnalysis.beat.confidence * 100.0)));
@@ -343,6 +380,12 @@ void DeckPanel::refresh() {
     waveform.setDuration(duration);
     waveform.repaint();
     play.setButtonText(engine.control(index).playing.load() ? "PAUSE" : "PLAY");
+    const double rate = static_cast<double>(engine.control(index).rate.load(std::memory_order_relaxed));
+    if (std::isfinite(rate)) {
+        const double percent = juce::jlimit(-20.0, 20.0, (rate - 1.0) * 100.0);
+        if (std::abs(knobs[1].getValue() - percent) > 0.005)
+            knobs[1].setValue(percent, juce::dontSendNotification);
+    }
 }
 void DeckPanel::paint(juce::Graphics& g) {
     g.setColour(panel); g.fillRoundedRectangle(getLocalBounds().toFloat(), 12.0f);
@@ -353,7 +396,7 @@ void DeckPanel::resized() {
     auto top = area.removeFromTop(24); time.setBounds(top.removeFromRight(160)); heading.setBounds(top);
     track.setBounds(area.removeFromTop(24));
     rhythm.setBounds(area.removeFromTop(18)); area.removeFromTop(4);
-    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 244)));
+    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 278)));
     area.removeFromTop(6);
     auto buttons = area.removeFromTop(30);
     std::array<juce::Component*, 7> list {&load, &play, &rewind, &loop, &beatLoop, &beatLoopLength, &cue};
@@ -363,6 +406,12 @@ void DeckPanel::resized() {
     auto hotCueArea = area.removeFromTop(28);
     const int hotCueWidth = hotCueArea.getWidth() / static_cast<int>(hotCuePads.size());
     for (auto& pad : hotCuePads) pad.setBounds(hotCueArea.removeFromLeft(hotCueWidth).reduced(2, 0));
+    area.removeFromTop(4);
+    auto performanceArea = area.removeFromTop(28);
+    std::array<juce::Component*, 5> performanceControls {&jumpBack, &jumpLength, &jumpForward, &syncMaster, &sync};
+    const int performanceWidth = performanceArea.getWidth() / static_cast<int>(performanceControls.size());
+    for (auto* component : performanceControls)
+        component->setBounds(performanceArea.removeFromLeft(performanceWidth).reduced(2, 0));
     area.removeFromTop(4);
     auto gridArea = area.removeFromTop(44);
     gridReset.setBounds(gridArea.removeFromRight(96).reduced(2, 7));
@@ -430,6 +479,11 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
         decks[i]->onHotCueRequested = [this, i](std::size_t slot, bool clear) {
             handleHotCue(i, slot, clear);
         };
+        decks[i]->onBeatJumpRequested = [this, i](double beats) {
+            static_cast<void>(jumpBeats(i, beats));
+        };
+        decks[i]->onSyncMasterRequested = [this, i](bool enabled) { setSyncMaster(i, enabled); };
+        decks[i]->onSyncRequested = [this, i] { static_cast<void>(syncDeck(i)); };
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
         static_cast<void>(keyLockLifecycle.setEnabled(i, keyLockResearchEnabled));
         decks[i]->onBeforePlay = [this, i] {
@@ -534,15 +588,25 @@ void MainComponent::timerCallback() {
             serviceKeyLockDeck(deck, engine.control(deck).playing.load(std::memory_order_relaxed));
     }
 #endif
+    bool syncMasterReady = false;
+    if (syncMasterDeck && *syncMasterDeck < broke::deckCount && performanceDecks[*syncMasterDeck]) {
+        const auto masterDuration = engine.meter(*syncMasterDeck).duration.load(std::memory_order_acquire);
+        syncMasterReady = performanceDecks[*syncMasterDeck]->hasReviewedGrid()
+            && std::isfinite(masterDuration) && masterDuration > 0.0;
+    }
     for (std::size_t i = 0; i < decks.size(); ++i) {
         decks[i]->refresh();
         if (performanceDecks[i]) {
             const auto duration = engine.meter(i).duration.load(std::memory_order_acquire);
+            const bool trackReady = std::isfinite(duration) && duration > 0.0;
+            const bool isMaster = syncMasterDeck && *syncMasterDeck == i;
+            const bool syncAvailable = syncMasterReady && !isMaster
+                && performanceDecks[i]->hasReviewedGrid() && trackReady;
             decks[i]->setPerformanceState(performanceDecks[i]->hasReviewedGrid(),
                                           performanceDecks[i]->beatLoopActive(),
                                           performanceDecks[i]->beatLoopLength(),
                                           performanceDecks[i]->hotCueBank(),
-                                          std::isfinite(duration) && duration > 0.0);
+                                          trackReady, isMaster, syncAvailable);
         }
     }
     const auto peak = engine.masterPeak.load();
@@ -581,6 +645,7 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
                 ? static_cast<double>(submittedClip->frames()) / submittedClip->sampleRate : 0.0;
             if (result->clip && safe->engine.submit(deck, std::move(result->clip))) {
                 if (safe->performanceDecks[deck]) safe->performanceDecks[deck]->resetForClip();
+                if (safe->syncMasterDeck && *safe->syncMasterDeck == deck) safe->syncMasterDeck.reset();
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
                 if (safe->keyLockResearchEnabled)
                     safe->keyLockLifecycle.noteClipSubmitted(deck, submittedClip);
@@ -791,6 +856,78 @@ void MainComponent::handleHotCue(std::size_t deck, std::size_t slot, bool clear)
     } else {
         statusMessage(text("Hot cue request was rejected safely.", "Żądanie hot cue zostało bezpiecznie odrzucone."));
     }
+}
+bool MainComponent::jumpBeats(std::size_t deck, double beats) {
+    if (deck >= broke::deckCount || !performanceDecks[deck]) return false;
+    const auto result = performanceDecks[deck]->jumpBeatsFromTransport(beats);
+    if (result == broke::PerformanceDeckOwner::Result::applied) {
+        const auto target = engine.control(deck).seek.load(std::memory_order_acquire);
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+        if (keyLockResearchEnabled && std::isfinite(target) && target >= 0.0)
+            keyLockLifecycle.noteSeekNormalized(deck, target);
+#endif
+        statusMessage(text("Beat jump: ", "Skok beatów: ") + juce::String(beats, 0)
+                      + text(" beats.", " beatów."));
+        return true;
+    }
+    if (result == broke::PerformanceDeckOwner::Result::gridUnavailable)
+        statusMessage(text("Beat Jump needs a valid reviewed beat grid.", "Beat Jump wymaga poprawnej zweryfikowanej siatki rytmu."));
+    else if (result == broke::PerformanceDeckOwner::Result::trackUnavailable)
+        statusMessage(text("Beat Jump transport is not ready yet.", "Transport nie jest jeszcze gotowy dla Beat Jump."));
+    else if (result == broke::PerformanceDeckOwner::Result::outsideTrack)
+        statusMessage(text("Beat Jump would leave the playable track.", "Beat Jump wyszedłby poza odtwarzalny utwór."));
+    else
+        statusMessage(text("Beat Jump was rejected safely.", "Beat Jump został bezpiecznie odrzucony."));
+    return false;
+}
+void MainComponent::setSyncMaster(std::size_t deck, bool enabled) {
+    if (deck >= broke::deckCount || !performanceDecks[deck]) return;
+    const auto duration = engine.meter(deck).duration.load(std::memory_order_acquire);
+    if (enabled) {
+        if (!performanceDecks[deck]->hasReviewedGrid() || !std::isfinite(duration) || duration <= 0.0) {
+            syncMasterDeck.reset();
+            statusMessage(text("Sync master needs a loaded track with a reviewed beat grid.", "Master Sync wymaga wczytanego utworu ze zweryfikowaną siatką rytmu."));
+            return;
+        }
+        syncMasterDeck = deck;
+        statusMessage(text("Sync master: deck ", "Master Sync: deck ") + deckLetter(deck) + ".");
+        return;
+    }
+    if (syncMasterDeck && *syncMasterDeck == deck) {
+        syncMasterDeck.reset();
+        statusMessage(text("Sync master cleared.", "Master Sync wyłączony."));
+    }
+}
+bool MainComponent::syncDeck(std::size_t followerDeck) {
+    if (followerDeck >= broke::deckCount || !performanceDecks[followerDeck]) return false;
+    if (!syncMasterDeck || *syncMasterDeck >= broke::deckCount || *syncMasterDeck == followerDeck
+        || !performanceDecks[*syncMasterDeck]) {
+        statusMessage(text("Select a different reviewed-grid MASTER before using SYNC.", "Przed użyciem SYNC wybierz inny deck MASTER ze zweryfikowaną siatką."));
+        return false;
+    }
+
+    const auto masterDeck = *syncMasterDeck;
+    const auto result = performanceDecks[followerDeck]->syncToTransport(*performanceDecks[masterDeck]);
+    if (result == broke::PerformanceDeckOwner::Result::applied) {
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+        if (keyLockResearchEnabled)
+            keyLockLifecycle.noteTransportControlChanged(followerDeck);
+#endif
+        statusMessage(text("One-shot Sync applied: deck ", "Jednorazowy Sync: deck ")
+                      + deckLetter(followerDeck) + text(" follows ", " podąża za ") + deckLetter(masterDeck) + ".");
+        return true;
+    }
+    if (result == broke::PerformanceDeckOwner::Result::gridUnavailable)
+        statusMessage(text("Sync needs reviewed beat grids on both decks.", "Sync wymaga zweryfikowanych siatek rytmu na obu deckach."));
+    else if (result == broke::PerformanceDeckOwner::Result::trackUnavailable)
+        statusMessage(text("Sync transport is not ready on both decks.", "Transport obu decków nie jest jeszcze gotowy dla Sync."));
+    else if (result == broke::PerformanceDeckOwner::Result::outsideTrack)
+        statusMessage(text("Sync phase correction would leave the playable track.", "Korekta fazy Sync wyszłaby poza odtwarzalny utwór."));
+    else if (result == broke::PerformanceDeckOwner::Result::rendererBusy)
+        statusMessage(text("Sync is unavailable while another renderer owns this deck path.", "Sync jest niedostępny, gdy ten deck jest używany przez inny renderer."));
+    else
+        statusMessage(text("Sync was rejected by the bounded rate/phase safety limits.", "Sync został odrzucony przez bezpieczne limity tempa/fazy."));
+    return false;
 }
 void MainComponent::restoreHotCues(std::size_t deck, const juce::File& file,
                                    double trackDurationSeconds, std::uint64_t generation) {
