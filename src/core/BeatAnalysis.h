@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Swir
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
