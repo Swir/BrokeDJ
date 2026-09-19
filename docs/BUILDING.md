@@ -80,6 +80,23 @@ For an offline build of the optional time-stretch prototype, also prepare the ex
 
 `BrokeDJ --smoke-test` opens the native window with audio-device initialization disabled and exits automatically. This checks the GUI lifecycle only. It does not test playback, sound quality, audio drivers, headphones or latency.
 
+## Silent audio-device capability probe
+
+`BrokeDJ --device-probe` scans the JUCE audio backends and output-device descriptors visible to the current Windows machine and writes **both** `BrokeDJ-device-probe.txt` and schema-versioned `BrokeDJ-device-probe.json` into the current working directory. The probe does not call `AudioIODevice::open`, start an audio callback or emit audio. Descriptor construction is used only in the full local mode so JUCE can expose advertised channel/rate/buffer capabilities.
+
+```powershell
+cd .\build\windows\BrokeDJ_artefacts\Release
+.\BrokeDJ.exe --device-probe
+Get-Content .\BrokeDJ-device-probe.txt
+Get-Content .\BrokeDJ-device-probe.json -Raw | ConvertFrom-Json | Format-List
+```
+
+The JSON report has an explicit `schema_version` and safety fields including `calls_device_open`, `starts_audio_callback`, `creates_device_descriptors`, `unexpected_open_state_count` and `safety_invariants_ok`. The full probe checks `AudioIODevice::isOpen()` before and after its capability queries. If a descriptor is unexpectedly observed open, BrokeDJ writes the evidence and exits non-zero instead of silently certifying the probe as non-opening.
+
+Treat `four_output_candidate=true` / `four_output_candidate=yes` only as a capability candidate. It does not prove that master 1/2 and private cue 3/4 are physically isolated, that device switching is reliable, or that latency/xrun/listening gates pass. Those M1 checks still require a user-controlled manual session on the real interface. Review both local reports before sharing them because hardware device names may identify your setup.
+
+`--device-probe-ci` is stricter: it enumerates backend/output names without constructing per-device descriptors, then emits the same schema with `creates_device_descriptors=false`. Windows CI parses the JSON, checks schema/safety invariants, verifies that the backend count matches the serialized array and rejects any CI report containing descriptor entries. This validates the diagnostic contract only; it is not hardware qualification.
+
 ## Packaging
 
 After a successful build, `cpack --config build/windows/CPackConfig.cmake -C Release` creates a development ZIP. Corresponding source, third-party license material and manual release evidence are required before a public production release. No updater or code-signing credentials are configured. No secret or token is needed for ordinary local builds.

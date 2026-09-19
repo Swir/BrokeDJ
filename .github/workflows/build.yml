@@ -51,6 +51,49 @@ jobs:
           $p = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -PassThru
           if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'GUI smoke test timed out' }
           if ($p.ExitCode -ne 0) { throw "GUI smoke test failed: $($p.ExitCode)" }
+      - name: Silent audio-device enumeration smoke
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe'
+          Remove-Item 'BrokeDJ-device-probe.txt' -ErrorAction SilentlyContinue
+          Remove-Item 'BrokeDJ-device-probe.json' -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe -ArgumentList '--device-probe-ci' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Device probe failed: $($p.ExitCode)" }
+          if (-not (Test-Path 'BrokeDJ-device-probe.txt')) { throw 'Device probe text report missing' }
+          if (-not (Test-Path 'BrokeDJ-device-probe.json')) { throw 'Device probe JSON report missing' }
+
+          $probe = Get-Content 'BrokeDJ-device-probe.txt' -Raw
+          if ($probe -notmatch 'schema_version=2' -or
+              $probe -notmatch 'plays_audio=no' -or
+              $probe -notmatch 'calls_device_open=no' -or
+              $probe -notmatch 'starts_audio_callback=no' -or
+              $probe -notmatch 'creates_device_descriptors=no' -or
+              $probe -notmatch 'safety_invariants_ok=yes') {
+            throw 'Device probe text report did not preserve CI safety invariants'
+          }
+
+          $probeJson = Get-Content 'BrokeDJ-device-probe.json' -Raw | ConvertFrom-Json
+          if ($probeJson.schema_version -ne 2 -or
+              $probeJson.mode -ne 'ci-enumeration' -or
+              $probeJson.plays_audio -ne $false -or
+              $probeJson.calls_device_open -ne $false -or
+              $probeJson.starts_audio_callback -ne $false -or
+              $probeJson.creates_device_descriptors -ne $false -or
+              $probeJson.unexpected_open_state_count -ne 0 -or
+              $probeJson.safety_invariants_ok -ne $true) {
+            throw 'Device probe JSON safety/schema validation failed'
+          }
+          if (@($probeJson.backends).Count -ne $probeJson.backend_count) {
+            throw 'Device probe JSON backend count is inconsistent'
+          }
+          foreach ($backend in @($probeJson.backends)) {
+            if ($backend.descriptor_details_skipped -ne $true -or @($backend.devices).Count -ne 0) {
+              throw 'CI probe unexpectedly created or serialized device descriptors'
+            }
+          }
+
+          Copy-Item 'BrokeDJ-device-probe.txt' build/windows/diagnostics/device-probe-ci.txt
+          Copy-Item 'BrokeDJ-device-probe.json' build/windows/diagnostics/device-probe-ci.json
       - name: Stage development build and corresponding project source
         shell: pwsh
         run: |
@@ -59,6 +102,8 @@ jobs:
           git archive --format=zip --output=dist/BrokeDJ-source.zip HEAD
           Copy-Item docs/TESTING.md dist/BrokeDJ/VALIDATION.md
           Copy-Item build/windows/diagnostics/audio-metrics.txt dist/BrokeDJ/AUDIO-DIAGNOSTICS.txt
+          Copy-Item build/windows/diagnostics/device-probe-ci.txt dist/BrokeDJ/DEVICE-PROBE-CI.txt
+          Copy-Item build/windows/diagnostics/device-probe-ci.json dist/BrokeDJ/DEVICE-PROBE-CI.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BrokeDJ-0.1.0-development-windows-x64

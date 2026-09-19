@@ -18,19 +18,19 @@ Windows 11 x64 first · Native C++ audio · No subscription, ads, or mandatory a
 
 </div>
 
-> **Development build 0.1.0, not a production release.** BrokeDJ is being built toward a full four-deck DJ workstation. VST3 hosting, beat sync, production key lock, a full effects collection, a sampler, stems and a persistent music library are planned, not finished features. Do not use this build as your only system at a live event.
+> **Development build 0.1.0, not a production release.** BrokeDJ is being built toward a full four-deck DJ workstation. VST3 hosting, continuous beat sync, production key lock, a full effects collection, a sampler, stems and a persistent music library are planned, not finished features. Do not use this build as your only system at a live event.
 
 ## Current build
 
 | Area | Implemented in source | Validation / limits |
 |---|---|---|
 | Audio core | Four stereo decks; variable-rate playback; start/pause; seek; whole-track loop; hybrid rate conversion with Catmull-Rom when no downsampling filter is needed and a prepared band-limited windowed-sinc path for speed-up/downsampling; smoothed transport/EQ/FX transitions | Core tests cover deterministic transport and automation behavior. Ordinary rate changes pitch; production key lock remains gated. |
-| Musical analysis | Bounded offline BPM, beat-grid anchor and major/minor key analysis after a successful load; local privacy-preserving analysis cache v2; source-identity-bound manual grid overrides; compact beat-zero/base-BPM correction controls; waveform beat-line overlay; JUCE-independent editable variable-tempo grid model | BPM/grid and key consume one background decode pass and can independently decline low-confidence material. Reviewed grids now drive native 1/2/4/8/16-beat loops and optional Hot Cue quantization. Full tempo-segment editing, representative real-music validation and normal Sync UI remain open. |
+| Musical analysis | Bounded offline BPM, beat-grid anchor and major/minor key analysis after a successful load; local privacy-preserving analysis cache v2; source-identity-bound manual grid overrides; compact beat-zero/base-BPM correction controls; waveform beat-line overlay; JUCE-independent editable variable-tempo grid model | BPM/grid and key consume one background decode pass and can independently decline low-confidence material. Reviewed grids drive beat loops, Hot Cue quantization, Beat Jump and bounded one-shot Sync. Full tempo-segment editing, representative real-music validation and continuous phase-lock Sync remain open. |
 | Mixer | Channel gain; basic three-band EQ; equal-power crossfader; master gain; smooth master/cue output safety stage | A/C are assigned left, B/D right. The safety stage is not a transparent/look-ahead limiter; the mixer is not yet fully configurable. |
 | Effects | Fixed 250 ms feedback echo and saturation per deck | Two effects, not 40 presets disguised as effects. Beat sync and effect chains are pending. |
 | Cue | Pre-fader, post-EQ/FX stereo headphone bus | Outputs 3/4 only. Two-output devices do not receive cue mixed into master. Physical hardware validation pending. |
 | Import | Background import of local WAV, AIFF, FLAC, OGG and MP3 through JUCE. Small tracks use the in-memory path; larger tracks use a bounded background read-ahead cache with a sparse waveform preview. | Mono/stereo, 8–384 kHz. The old fixed 256 MiB decoded-whole-track ceiling is retired for the streaming path, but long-file seek/loop/slow-storage underrun behavior still needs stress and listening validation. |
-| Interface | Four deck panels, waveforms with validated beat-line overlays, per-deck BPM/grid/key status, compact manual grid correction, reviewed-grid beat-loop controls, eight persistent Hot Cue pads, drag/drop, audio settings and clickable `by Swir` credit | Native JUCE source; Windows CI builds and headless GUI lifecycle smoke tests, while clean-machine/manual usability qualification remains separate. Beat Jump and master/follower Sync are not normal UI controls yet. |
+| Interface | Four deck panels, waveforms with validated beat-line overlays, per-deck BPM/grid/key status, compact manual grid correction, reviewed-grid beat-loop controls, eight persistent Hot Cue pads, Beat Jump ±1/2/4/8/16, explicit MASTER plus bounded one-shot SYNC, drag/drop, audio settings and clickable `by Swir` credit | Native JUCE source; Windows CI builds and headless GUI lifecycle smoke tests, while clean-machine/manual usability qualification remains separate. One-shot Sync is not continuous phase lock. |
 | Language | Polish selected for a Polish system; otherwise English | Decoder/analysis diagnostics may fall back to English. No global translation claim. |
 | Reliability | Immutable clip handoff; deferred destruction; smooth bounded output safety; shutdown cancellation; smoothed control automation; bounded stream cache; cancellable background musical analysis; off-callback grid and Hot Cue persistence | Core ASan/UBSan checks and Windows build pipeline exist. No latency, ASIO, controller or live reliability certification. |
 
@@ -51,7 +51,7 @@ Source of truth: [`docs/progress.json`](docs/progress.json). This number is not 
 | Primary platform | Windows 11 x64 |
 | Latest public release | Not published yet |
 | Native Windows CI | Build + core tests + GUI lifecycle smoke |
-| Hardware qualification | Pending |
+| Hardware qualification | Pending; silent capability probe does not replace physical validation |
 | Roadmap | [`ROADMAP.md`](ROADMAP.md) |
 
 ## Highlights
@@ -63,10 +63,11 @@ Source of truth: [`docs/progress.json`](docs/progress.json). This number is not 
 | Improved rate conversion | Catmull-Rom interpolation for non-downsampling playback plus prepared band-limited windowed-sinc filtering when speed-up/downsampling requires anti-alias protection; production key lock remains gated |
 | Background musical analysis | Cancellable off-thread BPM/grid/key estimation from one decode pass, confidence gating and a local derived-metadata cache; the deck can become playable before analysis finishes |
 | Manual beat-grid correction | Per-deck beat-zero and base-BPM correction, persistent source-identity-bound overrides, visible beat lines and reset-to-detector behavior while preserving the variable-tempo grid model for later expansion |
-| Reviewed-grid performance controls | Native 1/2/4/8/16-beat loops plus eight source-bound persistent Hot Cue pads; new cues quantize only when a reviewed grid exists, while ordinary playback remains independent of analysis |
+| Reviewed-grid performance controls | Native 1/2/4/8/16-beat loops, eight source-bound persistent Hot Cue pads, Beat Jump ±1/2/4/8/16 and explicit bounded one-shot MASTER/SYNC; ordinary playback remains independent of analysis |
 | Local analysis validation | Manifest-driven BPM/key validator for a user-owned/licensed representative music corpus; it reports IDs and aggregate metrics without committing reference music or source paths |
 | Bounded long-track playback | Large local tracks use a fixed-size, lock-free sample cache filled by a background reader instead of decoding the entire track into RAM |
 | Independent headphone cue | Dedicated logical outputs 3/4 when the selected interface provides four output channels |
+| Silent device capability probe | `--device-probe` records advertised Windows/JUCE output capabilities without opening a device or playing audio; physical cue/device gates remain manual |
 | Safer output ceiling | A smooth allocation-free master/cue safety curve bounds extreme output while preserving pre-protection overload diagnostics |
 | Real-time-safe core direction | No disk/network I/O, decoding, analysis, allocation or blocking mutex in the audio callback |
 | Honest validation | Core, Windows build, GUI smoke and hardware/manual gates are reported separately |
@@ -98,7 +99,7 @@ ctest --preset windows-release
 .\build\windows\BrokeDJ_artefacts\Release\BrokeDJ.exe
 ```
 
-JUCE is fetched automatically at the pinned upstream commit. The initial configure needs internet access. The built application works with local files without an account or Python installation. See [`docs/BUILDING.md`](docs/BUILDING.md) for offline dependency preparation and packaging.
+JUCE is fetched automatically at the pinned upstream commit. The initial configure needs internet access. The built application works with local files without an account or Python installation. See [`docs/BUILDING.md`](docs/BUILDING.md) for offline dependency preparation, the silent device-capability probe and packaging.
 
 ### Test the audio core without JUCE or audio hardware
 
@@ -114,7 +115,7 @@ Open **Audio settings** and select your output device. Start with low hardware v
 
 When a valid beat grid exists, **GRID ZERO** shifts the grid anchor and **GRID BPM** corrects its base tempo. A `GRID*` marker means a local manual override is active. Corrections are stored outside the audio callback for the exact current file identity; **Reset grid** removes the override and returns to the detector result. The compact editor intentionally does not yet expose arbitrary tempo-change-segment insertion/removal.
 
-With a reviewed grid, **BEAT LOOP** can arm 1/2/4/8/16-beat musical loops from the current transport. `HC1`–`HC8` store and recall per-track Hot Cues; Shift+click clears a pad. New cues quantize to the nearest beat only when a reviewed grid is available, so missing analysis never blocks ordinary cue storage/playback. These controls are production-path transport actions, but Beat Jump and master/follower Sync still await normal UI exposure and broader music/device validation.
+With a reviewed grid, **BEAT LOOP** can arm 1/2/4/8/16-beat musical loops from the current transport. `HC1`–`HC8` store and recall per-track Hot Cues; Shift+click clears a pad. New cues quantize to the nearest beat only when a reviewed grid is available. **JUMP - / JUMP +** move by the selected 1/2/4/8/16-beat distance while preserving fractional beat phase. Select one reviewed-grid deck as **MASTER**, then press **SYNC** on another deck for one bounded rate-aware tempo/phase alignment. SYNC is one-shot, not continuous phase lock, and failed grid/rate/track bounds leave transport unchanged.
 
 The crossfader sends A/C to the left side and B/D to the right. For independent stereo headphone cue, enable four output channels and connect an appropriate interface: master goes to logical outputs 1/2, headphones to 3/4. A normal two-channel output cannot provide two independent stereo pairs.
 
@@ -127,16 +128,17 @@ There is no manually qualified release yet. Successful GitHub Actions builds pro
 | Symptom | Check |
 |---|---|
 | No sound | Open audio settings; verify the selected device, channel gain, master and crossfader. Inspect the master status. |
-| No headphone cue | Enable four outputs. Cue is deliberately not folded into a two-channel master. |
+| No headphone cue | Enable four outputs. Cue is deliberately not folded into a two-channel master. Run `BrokeDJ.exe --device-probe` first if you only need a silent advertised-channel inventory. |
 | Track will not load | Check codec, corruption, mono/stereo channel count and 8–384 kHz sample rate. The previous working audio is retained on import failure. |
 | BPM / GRID / KEY remains `—` | Playback is independent of analysis. Each detector may independently decline silence, ambiguous/non-periodic or low-confidence material. Current synthetic validation is not a guarantee for arbitrary music. |
 | `GRID*` appears | A source-identity-matched manual grid override is active. Use Reset grid to return to the current detector result. |
+| Beat Jump / Sync is disabled | Load a playable track and wait for a valid reviewed beat grid. SYNC also needs a different reviewed-grid MASTER deck. |
 | Gap after a long-file seek | The bounded cache requests the new region asynchronously. Read-ahead/underrun recovery and loop-edge stress testing are still active hardening work. |
 | Tempo affects pitch | Expected on the normal playback path; the key-lock stack remains an opt-in development path without a production GUI control. |
 | Build cannot fetch JUCE | Check Git/proxy/network configuration or use an offline checkout as described in the build guide. |
 | Audible discontinuity remains | Record exact file/rate/action details. Transport smoothing reduces abrupt changes but hardware/codec stress validation is still ongoing. |
 
-Runtime diagnostics use JUCE's application log directory under `BrokeDJ/BrokeDJ.log`. Logs can contain local filenames; review them before posting an issue. Analysis cache, manual-grid and Hot Cue payloads themselves intentionally omit the raw source pathname.
+Runtime diagnostics use JUCE's application log directory under `BrokeDJ/BrokeDJ.log`. Logs can contain local filenames; review them before posting an issue. The optional device-probe report can contain hardware device names; review it before sharing. Analysis cache, manual-grid and Hot Cue payloads themselves intentionally omit the raw source pathname.
 
 ## Repository structure
 
