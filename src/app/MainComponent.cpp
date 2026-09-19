@@ -25,6 +25,9 @@ int beatLoopIdForBeats(double beats) noexcept {
         if (std::abs(values[i] - beats) < 1.0e-9) return static_cast<int>(i + 1);
     return 3;
 }
+std::size_t setHotCueCount(const broke::PerformanceDeckOwner::HotCueBank& cues) noexcept {
+    return static_cast<std::size_t>(std::count_if(cues.begin(), cues.end(), [](const auto& cue) { return cue.set; }));
+}
 }
 juce::String text(const char* english, const char* polish) {
     static const bool usePolish = juce::SystemStats::getUserLanguage().startsWithIgnoreCase("pl");
@@ -143,6 +146,20 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     };
     for (juce::Component* child : std::array<juce::Component*, 10>{&heading, &track, &time, &rhythm, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
     addAndMakeVisible(beatLoop); addAndMakeVisible(beatLoopLength);
+
+    for (std::size_t i = 0; i < hotCuePads.size(); ++i) {
+        auto& pad = hotCuePads[i];
+        pad.setButtonText("HC" + juce::String(static_cast<int>(i + 1)));
+        pad.setEnabled(false);
+        pad.onClick = [this, i] {
+            if (onHotCueRequested)
+                onHotCueRequested(i, juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown());
+        };
+        pad.setTooltip(text("Hot cue: click an empty pad to store the current position; click a set pad to jump. Hold Shift while clicking to clear it. Positions are quantized only when a reviewed beat grid is available.",
+                            "Hot cue: kliknij pusty pad, aby zapisać pozycję; kliknij zapisany, aby skoczyć. Shift+klik usuwa pad. Pozycja jest kwantyzowana tylko przy dostępnej zweryfikowanej siatce rytmu."));
+        addAndMakeVisible(pad);
+    }
+
     const std::array<juce::String, 7> names {text("Gain", "Głośność"), text("Rate %", "Tempo %"), "LOW", "MID", "HIGH", "ECHO", "DRIVE"};
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         auto& knob = knobs[i];
@@ -226,7 +243,8 @@ void DeckPanel::setRhythmPending() {
     activeBeatGrid = {};
     manualBeatGrid = false;
     gridZero.setEnabled(false); gridBpm.setEnabled(false); gridReset.setEnabled(false);
-    setPerformanceState(false, false, 0.0);
+    broke::PerformanceDeckOwner::HotCueBank emptyCues{};
+    setPerformanceState(false, false, 0.0, emptyCues, false);
     waveform.setBeatGrid({}, false);
     rhythm.setText(text("Analyzing BPM / beat grid / key…", "Analiza BPM / siatki rytmu / tonacji…"), juce::dontSendNotification);
     rhythm.setTooltip(text("Offline musical analysis runs in a background worker and never in the audio callback.",
@@ -247,12 +265,21 @@ void DeckPanel::setBeatGrid(const broke::BeatGrid& grid, bool manual) {
     if (rhythmReady) refreshRhythmDisplay();
     else waveform.setBeatGrid(grid, manual);
 }
-void DeckPanel::setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats) {
+void DeckPanel::setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats,
+                                    const broke::PerformanceDeckOwner::HotCueBank& hotCues,
+                                    bool trackReady) {
     beatLoop.setEnabled(gridAvailable);
     beatLoopLength.setEnabled(gridAvailable);
     beatLoop.setToggleState(beatLoopIsActive, juce::dontSendNotification);
     if (beatLoopIsActive)
         beatLoopLength.setSelectedId(beatLoopIdForBeats(beatLoopBeats), juce::dontSendNotification);
+    for (std::size_t i = 0; i < hotCuePads.size(); ++i) {
+        auto& pad = hotCuePads[i];
+        pad.setEnabled(trackReady);
+        pad.setColour(juce::TextButton::buttonColourId,
+                      hotCues[i].set ? blue.withAlpha(0.72f) : juce::Colour(0xff1b2d46));
+        pad.setColour(juce::TextButton::textColourOffId, hotCues[i].set ? juce::Colours::white : pale);
+    }
 }
 void DeckPanel::refreshRhythmDisplay() {
     juce::String summary;
@@ -326,12 +353,16 @@ void DeckPanel::resized() {
     auto top = area.removeFromTop(24); time.setBounds(top.removeFromRight(160)); heading.setBounds(top);
     track.setBounds(area.removeFromTop(24));
     rhythm.setBounds(area.removeFromTop(18)); area.removeFromTop(4);
-    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 210)));
+    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 244)));
     area.removeFromTop(6);
     auto buttons = area.removeFromTop(30);
     std::array<juce::Component*, 7> list {&load, &play, &rewind, &loop, &beatLoop, &beatLoopLength, &cue};
     const int buttonWidth = buttons.getWidth() / static_cast<int>(list.size());
     for (auto* component : list) component->setBounds(buttons.removeFromLeft(buttonWidth).reduced(2, 0));
+    area.removeFromTop(4);
+    auto hotCueArea = area.removeFromTop(28);
+    const int hotCueWidth = hotCueArea.getWidth() / static_cast<int>(hotCuePads.size());
+    for (auto& pad : hotCuePads) pad.setBounds(hotCueArea.removeFromLeft(hotCueWidth).reduced(2, 0));
     area.removeFromTop(4);
     auto gridArea = area.removeFromTop(44);
     gridReset.setBounds(gridArea.removeFromRight(96).reduced(2, 7));
@@ -395,6 +426,9 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
         decks[i]->onWholeTrackLoopRequested = [this, i](bool enabled) { setWholeTrackLoop(i, enabled); };
         decks[i]->onBeatLoopRequested = [this, i](double beats, bool enabled) {
             return setBeatLoop(i, beats, enabled);
+        };
+        decks[i]->onHotCueRequested = [this, i](std::size_t slot, bool clear) {
+            handleHotCue(i, slot, clear);
         };
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
         static_cast<void>(keyLockLifecycle.setEnabled(i, keyLockResearchEnabled));
@@ -503,9 +537,12 @@ void MainComponent::timerCallback() {
     for (std::size_t i = 0; i < decks.size(); ++i) {
         decks[i]->refresh();
         if (performanceDecks[i]) {
+            const auto duration = engine.meter(i).duration.load(std::memory_order_acquire);
             decks[i]->setPerformanceState(performanceDecks[i]->hasReviewedGrid(),
                                           performanceDecks[i]->beatLoopActive(),
-                                          performanceDecks[i]->beatLoopLength());
+                                          performanceDecks[i]->beatLoopLength(),
+                                          performanceDecks[i]->hotCueBank(),
+                                          std::isfinite(duration) && duration > 0.0);
         }
     }
     const auto peak = engine.masterPeak.load();
@@ -540,6 +577,8 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
             if (!safe) return;
             safe->loading[deck] = false; safe->decks[deck]->setLoading(false);
             auto* submittedClip = result->clip.get();
+            const double loadedDuration = submittedClip && submittedClip->valid()
+                ? static_cast<double>(submittedClip->frames()) / submittedClip->sampleRate : 0.0;
             if (result->clip && safe->engine.submit(deck, std::move(result->clip))) {
                 if (safe->performanceDecks[deck]) safe->performanceDecks[deck]->resetForClip();
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -547,11 +586,13 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
                     safe->keyLockLifecycle.noteClipSubmitted(deck, submittedClip);
 #endif
                 safe->gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel);
+                const auto hotCueGeneration = safe->hotCueGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
                 safe->deckFiles[deck] = file;
                 safe->detectedBeatGrids[deck] = {};
                 safe->beatGrids[deck] = {};
                 safe->gridIsManual[deck] = false;
                 safe->decks[deck]->setTrack(result->name, std::move(result->peaks));
+                safe->restoreHotCues(deck, file, loadedDuration, hotCueGeneration);
                 safe->startTrackAnalysis(deck, file);
                 safe->statusMessage(text("Loaded: ", "Wczytano: ") + result->name);
             } else {
@@ -703,6 +744,98 @@ bool MainComponent::setBeatLoop(std::size_t deck, double beats, bool enabled) {
     else
         statusMessage(text("Beat loop request was rejected safely.", "Żądanie pętli beatowej zostało bezpiecznie odrzucone."));
     return false;
+}
+void MainComponent::handleHotCue(std::size_t deck, std::size_t slot, bool clear) {
+    if (deck >= broke::deckCount || slot >= broke::PerformanceDeckOwner::hotCueCount
+        || !performanceDecks[deck] || !deckFiles[deck].existsAsFile()) return;
+
+    auto& owner = *performanceDecks[deck];
+    const auto file = deckFiles[deck];
+    if (clear) {
+        owner.clearHotCue(slot);
+        const auto generation = hotCueGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
+        persistHotCues(deck, file, generation, owner.hotCueBank());
+        statusMessage(text("Hot cue cleared: ", "Usunięto hot cue: ") + juce::String(static_cast<int>(slot + 1)) + ".");
+        return;
+    }
+
+    const auto& cueState = owner.hotCue(slot);
+    if (cueState.set) {
+        const auto duration = engine.meter(deck).duration.load(std::memory_order_acquire);
+        const auto result = owner.triggerHotCue(slot, duration);
+        if (result == broke::PerformanceDeckOwner::Result::applied) {
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+            if (keyLockResearchEnabled && std::isfinite(duration) && duration > 0.0)
+                keyLockLifecycle.noteSeekNormalized(deck, cueState.seconds / duration);
+#endif
+            statusMessage(text("Hot cue triggered: ", "Uruchomiono hot cue: ") + juce::String(static_cast<int>(slot + 1)) + ".");
+        } else {
+            statusMessage(text("Hot cue jump was rejected safely.", "Skok hot cue został bezpiecznie odrzucony."));
+        }
+        return;
+    }
+
+    const bool quantize = owner.hasReviewedGrid();
+    const auto result = owner.storeHotCueFromTransport(slot, quantize, 1.0, broke::QuantizeDirection::nearest);
+    if (result == broke::PerformanceDeckOwner::Result::applied) {
+        const auto generation = hotCueGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
+        persistHotCues(deck, file, generation, owner.hotCueBank());
+        statusMessage((quantize
+            ? text("Quantized hot cue saved: ", "Zapisano kwantyzowany hot cue: ")
+            : text("Hot cue saved without grid quantization: ", "Zapisano hot cue bez kwantyzacji siatki: "))
+            + juce::String(static_cast<int>(slot + 1)) + ".");
+    } else if (result == broke::PerformanceDeckOwner::Result::trackUnavailable) {
+        statusMessage(text("Hot cue transport is not ready yet.", "Transport nie jest jeszcze gotowy dla hot cue."));
+    } else if (result == broke::PerformanceDeckOwner::Result::outsideTrack) {
+        statusMessage(text("Hot cue position is outside the playable track.", "Pozycja hot cue jest poza odtwarzalnym utworem."));
+    } else {
+        statusMessage(text("Hot cue request was rejected safely.", "Żądanie hot cue zostało bezpiecznie odrzucone."));
+    }
+}
+void MainComponent::restoreHotCues(std::size_t deck, const juce::File& file,
+                                   double trackDurationSeconds, std::uint64_t generation) {
+    if (deck >= broke::deckCount || !file.existsAsFile()
+        || !std::isfinite(trackDurationSeconds) || trackDurationSeconds <= 0.0) return;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    analyzers.addJob([safe, file, deck, trackDurationSeconds, generation] {
+        if (!safe || safe->hotCueGeneration[deck].load(std::memory_order_acquire) != generation) return;
+        TrackHotCueStore store;
+        TrackHotCueSnapshot snapshot;
+        if (!store.load(file, snapshot)) return;
+        juce::MessageManager::callAsync([safe, file, deck, trackDurationSeconds, generation, snapshot] {
+            if (!safe || safe->hotCueGeneration[deck].load(std::memory_order_acquire) != generation) return;
+            if (safe->deckFiles[deck].getFullPathName() != file.getFullPathName()
+                || !safe->performanceDecks[deck]) return;
+            const auto result = safe->performanceDecks[deck]->restoreHotCueBank(snapshot.cues, trackDurationSeconds);
+            if (result == broke::PerformanceDeckOwner::Result::applied) {
+                const auto restored = setHotCueCount(snapshot.cues);
+                if (restored > 0)
+                    safe->statusMessage(text("Restored hot cues: ", "Przywrócono hot cue: ") + juce::String(static_cast<int>(restored)) + ".");
+            } else {
+                safe->statusMessage(text("Stored hot cues were rejected for this changed track.", "Zapisane hot cue odrzucono dla zmienionego utworu."));
+            }
+        });
+    });
+}
+void MainComponent::persistHotCues(std::size_t deck, const juce::File& file,
+                                   std::uint64_t generation,
+                                   broke::PerformanceDeckOwner::HotCueBank snapshot) {
+    if (deck >= broke::deckCount || !file.existsAsFile()) return;
+    juce::Component::SafePointer<MainComponent> safe(this);
+    analyzers.addJob([safe, file, deck, generation, snapshot] {
+        if (!safe || safe->hotCueGeneration[deck].load(std::memory_order_acquire) != generation) return;
+        TrackHotCueStore store;
+        TrackHotCueSnapshot state;
+        state.cues = snapshot;
+        const bool stored = store.store(file, state);
+        juce::MessageManager::callAsync([safe, file, deck, generation, stored] {
+            if (!safe || safe->hotCueGeneration[deck].load(std::memory_order_acquire) != generation) return;
+            if (safe->deckFiles[deck].getFullPathName() != file.getFullPathName()) return;
+            if (!stored)
+                safe->statusMessage(text("Hot cues remain active for this session, but local persistence failed.",
+                                         "Hot cue pozostają aktywne w tej sesji, ale zapis lokalny nie powiódł się."));
+        });
+    });
 }
 void MainComponent::showAudioSettings() {
     if (audioSettings) { audioSettings->toFront(true); return; }
