@@ -10,6 +10,7 @@ namespace broke {
 namespace {
 
 constexpr double minimumConfidence = 0.18;
+constexpr double minimumPhaseStrength = 0.12;
 constexpr std::size_t minimumEnvelopePoints = 32;
 constexpr std::size_t minimumBeatPairs = 3;
 
@@ -216,6 +217,11 @@ BeatAnalysisResult BeatAnalysisAccumulator::finish() {
     const double totalOnset = std::accumulate(onset.begin(), onset.end(), 0.0);
     const double phaseStrength = totalOnset > 1.0e-12
         ? std::clamp(bestAnchorSum / totalOnset, 0.0, 1.0) : 0.0;
+    // Strong autocorrelation alone is not sufficient: stationary tones can
+    // generate deterministic envelope beating from the finite analysis window.
+    // Require a meaningful fraction of onset energy to align with the proposed
+    // beat grid before publishing musical tempo metadata.
+    if (phaseStrength < minimumPhaseStrength) return result;
     const double confidence = std::clamp(0.72 * std::min(1.0, bestScore)
                                          + 0.28 * phaseStrength, 0.0, 1.0);
     if (confidence < minimumConfidence) return result;
