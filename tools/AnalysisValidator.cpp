@@ -157,20 +157,21 @@ int main(int argc, char** argv) {
         const auto parsed = parseReference(line, manifest, parseError);
         if (!parsed) {
             manifestError = true;
-            std::cerr << "ROW " << (lineIndex + 1) << " INVALID: " << parseError << '\n';
+            std::cerr << "ROW " << (lineIndex + 1) << " INVALID: "
+                      << parseError.toStdString() << '\n';
             continue;
         }
         const auto& ref = *parsed;
         ++totals.rows;
         if (!ref.source.existsAsFile()) {
             ++totals.sourceErrors;
-            std::cout << ref.id << "\tSOURCE=MISSING\n";
+            std::cout << ref.id.toStdString() << "\tSOURCE=MISSING\n";
             continue;
         }
 
         const auto result = analyzeTrackRhythm(ref.source, cancelled, options);
         bool rowPass = true;
-        std::cout << ref.id;
+        std::cout << ref.id.toStdString();
         if (ref.bpm) {
             ++totals.bpmReferences;
             if (result.beat.valid) {
@@ -195,11 +196,11 @@ int main(int argc, char** argv) {
             if (pass) ++totals.keyPassed;
             rowPass = rowPass && pass;
             std::cout << "\tKEY=" << (pass ? "PASS" : "FAIL")
-                      << " detected=" << keyLabel(result.key)
+                      << " detected=" << keyLabel(result.key).toStdString()
                       << " confidence=" << result.key.confidence;
         }
         if (result.error.isNotEmpty())
-            std::cout << "\tANALYSIS_ERROR=" << result.error;
+            std::cout << "\tANALYSIS_ERROR=" << result.error.toStdString();
         std::cout << "\tROW=" << (rowPass ? "PASS" : "FAIL") << '\n';
     }
 
