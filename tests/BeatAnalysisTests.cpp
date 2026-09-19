@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -81,6 +82,31 @@ void chunkingIsDeterministic() {
           "chunking does not change beat-grid anchor");
 }
 
+void nonPeriodicMaterialDoesNotFabricateTempo() {
+    constexpr double sampleRate = 48000.0;
+    constexpr double seconds = 12.0;
+    const auto frames = static_cast<std::size_t>(sampleRate * seconds);
+
+    std::vector<float> steady(frames, 0.0f);
+    for (std::size_t i = 0; i < frames; ++i) {
+        const double phase = 2.0 * 3.14159265358979323846 * 440.0
+            * static_cast<double>(i) / sampleRate;
+        steady[i] = 0.25f * static_cast<float>(std::sin(phase));
+    }
+    const auto tone = broke::analyzeBeatGrid(steady.data(), nullptr, steady.size(), sampleRate);
+    check(!tone.valid, "steady tone does not fabricate tempo");
+
+    std::vector<float> noise(frames, 0.0f);
+    std::uint32_t state = 0x6d2b79f5U;
+    for (auto& sample : noise) {
+        state = state * 1664525U + 1013904223U;
+        const double unit = static_cast<double>(state) / 4294967295.0;
+        sample = static_cast<float>((unit * 2.0 - 1.0) * 0.2);
+    }
+    const auto broadband = broke::analyzeBeatGrid(noise.data(), nullptr, noise.size(), sampleRate);
+    check(!broadband.valid, "deterministic broadband noise does not fabricate tempo");
+}
+
 void invalidAndNonFiniteInputsFailSafely() {
     std::vector<float> silence(48000 * 6, 0.0f);
     auto silent = broke::analyzeBeatGrid(silence.data(), nullptr, silence.size(), 48000.0);
@@ -121,6 +147,7 @@ int main() {
         checkEstimate(128.0, 0.37, true);
         checkEstimate(90.0, 1.10, false);
         chunkingIsDeterministic();
+        nonPeriodicMaterialDoesNotFabricateTempo();
         invalidAndNonFiniteInputsFailSafely();
         analysisWorkIsBounded();
         std::cout << "PASS: " << checks << " beat-analysis checks\n";
