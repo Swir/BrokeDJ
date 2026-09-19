@@ -164,6 +164,59 @@ void runAnalysisAndCache() {
     check(cacheFiles.size() == 1, "source changes replace rather than multiply cache records");
 }
 
+void runBeatGridOverrideStore() {
+    TempFolder temp;
+    const auto source = temp.folder.getChildFile("secret-manual-grid-track.wav");
+    check(source.replaceWithText("beat-grid-identity", false, false, "\n"),
+          "manual-grid identity fixture created");
+
+    const auto overrideRoot = temp.folder.getChildFile("grid-overrides");
+    TrackBeatGridOverrideStore store(overrideRoot);
+
+    broke::BeatGrid grid;
+    check(grid.reset(0.375, 124.0), "manual grid starts from valid base tempo");
+    check(grid.insertTempoChangeAtBeat(16.0, 128.0),
+          "manual grid accepts a variable-tempo correction");
+    check(grid.insertTempoChangeAtBeat(48.0, 121.5),
+          "manual grid accepts a second tempo correction");
+    check(store.store(source, grid), "manual grid persists atomically");
+
+    broke::BeatGrid loaded;
+    check(store.load(source, loaded), "manual grid reloads");
+    check(loaded.valid() && loaded.segments().size() == 3,
+          "manual grid preserves all tempo segments");
+    check(std::abs(loaded.beatZeroSeconds() - grid.beatZeroSeconds()) < 1.0e-9,
+          "manual grid preserves beat zero");
+    check(std::abs(loaded.timeAtBeat(64.0) - grid.timeAtBeat(64.0)) < 1.0e-9,
+          "manual grid preserves continuous beat-time mapping");
+
+    juce::Array<juce::File> overrideFiles;
+    overrideRoot.findChildFiles(overrideFiles, juce::File::findFiles, false, "*.grid");
+    check(overrideFiles.size() == 1, "one manual-grid override record is written");
+    const auto payload = overrideFiles[0].loadFileAsString();
+    check(!payload.containsIgnoreCase(source.getFileName()),
+          "manual-grid payload does not expose source filename");
+    check(!payload.containsIgnoreCase(source.getParentDirectory().getFullPathName()),
+          "manual-grid payload does not expose source path");
+    check(payload.contains("segmentCount=3"),
+          "manual-grid payload records variable-tempo segment count");
+
+    broke::BeatGrid invalid;
+    check(!store.store(source, invalid), "invalid manual grid is rejected before write");
+    broke::BeatGrid preserved;
+    check(store.load(source, preserved) && preserved.segments().size() == 3,
+          "rejected override write preserves prior valid record");
+
+    const auto changedTime = source.getLastModificationTime() + juce::RelativeTime::seconds(7.0);
+    check(source.setLastModificationTime(changedTime),
+          "manual-grid source identity modification succeeds");
+    broke::BeatGrid stale;
+    check(!store.load(source, stale), "source identity change invalidates manual grid override");
+
+    check(store.erase(source), "manual-grid override can be erased");
+    check(!overrideFiles[0].existsAsFile(), "manual-grid erase removes persisted override");
+}
+
 void runFailurePaths() {
     TempFolder temp;
     const auto missing = temp.folder.getChildFile("missing.wav");
@@ -198,6 +251,7 @@ void runFailurePaths() {
 int main() {
     try {
         runAnalysisAndCache();
+        runBeatGridOverrideStore();
         runFailurePaths();
         std::cout << "PASS: " << checks << " track-analysis/cache checks\n";
         return EXIT_SUCCESS;
