@@ -14,6 +14,17 @@ void configureLabel(juce::Label& label, const juce::String& value, float size = 
     label.setColour(juce::Label::textColourId, pale);
     label.setFont(juce::Font(juce::FontOptions(size)));
 }
+double beatLoopBeatsForId(int id) noexcept {
+    constexpr std::array<double, 5> values{1.0, 2.0, 4.0, 8.0, 16.0};
+    if (id < 1 || id > static_cast<int>(values.size())) return 4.0;
+    return values[static_cast<std::size_t>(id - 1)];
+}
+int beatLoopIdForBeats(double beats) noexcept {
+    constexpr std::array<double, 5> values{1.0, 2.0, 4.0, 8.0, 16.0};
+    for (std::size_t i = 0; i < values.size(); ++i)
+        if (std::abs(values[i] - beats) < 1.0e-9) return static_cast<int>(i + 1);
+    return 3;
+}
 }
 juce::String text(const char* english, const char* polish) {
     static const bool usePolish = juce::SystemStats::getUserLanguage().startsWithIgnoreCase("pl");
@@ -79,8 +90,15 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     time.setJustificationType(juce::Justification::centredRight);
     load.setButtonText(text("Load", "Wczytaj"));
     play.setButtonText("PLAY"); rewind.setButtonText("CUE 0");
-    loop.setButtonText("LOOP"); cue.setButtonText(text("Headphones", "Słuchawki"));
-    loop.setClickingTogglesState(true); cue.setClickingTogglesState(true);
+    loop.setButtonText("LOOP"); beatLoop.setButtonText(text("BEAT LOOP", "PĘTLA BEAT"));
+    cue.setButtonText(text("Headphones", "Słuchawki"));
+    loop.setClickingTogglesState(true); beatLoop.setClickingTogglesState(true); cue.setClickingTogglesState(true);
+    for (int i = 0; i < 5; ++i) {
+        constexpr std::array<const char*, 5> labels{"1", "2", "4", "8", "16"};
+        beatLoopLength.addItem(labels[static_cast<std::size_t>(i)], i + 1);
+    }
+    beatLoopLength.setSelectedId(3, juce::dontSendNotification);
+    beatLoop.setEnabled(false); beatLoopLength.setEnabled(false);
     load.onClick = [this] { if (onBrowse) onBrowse(); };
     play.onClick = [this] {
         auto& p = engine.control(index).playing;
@@ -94,8 +112,29 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
         if (onSeekRequested) onSeekRequested(0.0);
     };
     loop.onClick = [this] {
-        engine.control(index).loop = loop.getToggleState();
+        const bool enabled = loop.getToggleState();
+        if (onWholeTrackLoopRequested) onWholeTrackLoopRequested(enabled);
+        else engine.control(index).loop = enabled;
+        if (enabled) beatLoop.setToggleState(false, juce::dontSendNotification);
         if (onKeyLockControlChanged) onKeyLockControlChanged();
+    };
+    beatLoop.onClick = [this] {
+        const bool enabled = beatLoop.getToggleState();
+        const double beats = beatLoopBeatsForId(beatLoopLength.getSelectedId());
+        const bool accepted = onBeatLoopRequested && onBeatLoopRequested(beats, enabled);
+        if (!accepted) {
+            beatLoop.setToggleState(false, juce::dontSendNotification);
+            return;
+        }
+        if (enabled) loop.setToggleState(false, juce::dontSendNotification);
+        if (onKeyLockControlChanged) onKeyLockControlChanged();
+    };
+    beatLoopLength.onChange = [this] {
+        if (!beatLoop.getToggleState()) return;
+        const double beats = beatLoopBeatsForId(beatLoopLength.getSelectedId());
+        if (onBeatLoopRequested && onBeatLoopRequested(beats, true)) {
+            if (onKeyLockControlChanged) onKeyLockControlChanged();
+        }
     };
     cue.onClick = [this] { engine.control(index).headphone = cue.getToggleState(); };
     waveform.onSeek = [this](double position) {
@@ -103,6 +142,7 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
         if (onSeekRequested) onSeekRequested(position);
     };
     for (juce::Component* child : std::array<juce::Component*, 10>{&heading, &track, &time, &rhythm, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
+    addAndMakeVisible(beatLoop); addAndMakeVisible(beatLoopLength);
     const std::array<juce::String, 7> names {text("Gain", "Głośność"), text("Rate %", "Tempo %"), "LOW", "MID", "HIGH", "ECHO", "DRIVE"};
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         auto& knob = knobs[i];
@@ -168,7 +208,9 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
                               "Usuń lokalną ręczną korektę i wróć do wykrytej siatki dla tego pliku."));
     knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Key lock has no GUI control yet.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Key lock nie ma jeszcze kontrolki GUI."));
     knobs[5].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
-    loop.setTooltip(text("Loops the whole track, not a beat-length loop.", "Zapętla cały utwór, nie wybraną liczbę beatów."));
+    loop.setTooltip(text("Loops the whole track. Beat-length looping is a separate reviewed-grid control.", "Zapętla cały utwór. Pętla beatowa ma osobną kontrolkę opartą o zweryfikowaną siatkę."));
+    beatLoop.setTooltip(text("Arm/disarm a reviewed-grid musical loop at the current transport position.", "Włącz/wyłącz muzyczną pętlę z siatki rytmu w bieżącej pozycji."));
+    beatLoopLength.setTooltip(text("Beat-loop length: 1, 2, 4, 8 or 16 beats.", "Długość pętli: 1, 2, 4, 8 lub 16 beatów."));
     cue.setTooltip(text("Cue uses outputs 3/4 only. Enable four outputs in Audio settings.", "Odsłuch używa tylko wyjść 3/4. Włącz cztery wyjścia w ustawieniach audio."));
 }
 void DeckPanel::setLoading(bool isLoading) {
@@ -184,6 +226,7 @@ void DeckPanel::setRhythmPending() {
     activeBeatGrid = {};
     manualBeatGrid = false;
     gridZero.setEnabled(false); gridBpm.setEnabled(false); gridReset.setEnabled(false);
+    setPerformanceState(false, false, 0.0);
     waveform.setBeatGrid({}, false);
     rhythm.setText(text("Analyzing BPM / beat grid / key…", "Analiza BPM / siatki rytmu / tonacji…"), juce::dontSendNotification);
     rhythm.setTooltip(text("Offline musical analysis runs in a background worker and never in the audio callback.",
@@ -203,6 +246,13 @@ void DeckPanel::setBeatGrid(const broke::BeatGrid& grid, bool manual) {
     manualBeatGrid = manual;
     if (rhythmReady) refreshRhythmDisplay();
     else waveform.setBeatGrid(grid, manual);
+}
+void DeckPanel::setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats) {
+    beatLoop.setEnabled(gridAvailable);
+    beatLoopLength.setEnabled(gridAvailable);
+    beatLoop.setToggleState(beatLoopIsActive, juce::dontSendNotification);
+    if (beatLoopIsActive)
+        beatLoopLength.setSelectedId(beatLoopIdForBeats(beatLoopBeats), juce::dontSendNotification);
 }
 void DeckPanel::refreshRhythmDisplay() {
     juce::String summary;
@@ -279,9 +329,9 @@ void DeckPanel::resized() {
     waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 210)));
     area.removeFromTop(6);
     auto buttons = area.removeFromTop(30);
-    std::array<juce::TextButton*, 5> list {&load, &play, &rewind, &loop, &cue};
-    const int buttonWidth = buttons.getWidth() / 5;
-    for (auto* button : list) button->setBounds(buttons.removeFromLeft(buttonWidth).reduced(2, 0));
+    std::array<juce::Component*, 7> list {&load, &play, &rewind, &loop, &beatLoop, &beatLoopLength, &cue};
+    const int buttonWidth = buttons.getWidth() / static_cast<int>(list.size());
+    for (auto* component : list) component->setBounds(buttons.removeFromLeft(buttonWidth).reduced(2, 0));
     area.removeFromTop(4);
     auto gridArea = area.removeFromTop(44);
     gridReset.setBounds(gridArea.removeFromRight(96).reduced(2, 7));
@@ -334,6 +384,7 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
     juce::ignoreUnused(enableKeyLockResearch);
 #endif
     for (std::size_t i = 0; i < decks.size(); ++i) {
+        performanceDecks[i] = std::make_unique<broke::PerformanceDeckOwner>(engine, i);
         decks[i] = std::make_unique<DeckPanel>(engine, i);
         decks[i]->onBrowse = [this, i] { browse(i); };
         decks[i]->onDrop = [this, i](const juce::File& file) { load(i, file); };
@@ -341,6 +392,10 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
             applyBeatGridEdit(i, beatZero, bpm);
         };
         decks[i]->onGridReset = [this, i] { resetBeatGridEdit(i); };
+        decks[i]->onWholeTrackLoopRequested = [this, i](bool enabled) { setWholeTrackLoop(i, enabled); };
+        decks[i]->onBeatLoopRequested = [this, i](double beats, bool enabled) {
+            return setBeatLoop(i, beats, enabled);
+        };
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
         static_cast<void>(keyLockLifecycle.setEnabled(i, keyLockResearchEnabled));
         decks[i]->onBeforePlay = [this, i] {
@@ -445,7 +500,14 @@ void MainComponent::timerCallback() {
             serviceKeyLockDeck(deck, engine.control(deck).playing.load(std::memory_order_relaxed));
     }
 #endif
-    for (auto& deck : decks) deck->refresh();
+    for (std::size_t i = 0; i < decks.size(); ++i) {
+        decks[i]->refresh();
+        if (performanceDecks[i]) {
+            decks[i]->setPerformanceState(performanceDecks[i]->hasReviewedGrid(),
+                                          performanceDecks[i]->beatLoopActive(),
+                                          performanceDecks[i]->beatLoopLength());
+        }
+    }
     const auto peak = engine.masterPeak.load();
     auto meter = peak > 0.000001f ? juce::String(20.0f * std::log10(peak), 1) + " dBFS" : juce::String("— dBFS");
     if (!audioReady.load()) meter = text("No audio device / unsupported rate", "Brak urządzenia audio / nieobsługiwana częstotliwość");
@@ -479,6 +541,7 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
             safe->loading[deck] = false; safe->decks[deck]->setLoading(false);
             auto* submittedClip = result->clip.get();
             if (result->clip && safe->engine.submit(deck, std::move(result->clip))) {
+                if (safe->performanceDecks[deck]) safe->performanceDecks[deck]->resetForClip();
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
                 if (safe->keyLockResearchEnabled)
                     safe->keyLockLifecycle.noteClipSubmitted(deck, submittedClip);
@@ -506,6 +569,7 @@ void MainComponent::startTrackAnalysis(std::size_t deck, const juce::File& file)
     detectedBeatGrids[deck] = {};
     beatGrids[deck] = {};
     gridIsManual[deck] = false;
+    if (performanceDecks[deck]) performanceDecks[deck]->clearReviewedGrid();
     decks[deck]->setRhythmPending();
 
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -530,6 +594,12 @@ void MainComponent::startTrackAnalysis(std::size_t deck, const juce::File& file)
             safe->detectedBeatGrids[deck] = detected.valid() ? detected : broke::BeatGrid{};
             safe->beatGrids[deck] = selection.grid.valid() ? selection.grid : broke::BeatGrid{};
             safe->gridIsManual[deck] = selection.manualOverride;
+            if (safe->performanceDecks[deck]) {
+                if (safe->beatGrids[deck].valid())
+                    static_cast<void>(safe->performanceDecks[deck]->setReviewedGrid(safe->beatGrids[deck]));
+                else
+                    safe->performanceDecks[deck]->clearReviewedGrid();
+            }
             safe->decks[deck]->setRhythmAnalysis(*result, safe->beatGrids[deck], selection.manualOverride);
         });
     });
@@ -543,6 +613,12 @@ void MainComponent::applyBeatGridEdit(std::size_t deck, double beatZeroSeconds, 
     auto edited = beatGrids[deck];
     if (!edited.setBeatZero(beatZeroSeconds) || !edited.setSegmentBpm(0, bpm)) {
         statusMessage(text("Rejected invalid beat-grid correction.", "Odrzucono nieprawidłową korektę siatki."));
+        decks[deck]->setBeatGrid(beatGrids[deck], gridIsManual[deck]);
+        return;
+    }
+    if (!performanceDecks[deck]
+        || performanceDecks[deck]->setReviewedGrid(edited) != broke::PerformanceDeckOwner::Result::applied) {
+        statusMessage(text("Rejected beat-grid correction at performance boundary.", "Odrzucono korektę siatki na granicy sterowania deckiem."));
         decks[deck]->setBeatGrid(beatGrids[deck], gridIsManual[deck]);
         return;
     }
@@ -574,6 +650,12 @@ void MainComponent::resetBeatGridEdit(std::size_t deck) {
     const auto generation = gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
     beatGrids[deck] = detectedBeatGrids[deck];
     gridIsManual[deck] = false;
+    if (performanceDecks[deck]) {
+        if (beatGrids[deck].valid())
+            static_cast<void>(performanceDecks[deck]->setReviewedGrid(beatGrids[deck]));
+        else
+            performanceDecks[deck]->clearReviewedGrid();
+    }
     decks[deck]->setBeatGrid(beatGrids[deck], false);
 
     juce::Component::SafePointer<MainComponent> safe(this);
@@ -590,6 +672,37 @@ void MainComponent::resetBeatGridEdit(std::size_t deck) {
                        "Reset siatki działa w tej sesji, ale nie udało się usunąć zapisanej korekty."));
         });
     });
+}
+void MainComponent::setWholeTrackLoop(std::size_t deck, bool enabled) {
+    if (deck >= broke::deckCount || !performanceDecks[deck]) return;
+    static_cast<void>(performanceDecks[deck]->setWholeTrackLoop(enabled));
+}
+bool MainComponent::setBeatLoop(std::size_t deck, double beats, bool enabled) {
+    if (deck >= broke::deckCount || !performanceDecks[deck]) return false;
+    auto& owner = *performanceDecks[deck];
+    if (!enabled) {
+        owner.disarmLoop();
+        statusMessage(text("Beat loop disabled.", "Pętla beatowa wyłączona."));
+        return true;
+    }
+
+    const auto result = owner.armBeatLoopFromTransport(beats, broke::QuantizeDirection::previous);
+    if (result == broke::PerformanceDeckOwner::Result::applied) {
+        statusMessage(text("Beat loop armed: ", "Pętla beatowa: ") + juce::String(beats, 0)
+                      + text(" beats.", " beatów."));
+        return true;
+    }
+    if (result == broke::PerformanceDeckOwner::Result::gridUnavailable)
+        statusMessage(text("Beat loop needs a valid reviewed beat grid.", "Pętla beatowa wymaga poprawnej zweryfikowanej siatki rytmu."));
+    else if (result == broke::PerformanceDeckOwner::Result::trackUnavailable)
+        statusMessage(text("Beat loop transport is not ready yet.", "Transport nie jest jeszcze gotowy do pętli beatowej."));
+    else if (result == broke::PerformanceDeckOwner::Result::outsideTrack)
+        statusMessage(text("Beat loop would extend beyond this track.", "Pętla beatowa wyszłaby poza koniec utworu."));
+    else if (result == broke::PerformanceDeckOwner::Result::rendererBusy)
+        statusMessage(text("Beat loop is unavailable while another deck renderer owns this path.", "Pętla beatowa jest niedostępna, gdy ten deck używa innego renderera."));
+    else
+        statusMessage(text("Beat loop request was rejected safely.", "Żądanie pętli beatowej zostało bezpiecznie odrzucone."));
+    return false;
 }
 void MainComponent::showAudioSettings() {
     if (audioSettings) { audioSettings->toFront(true); return; }
