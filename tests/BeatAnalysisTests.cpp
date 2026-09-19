@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "core/BeatAnalysis.h"
+#include "core/BeatGridPerformance.h"
 
 #include <algorithm>
 #include <cmath>
@@ -151,6 +152,70 @@ void editableBeatGridSupportsTempoChanges() {
     check(transactional.valid(), "failed import does not destroy the existing grid");
 }
 
+void performancePlansRespectReviewedGrid() {
+    broke::BeatGrid grid;
+    check(grid.reset(0.5, 120.0), "performance fixture grid initializes");
+    check(grid.insertTempoChangeAtBeat(8.0, 90.0),
+          "performance fixture contains a variable-tempo segment");
+
+    check(std::abs(broke::beatGridBpmAtTime(grid, 4.49) - 120.0) < 1.0e-9,
+          "local BPM reports the segment before a tempo boundary");
+    check(std::abs(broke::beatGridBpmAtTime(grid, 4.5) - 90.0) < 1.0e-9,
+          "local BPM changes exactly at a reviewed boundary");
+
+    const auto previous = broke::quantizedBeatTime(
+        grid, 1.30, 1.0, broke::QuantizeDirection::previous);
+    const auto nearest = broke::quantizedBeatTime(
+        grid, 1.30, 1.0, broke::QuantizeDirection::nearest);
+    const auto next = broke::quantizedBeatTime(
+        grid, 1.30, 1.0, broke::QuantizeDirection::next);
+    check(std::abs(previous - 1.0) < 1.0e-9,
+          "previous-beat quantization never advances the hotcue target");
+    check(std::abs(nearest - 1.5) < 1.0e-9,
+          "nearest-beat quantization uses the reviewed grid phase");
+    check(std::abs(next - 1.5) < 1.0e-9,
+          "next-beat quantization advances to the next reviewed beat");
+    check(std::abs(broke::quantizedBeatTime(
+        grid, 1.5, 1.0, broke::QuantizeDirection::next) - 1.5) < 1.0e-9,
+          "next quantization keeps an already exact beat stable");
+
+    const auto loop = broke::planBeatLoop(grid, 3.7, 4.0);
+    check(loop.valid, "four-beat loop plan is valid on a reviewed grid");
+    check(std::abs(loop.startBeat - 6.0) < 1.0e-9 && std::abs(loop.startSeconds - 3.5) < 1.0e-9,
+          "beat loop snaps its start to the preceding reviewed beat");
+    check(std::abs(loop.endSeconds - (4.5 + 120.0 / 90.0)) < 1.0e-9,
+          "beat loop crossing a tempo change resolves its endpoint in beat space");
+    check(std::abs(grid.beatAtTime(loop.endSeconds) - 10.0) < 1.0e-9,
+          "variable-tempo loop preserves the requested musical length");
+
+    broke::BeatGrid master;
+    broke::BeatGrid follower;
+    check(master.reset(0.25, 128.0), "master sync grid initializes");
+    check(follower.reset(0.5, 120.0), "follower sync grid initializes");
+    const auto sync = broke::planBeatSync(follower, 2.05, master, 2.125);
+    check(sync.valid, "compatible reviewed grids produce a sync plan");
+    check(std::abs(sync.followerRate - (128.0 / 120.0)) < 1.0e-12,
+          "sync plan derives rate from local grid tempos");
+    check(std::abs(sync.masterBeat - 4.0) < 1.0e-9,
+          "sync plan exposes the master musical phase");
+    check(std::abs(sync.followerTargetBeat - 3.0) < 1.0e-9
+          && std::abs(sync.followerTargetSeconds - 2.0) < 1.0e-9,
+          "sync plan resolves a deterministic follower phase target");
+    check(std::abs(sync.phaseErrorBeats + 0.1) < 1.0e-9,
+          "sync plan reports signed phase correction instead of hiding a seek");
+
+    broke::BeatGrid slow;
+    broke::BeatGrid fast;
+    check(slow.reset(0.0, 70.0) && fast.reset(0.0, 180.0),
+          "mismatched sync fixture grids initialize");
+    check(!broke::planBeatSync(slow, 2.0, fast, 2.0).valid,
+          "unsafe tempo ratio fails closed instead of exceeding deck rate bounds");
+    check(!broke::planBeatLoop(grid, 1.0, 0.0).valid,
+          "zero-length musical loop fails closed");
+    check(std::isnan(broke::quantizedBeatTime(grid, 1.0, 0.0)),
+          "invalid hotcue quantization step fails closed");
+}
+
 void nonPeriodicMaterialDoesNotFabricateTempo() {
     constexpr double sampleRate = 48000.0;
     constexpr double seconds = 12.0;
@@ -217,6 +282,7 @@ int main() {
         checkEstimate(90.0, 1.10, false);
         chunkingIsDeterministic();
         editableBeatGridSupportsTempoChanges();
+        performancePlansRespectReviewedGrid();
         nonPeriodicMaterialDoesNotFabricateTempo();
         invalidAndNonFiniteInputsFailSafely();
         analysisWorkIsBounded();
