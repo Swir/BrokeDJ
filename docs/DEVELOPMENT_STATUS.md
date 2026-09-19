@@ -1,57 +1,60 @@
 # BrokeDJ development status
 
-This file is a durable engineering checkpoint, not a release announcement.
+This file is the durable engineering checkpoint for work that is not yet merged to `main`. It is not a release-readiness or live-performance claim.
 
 ## Current checkpoint
 
-- Default branch: `main`; active integration branch: `feat/performance-deck-owner`; open PR: #31 (`M2: expand reviewed performance-deck owner contract`).
-- Current validated implementation head before this checkpoint document: `1b1468076bd777e5c78b62cd7da4c1c97cb3609c`.
-- Exact-head GitHub Actions run `35429010447` is green: Linux core/sanitizer validation passed, and Windows x64 completed configure/build/full core CTest/audio diagnostics/native no-audio GUI lifecycle smoke/staging/artifact upload.
-- PR #31 remains deliberately unmerged. A green CI development artifact is not a public release or hardware/live-readiness qualification.
-- Roadmap counter remains **M0 complete; 1/10 equal-weight milestones = 10.0%**. The current work advances M2 but does not close M1 or M2.
+- Default branch: `main`.
+- Verified `main` baseline: `ebe5866a31673c7b5861ccead2c9b5819202526e` (merged PR #31).
+- Baseline CI: run `35431296587` — successful Linux sanitizer/core and Windows x64 development-build gates.
+- Active branch: `feat/hotcue-persistence`.
+- Pull request: #32, `M2: add source-bound hotcue persistence store` — open, not merged.
+- Verified implementation head: `9de066960975907229bd07fa97d8a25a5e29dc60`.
+- Exact implementation CI: run `35433441986` — successful on both jobs.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 milestones complete (10.0%, PRE-ALPHA).
+- No public BrokeDJ Release is qualified by this checkpoint.
 
-## M2 performance-deck work in PR #31
+## Implemented in PR #32
 
-The branch now has one JUCE-independent `PerformanceDeckOwner` per deck on top of the reviewed `BeatGrid` and production `Engine` transport boundary.
+1. **Source-bound persistent Hot Cue state**
+   - Versioned eight-slot snapshot format backed by the exact `PerformanceDeckOwner::HotCue` model.
+   - State is bound to source size and modification time; changed files reject stale cue state.
+   - The local source path is used only to derive the state-file key. The payload does not contain the raw path or filename.
+   - Payloads are bounded to 16 KiB and reject invalid, unknown-schema, corrupt and oversized records.
+   - Writes use `juce::TemporaryFile` replacement so an interrupted replacement does not intentionally overwrite the last valid state with a partial payload.
 
-Implemented and validated at the code-head snapshot:
+2. **Transactional owner restoration**
+   - `PerformanceDeckOwner` can export and restore a complete `HotCueBank` without re-quantizing persisted source-time positions.
+   - The whole bank is validated before mutation. Invalid or out-of-track persisted data leaves the previous complete in-memory bank unchanged.
+   - The app-side store exposes `storeFrom(...)` and `loadInto(...)` adapters so future native lifecycle wiring does not duplicate persistence validation.
+   - No disk access was added to `Engine::process()` or any audio callback path.
 
-- whole-track LOOP and reviewed beat-length LOOP remain separate user modes;
-- reviewed beat-loop planning is transactional and rejects invalid/out-of-track regions before control state changes;
-- the native deck UI exposes explicit **1 / 2 / 4 / 8 / 16 beat** loop choices only after a valid reviewed grid is available;
-- selected automatic/manual grids are republished to the owner after analysis or editing, while clip replacement/grid invalidation clears stale source-bound performance state;
-- eight hotcue slots exist at the core owner boundary with optional reviewed-grid quantization; hotcue UI/session persistence is not exposed yet;
-- reviewed-grid beat jump preserves fractional beat phase and fails closed when the destination is outside the track;
-- bounded one-shot follower sync validates both reviewed grids, deck ownership, rate limits and phase-correction limits before mutating follower rate/seek;
-- self-sync and cross-Engine sync are rejected, and the implementation is explicitly not continuous phase lock;
-- active beat-derived loops are invalidated conservatively before hotcue, beat-jump or sync transport moves when required;
-- the existing optional key-lock source-renderer ownership remains respected; conflicting beat-loop requests fail closed rather than stealing the deck source path;
-- no new decode, disk/network I/O, plugin work, blocking lock or allocation was added to the realtime callback.
+3. **Deterministic persistence/integration coverage**
+   - Round-trip metadata and unset-slot preservation.
+   - Payload path/filename privacy checks.
+   - Source-identity invalidation.
+   - Atomic replacement behavior and invalid-write non-clobbering.
+   - Unknown-schema, oversized and corrupt-record fail-closed behavior.
+   - Owner -> persistent store -> restored owner -> transport-trigger round trip.
+   - Failed complete-bank restore preserves the previous valid bank.
 
-## Deterministic coverage
+## Verification
 
-`PerformanceDeckOwnerTests` covers reviewed variable-tempo loop ownership, failed tail re-arm, grid replacement, whole-track/beat-loop separation, quantized/unquantized hotcues, beat-jump phase preservation and bounds, one-shot 120→128 BPM sync application, phase-safety rejection without control drift, self-/cross-Engine sync rejection, renderer conflicts, invalid decks and clip-reset invalidation.
+Exact implementation head `9de066960975907229bd07fa97d8a25a5e29dc60` passed GitHub Actions run `35433441986`:
 
-The existing Engine/realtime suites continue to cover the production custom loop-region renderer, de-click behavior, source replacement safety and zero-heap callback contract. The Windows job additionally runs the repository audio diagnostics and native GUI lifecycle smoke without audio hardware.
+- Linux `ubuntu-24.04`: generated-progress check, sanitizer/core build and CTest — success.
+- Windows `windows-2022`: native configure/build, full CTest (including `performance_state_store`), audio render/callback diagnostics, no-audio native GUI lifecycle smoke, development staging and artifact upload — success.
 
-## Validation state
+The Windows CI smoke does not replace physical audio-interface, multi-output cue, controller, clean-machine listening or soak qualification.
 
-- PR #28 merged as `f917fabc579723044be706e3eb86971cb48a67ad` after run `35421304445`.
-- PR #29 merged as `473573962047d31b188915c3e47df79654baecf6` after run `35421909580`.
-- PR #30 merged as `e7d67e96aa514c9f229daba92e3fca849acb0522` after run `35423792947`.
-- PR #31 implementation head `1b1468076bd777e5c78b62cd7da4c1c97cb3609c` passed run `35429010447` on Linux and Windows, including Windows staging/artifact upload.
-- No physical Windows 11 audio interface, real four-output cue, controller, reviewed music-domain listening, measured device latency, hardware-underrun qualification or representative copyrighted-music corpus is claimed.
-- `docs/progress.json` remains unchanged at **1/10 = 10.0%**.
+## Gates still open
 
-## Remaining blockers / gates
+- M1 physical Windows 11 audio-device qualification, including verified four-output cue routing where the interface supports it.
+- Representative legal local-music corpus validation for BPM/key/grid behavior.
+- Normal Hot Cue 1–8 pads and lifecycle wiring in the native app; persistence exists but the regular user-facing pads are not exposed by PR #32.
+- Moved-file recovery, session-level migration policy and controller mappings.
+- Real listening/soak testing and production release qualification.
 
-1. Physical Windows 11 clean-machine launch, real audio-device switching and physical two-/four-output cue still block M1 completion.
-2. The analysis validator still needs a legally usable/local representative music corpus and recorded results before stronger BPM/key claims.
-3. Hotcues remain an in-memory owner contract; normal pads, persistence/session migration, controller mapping and transport regression are open.
-4. Beat jump and one-shot sync are core owner contracts only; normal UX/master selection and additional render/listening qualification are open.
-5. The developer key-lock lifecycle still requires reviewed music-domain listening and stronger live transition/race/device qualification before normal GUI exposure.
-6. Slip, reverse, scratch and broader deck workflows remain open.
+## Next largest step
 
-## Next highest-impact step
-
-Keep PR #31 as the active M2 integration slice. Next, add normal eight-pad hotcue UX plus durable source/session persistence with migration and corruption handling, then expose beat jump and a conservative master/follower sync workflow using the already bounded owner contracts. Continue to keep physical M1 audio-interface checks as a separate manual gate and do not infer them from CI.
+Wire `TrackHotCueStore` into the native deck load/edit/clear lifecycle, expose compact Hot Cue 1–8 controls without crowding the deck layout, and add native GUI/lifecycle tests for load -> restore -> set/clear -> reload. After that, expose Beat Jump and bounded master/follower Sync controls on reviewed grids while keeping all analysis and persistence work off the audio callback.

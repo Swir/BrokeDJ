@@ -209,7 +209,10 @@ if(BROKEDJ_BUILD_APP)
 
     # Keep file decoding/read-ahead and offline track analysis as testable
     # adapters instead of compiling them only as part of the GUI executable.
-    add_library(brokedj_decoder STATIC src/app/Decoder.cpp src/app/TrackAnalysis.cpp)
+    add_library(brokedj_decoder STATIC
+        src/app/Decoder.cpp
+        src/app/TrackAnalysis.cpp
+        src/app/PerformanceStateStore.cpp)
     target_include_directories(brokedj_decoder PUBLIC src)
     target_compile_definitions(brokedj_decoder PUBLIC JUCE_USE_MP3AUDIOFORMAT=1 JUCE_USE_CURL=0)
     target_link_libraries(brokedj_decoder PUBLIC brokedj_core juce::juce_audio_formats)
@@ -240,6 +243,11 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_track_analysis_tests PRIVATE brokedj_decoder)
         add_test(NAME track_analysis COMMAND brokedj_track_analysis_tests)
         set_tests_properties(track_analysis PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_performance_state_store_tests tests/PerformanceStateStoreTests.cpp)
+        target_link_libraries(brokedj_performance_state_store_tests PRIVATE brokedj_decoder)
+        add_test(NAME performance_state_store COMMAND brokedj_performance_state_store_tests)
+        set_tests_properties(performance_state_store PROPERTIES TIMEOUT 30)
     endif()
 
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"

@@ -38,6 +38,8 @@ public:
         double beatStep = 1.0;
     };
 
+    using HotCueBank = std::array<HotCue, hotCueCount>;
+
     PerformanceDeckOwner(Engine& targetEngine, std::size_t deckIndex) noexcept
         : engine(targetEngine), deck(deckIndex) {}
 
@@ -170,6 +172,33 @@ public:
         if (!std::isfinite(duration) || duration <= 0.0) return Result::trackUnavailable;
         return storeHotCueAt(slot, cursor, duration, quantize, beatStep, direction);
     }
+
+    // Persistence/session restoration is exact source-time restoration, not a
+    // second quantization pass. Validate the complete bank first so a corrupt or
+    // stale record cannot partially replace an already-valid in-memory bank.
+    [[nodiscard]] Result restoreHotCueBank(const HotCueBank& snapshot,
+                                           double trackDurationSeconds) noexcept {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!std::isfinite(trackDurationSeconds) || trackDurationSeconds <= 0.0)
+            return Result::trackUnavailable;
+
+        HotCueBank validated{};
+        for (std::size_t slot = 0; slot < snapshot.size(); ++slot) {
+            const auto& cue = snapshot[slot];
+            if (!cue.set) continue;
+            if (!std::isfinite(cue.seconds) || !std::isfinite(cue.beatStep)
+                || cue.seconds < 0.0 || cue.beatStep <= 0.0 || cue.beatStep > 64.0) {
+                return Result::invalidRequest;
+            }
+            if (cue.seconds >= trackDurationSeconds) return Result::outsideTrack;
+            validated[slot] = cue;
+        }
+
+        hotCues = validated;
+        return Result::applied;
+    }
+
+    [[nodiscard]] HotCueBank hotCueBank() const noexcept { return hotCues; }
 
     [[nodiscard]] Result triggerHotCue(std::size_t slot, double trackDurationSeconds) noexcept {
         if (!validDeck()) return Result::invalidDeck;
@@ -319,7 +348,7 @@ private:
     BeatGrid grid;
     bool gridReady = false;
     double activeBeatLoopBeats = 0.0;
-    std::array<HotCue, hotCueCount> hotCues{};
+    HotCueBank hotCues{};
 };
 
 } // namespace broke
