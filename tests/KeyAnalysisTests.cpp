@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
