@@ -107,7 +107,8 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_test(NAME time_stretch_deck_realtime COMMAND brokedj_timestretch_deck_realtime_tests)
         set_tests_properties(time_stretch_deck_realtime PROPERTIES TIMEOUT 60)
 
-        add_executable(brokedj_timestretch_source_bridge_tests tests/TimeStretchSourceBridgeTests.cpp)
+        add_executable(brokedj_timestretch_source_bridge_tests
+            tests/TimeStretchSourceBridgeTests.cpp)
         target_link_libraries(brokedj_timestretch_source_bridge_tests PRIVATE brokedj_timestretch)
         add_test(NAME time_stretch_source_bridge COMMAND brokedj_timestretch_source_bridge_tests)
         set_tests_properties(time_stretch_source_bridge PROPERTIES TIMEOUT 60)
@@ -170,6 +171,12 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_test(NAME engine_keylock_source_realtime
             COMMAND brokedj_engine_keylock_source_realtime_tests)
         set_tests_properties(engine_keylock_source_realtime PROPERTIES TIMEOUT 90)
+
+        add_executable(brokedj_keylock_deck_lifecycle_tests
+            tests/KeyLockDeckLifecycleTests.cpp)
+        target_link_libraries(brokedj_keylock_deck_lifecycle_tests PRIVATE brokedj_timestretch)
+        add_test(NAME keylock_deck_lifecycle COMMAND brokedj_keylock_deck_lifecycle_tests)
+        set_tests_properties(keylock_deck_lifecycle PROPERTIES TIMEOUT 90)
     endif()
 endif()
 
@@ -211,6 +218,10 @@ if(BROKEDJ_BUILD_APP)
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:BrokeDJ,JUCE_PRODUCT_NAME>"
         JUCE_APPLICATION_VERSION_STRING="${PROJECT_VERSION}")
+    if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
+        target_compile_definitions(BrokeDJ PRIVATE BROKEDJ_TIMESTRETCH_PROTOTYPE=1)
+        target_link_libraries(BrokeDJ PRIVATE brokedj_timestretch)
+    endif()
     if(MSVC)
         target_compile_options(BrokeDJ PRIVATE /utf-8)
     endif()
