@@ -45,7 +45,7 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     configureLabel(heading, "DECK " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + d)) + (d % 2 == 0 ? "  /  LEFT" : "  /  RIGHT"), 16);
     configureLabel(track, text("No track loaded", "Nie wczytano utworu"), 14);
     configureLabel(time, "00:00 / 00:00", 12);
-    configureLabel(rhythm, text("BPM —  /  GRID —", "BPM —  /  SIATKA —"), 11);
+    configureLabel(rhythm, text("BPM —  /  GRID —  /  KEY —", "BPM —  /  SIATKA —  /  TONACJA —"), 11);
     rhythm.setColour(juce::Label::textColourId, muted);
     time.setJustificationType(juce::Justification::centredRight);
     load.setButtonText(text("Load", "Wczytaj"));
@@ -115,26 +115,49 @@ void DeckPanel::setTrack(const juce::String& name, std::vector<float> peaks) {
     waveform.peaks = std::move(peaks); waveform.repaint();
 }
 void DeckPanel::setRhythmPending() {
-    rhythm.setText(text("Analyzing BPM / beat grid…", "Analiza BPM / siatki rytmu…"), juce::dontSendNotification);
-    rhythm.setTooltip(text("Offline analysis runs in a background worker and never in the audio callback.",
-                           "Analiza offline działa w tle i nigdy w callbacku audio."));
+    rhythm.setText(text("Analyzing BPM / beat grid / key…", "Analiza BPM / siatki rytmu / tonacji…"), juce::dontSendNotification);
+    rhythm.setTooltip(text("Offline musical analysis runs in a background worker and never in the audio callback.",
+                           "Analiza muzyczna offline działa w tle i nigdy w callbacku audio."));
 }
 void DeckPanel::setRhythmAnalysis(const TrackRhythmAnalysis& analysis) {
-    if (!analysis.beat.valid) {
-        rhythm.setText(text("BPM —  /  GRID —", "BPM —  /  SIATKA —"), juce::dontSendNotification);
-        rhythm.setTooltip(analysis.error.isNotEmpty()
-            ? analysis.error
-            : text("No reliable rhythm estimate was published.", "Nie opublikowano wiarygodnego wyniku rytmu."));
-        return;
+    juce::String summary;
+    if (analysis.beat.valid) {
+        summary = "BPM " + juce::String(analysis.beat.bpm, 1)
+            + "  /  GRID +" + juce::String(analysis.beat.beatZeroSeconds, 3) + " s";
+    } else {
+        summary = text("BPM —  /  GRID —", "BPM —  /  SIATKA —");
     }
-    const int confidence = juce::jlimit(0, 100, static_cast<int>(std::lround(analysis.beat.confidence * 100.0)));
-    const auto gridText = "BPM " + juce::String(analysis.beat.bpm, 1)
-        + "  /  GRID +" + juce::String(analysis.beat.beatZeroSeconds, 3) + " s"
-        + "  /  " + juce::String(confidence) + "%";
-    rhythm.setText(gridText, juce::dontSendNotification);
-    auto tooltip = text("Offline rhythm estimate. Grid editing and sync are not enabled yet.",
-                        "Szacunek rytmu offline. Edycja siatki i sync nie są jeszcze włączone.");
-    if (analysis.cacheHit) tooltip += text(" Loaded from local analysis cache.", " Wczytano z lokalnego cache analizy.");
+
+    if (analysis.key.valid) {
+        const auto mode = analysis.key.mode == broke::KeyMode::major
+            ? text("MAJ", "DUR") : text("MIN", "MOLL");
+        summary += text("  /  KEY ", "  /  TONACJA ")
+            + juce::String(broke::keyName(analysis.key.tonic)) + " " + mode;
+    } else {
+        summary += text("  /  KEY —", "  /  TONACJA —");
+    }
+    rhythm.setText(summary, juce::dontSendNotification);
+
+    auto tooltip = text(
+        "Offline tempo/grid and musical-key estimates. Current accuracy evidence is deterministic/synthetic; manual grid editing and sync are not enabled yet.",
+        "Szacunki offline tempa/siatki i tonacji. Obecna walidacja dokładności jest deterministyczna/syntetyczna; ręczna edycja siatki i sync nie są jeszcze włączone.");
+    if (analysis.beat.valid) {
+        const int confidence = juce::jlimit(0, 100,
+            static_cast<int>(std::lround(analysis.beat.confidence * 100.0)));
+        tooltip += text(" Tempo confidence: ", " Pewność tempa: ") + juce::String(confidence) + "%";
+    } else if (analysis.beatError.isNotEmpty()) {
+        tooltip += " " + analysis.beatError;
+    }
+    if (analysis.key.valid) {
+        const int confidence = juce::jlimit(0, 100,
+            static_cast<int>(std::lround(analysis.key.confidence * 100.0)));
+        tooltip += text(" Key confidence: ", " Pewność tonacji: ") + juce::String(confidence) + "%";
+    } else if (analysis.keyError.isNotEmpty()) {
+        tooltip += " " + analysis.keyError;
+    }
+    if (analysis.error.isNotEmpty()) tooltip += " " + analysis.error;
+    if (analysis.cacheHit)
+        tooltip += text(" Loaded from local analysis cache.", " Wczytano z lokalnego cache analizy.");
     rhythm.setTooltip(tooltip);
 }
 void DeckPanel::refresh() {
@@ -379,7 +402,7 @@ void MainComponent::startTrackAnalysis(std::size_t deck, const juce::File& file)
         broke::BeatGrid grid(result->beat);
         if (result->beat.valid && !grid.valid()) {
             result->beat = {};
-            result->error = "Detected rhythm metadata failed beat-grid validation.";
+            result->beatError = "Detected rhythm metadata failed beat-grid validation.";
         }
         juce::MessageManager::callAsync([safe, stop, result, grid, deck] {
             if (!safe || stop->load() || safe->analysisCancelled[deck] != stop) return;

@@ -8,7 +8,10 @@ option(BROKEDJ_BUILD_APP "Build the native JUCE application" ON)
 option(BROKEDJ_SANITIZE "Enable address and undefined-behavior sanitizers" OFF)
 option(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE "Build the opt-in Signalsmith time-stretch/key-lock prototype and tests" OFF)
 include(CTest)
-add_library(brokedj_core STATIC src/core/Engine.cpp src/core/BeatAnalysis.cpp)
+add_library(brokedj_core STATIC
+    src/core/Engine.cpp
+    src/core/BeatAnalysis.cpp
+    src/core/KeyAnalysis.cpp)
 target_include_directories(brokedj_core PUBLIC src)
 if(MSVC)
     target_compile_options(brokedj_core PRIVATE /W4 /permissive- /utf-8)
@@ -55,6 +58,11 @@ if(BUILD_TESTING)
     target_link_libraries(brokedj_beat_analysis_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME beat_analysis COMMAND brokedj_beat_analysis_tests)
     set_tests_properties(beat_analysis PROPERTIES TIMEOUT 60)
+
+    add_executable(brokedj_key_analysis_tests tests/KeyAnalysisTests.cpp)
+    target_link_libraries(brokedj_key_analysis_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME key_analysis COMMAND brokedj_key_analysis_tests)
+    set_tests_properties(key_analysis PROPERTIES TIMEOUT 60)
 endif()
 
 if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
