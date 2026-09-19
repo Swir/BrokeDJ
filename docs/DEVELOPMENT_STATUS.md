@@ -4,12 +4,13 @@ This file is a durable engineering checkpoint, not a release announcement.
 
 ## Current checkpoint
 
-- Default branch: `main`.
+- Default branch: `main`; current integration branch: `feat/performance-deck-owner`.
 - PR #28 (`feat/manual-grid-editor-validation`) merged as `f917fabc579723044be706e3eb86971cb48a67ad` after exact-final-head `62dc9e40b2b84769109613734bd21fb0916c11eb` passed GitHub Actions run `35421304445`.
 - PR #29 (`feat/grid-performance-primitives`) merged as `473573962047d31b188915c3e47df79654baecf6` after exact-final-head `090513a718ff9a8a74c0bd418d9fc25d248c7a87` passed GitHub Actions run `35421909580`.
 - PR #30 (`feat/engine-beat-loop-region`) merged as `e7d67e96aa514c9f229daba92e3fca849acb0522` after exact-final-head `b6bd9508e603b3c6ee6e5814cad73282429cf0f8` passed GitHub Actions run `35423792947` on Linux ASan/UBSan and the Windows x64 development gate.
-- The PR #30 Windows gate included configure/build/full CTest, audio diagnostics, native no-audio GUI smoke, staging and artifact upload. Its Linux job passed the generated-progress check, sanitizer build and full configured CTest suite.
-- Roadmap counter remains **M0 complete; 1/10 equal-weight milestones = 10.0%**. Manual grid tooling, performance planning and production loop-region rendering are substantial M2 work, but they do not close M2 or imply live readiness.
+- PR #31 (`feat/performance-deck-owner`) is open. Its code head `681240671b451cf19f71bd939f472a29ba6d7ded` passed GitHub Actions run `35426185917`: Linux ASan/UBSan completed 24/24 configured CTest targets, and Windows x64 completed configure/build/full CTest/audio diagnostics/native no-audio GUI smoke/staging/artifact upload.
+- PR #31 is intentionally not merged merely because its code head is green; the branch remains the active M2 integration slice for the next coherent UI/owner work.
+- Roadmap counter remains **M0 complete; 1/10 equal-weight milestones = 10.0%**. Manual grid tooling, performance planning, production loop-region rendering and the new owner boundary are substantial M2 work, but they do not close M2 or imply live readiness.
 
 ## Verified manual beat-grid workflow
 
@@ -59,15 +60,32 @@ The merged Engine boundary:
 
 Core tests build a real 120 BPM reviewed grid, derive a four-beat plan, arm the Engine, render through the wrap and verify bounded transport plus finite output. The zero-heap realtime contract now runs with an active custom beat loop while continuing to require zero callback heap allocations and deallocations.
 
-This is a transport-engine capability, not yet a normal user-facing beat-loop control. The existing GUI LOOP button still represents whole-track looping until an explicit reviewed-grid UI/owner contract arms a custom region.
+This is a transport-engine capability. The existing GUI LOOP button still represents whole-track looping until the reviewed-grid owner is connected to explicit beat-length controls.
+
+## Verified performance-deck owner candidate
+
+PR #31 adds a JUCE-independent control-thread owner on top of the reviewed grid and production Engine transport boundary.
+
+The green code-head candidate:
+
+- keeps whole-track LOOP and reviewed beat-length loops as separate explicit modes instead of silently changing the meaning of the existing LOOP control;
+- derives beat-loop regions from `BeatLoopPlan`, checks requested cursor/duration/length, rejects loops extending beyond the track and publishes the region before changing the Engine LOOP state;
+- preserves the previous valid loop if a replacement request fails validation;
+- invalidates an armed beat-derived region when its reviewed grid changes and clears source-identity-bound loop/grid/cue state on clip replacement;
+- exposes eight in-memory hotcue slots with optional reviewed-grid quantization and normalized Engine seek triggering;
+- conservatively exits an active beat loop before a hotcue jump while preserving explicit whole-track loop mode;
+- refuses a beat-loop request if another source renderer, including the opt-in key-lock research path, currently owns that deck;
+- performs no decoding, disk/network I/O, plugin work or callback allocation; it translates message/control-thread intent into the existing bounded Engine control interfaces.
+
+`PerformanceDeckOwnerTests` deterministically cover variable-tempo beat-loop ownership, failed tail re-arm, grid replacement, whole-track/beat-loop separation, quantized and unquantized hotcues, renderer conflicts, invalid decks and clip-reset invalidation. This owner is not yet connected to normal GUI controls and hotcues are not yet persisted across sessions.
 
 ## Validation state
 
 - PR #28 exact-final-head run `35421304445` is green; merged-main run `35421668659` is also green.
 - PR #29 exact-final-head run `35421909580` is green on Linux and Windows. Linux reports 23/23 configured CTest targets passing.
 - PR #30 exact-final-head run `35423792947` is green on Linux and Windows, including Windows audio diagnostics, native GUI smoke, staging and artifact upload.
-- Beat-loop source rendering is now present in production `Engine`; user-facing beat-loop selection, hotcue storage/triggering and sync actuation remain open.
-- The optional key-lock research path retains its previous gates and is not automatically enabled by reviewed-grid or beat-loop work.
+- PR #31 code head `681240671b451cf19f71bd939f472a29ba6d7ded` passed run `35426185917`: Linux ASan/UBSan reports 24/24 configured CTest targets passing; Windows x64 passed its full development gate including audio diagnostics, native GUI smoke, staging and artifact upload.
+- The optional key-lock research path retains its previous gates and is not automatically enabled by reviewed-grid, beat-loop or hotcue-owner work.
 - No physical Windows 11 audio interface, controller, reviewed music-domain listening, measured device latency, hardware-underrun qualification or representative copyrighted-music corpus is claimed.
 - `docs/progress.json` remains unchanged at 1/10 = 10.0%.
 
@@ -75,11 +93,12 @@ This is a transport-engine capability, not yet a normal user-facing beat-loop co
 
 1. Physical Windows 11 clean-machine launch, real audio-device switching and physical two-/four-output cue still block M1 completion.
 2. The analysis validator still needs an actual legally usable/local representative corpus and recorded results before stronger BPM/key accuracy claims.
-3. The UI/owner layer does not yet expose reviewed beat-length loop choices and must not silently reinterpret the existing whole-track LOOP control.
-4. Hotcue persistence/triggering and sync actuation still need explicit owner/UI/transport contracts, deterministic render tests and fail-safe behavior before user-facing enablement.
-5. The developer key-lock lifecycle still requires reviewed music-domain listening and stronger live transition/race qualification before any normal GUI control is justified.
-6. Slip, reverse, scratch workflows and broader waveform/deck interaction remain open.
+3. The normal app UI does not yet expose reviewed beat-length loop choices through `PerformanceDeckOwner`; whole-track LOOP must retain its existing meaning until that explicit integration is complete and tested.
+4. Hotcues are currently an in-memory owner contract only; persistence, normal UI pads, controller mapping and transport regression still need implementation and qualification.
+5. Sync planning exists but production sync actuation still needs an explicit owner/UI contract, bounded rate/phase application, deterministic render tests and fail-safe behavior.
+6. The developer key-lock lifecycle still requires reviewed music-domain listening and stronger live transition/race qualification before any normal GUI control is justified.
+7. Slip, reverse, scratch workflows and broader waveform/deck interaction remain open.
 
 ## Next highest-impact step
 
-Add a compact reviewed-grid beat-loop owner/UI contract that derives bounded lengths (for example 1/2/4/8/16 beats) through `BeatLoopPlan` and arms/disarms the verified Engine region without changing the semantics of whole-track LOOP unexpectedly. Then reuse the same reviewed-grid authority for quantized hotcue storage/triggering and explicit sync actuation. Physical M1 audio-interface checks remain a separate manual gate and must not be inferred from CI.
+Connect `PerformanceDeckOwner` to the normal application lifecycle and add compact explicit per-deck beat-loop controls for 1/2/4/8/16 beats without changing whole-track LOOP semantics. Re-publish the selected reviewed grid after analysis/manual edits and reset owner state on clip replacement. Then add normal hotcue pads/persistence and use the already-reviewed sync plan for bounded production sync actuation. Physical M1 audio-interface checks remain a separate manual gate and must not be inferred from CI.
