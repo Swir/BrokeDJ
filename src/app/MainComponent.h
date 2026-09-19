@@ -3,6 +3,9 @@
 #include <JuceHeader.h>
 #include "core/Engine.h"
 #include "Decoder.h"
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+#include "KeyLockDeckLifecycle.h"
+#endif
 
 juce::String text(const char* english, const char* polish);
 class Waveform final : public juce::Component {
@@ -18,6 +21,9 @@ public:
     DeckPanel(broke::Engine&, std::size_t);
     std::function<void()> onBrowse;
     std::function<void(const juce::File&)> onDrop;
+    std::function<void()> onBeforePlay;
+    std::function<void()> onKeyLockControlChanged;
+    std::function<void(double)> onSeekRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
     void refresh();
@@ -36,7 +42,7 @@ private:
 };
 class MainComponent final : public juce::AudioAppComponent, private juce::Timer {
 public:
-    explicit MainComponent(bool openAudio = true);
+    explicit MainComponent(bool openAudio = true, bool enableKeyLockResearch = false);
     ~MainComponent() override;
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
     void releaseResources() override;
@@ -49,8 +55,15 @@ private:
     void load(std::size_t, const juce::File&);
     void showAudioSettings();
     void statusMessage(const juce::String&);
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    void serviceKeyLockDeck(std::size_t deck, bool playing);
+#endif
     juce::LookAndFeel_V4 theme;
     broke::Engine engine;
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    broke::KeyLockDeckLifecycle keyLockLifecycle{engine};
+    bool keyLockResearchEnabled = false;
+#endif
     std::array<std::unique_ptr<DeckPanel>, broke::deckCount> decks;
     std::array<bool, broke::deckCount> loading{};
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);

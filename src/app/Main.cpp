@@ -9,8 +9,10 @@ public:
     void initialise(const juce::String& arguments) override {
         logger.reset(juce::FileLogger::createDefaultAppLogger("BrokeDJ", "BrokeDJ.log", "BrokeDJ 0.1.0 development log", 256 * 1024));
         juce::Logger::setCurrentLogger(logger.get());
-        window = std::make_unique<Window>(!arguments.contains("--smoke-test"));
-        if (arguments.contains("--smoke-test")) juce::Timer::callAfterDelay(1200, [this] { quit(); });
+        const bool smokeTest = arguments.contains("--smoke-test");
+        const bool keyLockResearch = arguments.contains("--key-lock-research");
+        window = std::make_unique<Window>(!smokeTest, keyLockResearch);
+        if (smokeTest) juce::Timer::callAfterDelay(1200, [this] { quit(); });
     }
     void shutdown() override { window.reset(); juce::Logger::setCurrentLogger(nullptr); logger.reset(); }
     void systemRequestedQuit() override { quit(); }
@@ -18,8 +20,9 @@ public:
 private:
     class Window final : public juce::DocumentWindow {
     public:
-        explicit Window(bool openAudio) : DocumentWindow("BrokeDJ — by Swir", juce::Colour(0xff080e1a), allButtons) {
-            setUsingNativeTitleBar(true); setContentOwned(new MainComponent(openAudio), true);
+        Window(bool openAudio, bool keyLockResearch)
+            : DocumentWindow("BrokeDJ — by Swir", juce::Colour(0xff080e1a), allButtons) {
+            setUsingNativeTitleBar(true); setContentOwned(new MainComponent(openAudio, keyLockResearch), true);
             setResizable(true, false); setResizeLimits(1050, 800, 3840, 2160);
             centreWithSize(getWidth(), getHeight()); setVisible(true);
         }

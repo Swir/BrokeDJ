@@ -51,11 +51,26 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     loop.setButtonText("LOOP"); cue.setButtonText(text("Headphones", "Słuchawki"));
     loop.setClickingTogglesState(true); cue.setClickingTogglesState(true);
     load.onClick = [this] { if (onBrowse) onBrowse(); };
-    play.onClick = [this] { auto& p = engine.control(index).playing; p.store(!p.load()); };
-    rewind.onClick = [this] { engine.control(index).playing = false; engine.control(index).seek = 0.0; };
-    loop.onClick = [this] { engine.control(index).loop = loop.getToggleState(); };
+    play.onClick = [this] {
+        auto& p = engine.control(index).playing;
+        const bool next = !p.load();
+        if (next && onBeforePlay) onBeforePlay();
+        p.store(next);
+    };
+    rewind.onClick = [this] {
+        engine.control(index).playing = false;
+        engine.control(index).seek = 0.0;
+        if (onSeekRequested) onSeekRequested(0.0);
+    };
+    loop.onClick = [this] {
+        engine.control(index).loop = loop.getToggleState();
+        if (onKeyLockControlChanged) onKeyLockControlChanged();
+    };
     cue.onClick = [this] { engine.control(index).headphone = cue.getToggleState(); };
-    waveform.onSeek = [this](double position) { engine.control(index).seek = position; };
+    waveform.onSeek = [this](double position) {
+        engine.control(index).seek = position;
+        if (onSeekRequested) onSeekRequested(position);
+    };
     for (juce::Component* child : std::array<juce::Component*, 9>{&heading, &track, &time, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
     const std::array<juce::String, 7> names {text("Gain", "Głośność"), text("Rate %", "Tempo %"), "LOW", "MID", "HIGH", "ECHO", "DRIVE"};
     for (std::size_t i = 0; i < knobs.size(); ++i) {
@@ -78,12 +93,13 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
                 case 6: c.drive = value; break;
                 default: break;
             }
+            if (i == 1 && onKeyLockControlChanged) onKeyLockControlChanged();
         };
         configureLabel(knobNames[i], names[i], 11);
         knobNames[i].setJustificationType(juce::Justification::centred);
         knob.setName(names[i]); addAndMakeVisible(knob); addAndMakeVisible(knobNames[i]);
     }
-    knobs[1].setTooltip(text("Playback rate changes pitch. Key lock is not implemented yet.", "Zmiana tempa zmienia tonację. Key lock nie jest jeszcze dostępny."));
+    knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Key lock has no GUI control yet.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Key lock nie ma jeszcze kontrolki GUI."));
     knobs[5].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
     loop.setTooltip(text("Loops the whole track, not a beat-length loop.", "Zapętla cały utwór, nie wybraną liczbę beatów."));
     cue.setTooltip(text("Cue uses outputs 3/4 only. Enable four outputs in Audio settings.", "Odsłuch używa tylko wyjść 3/4. Włącz cztery wyjścia w ustawieniach audio."));
@@ -127,7 +143,8 @@ void DeckPanel::resized() {
 bool DeckPanel::isInterestedInFileDrag(const juce::StringArray& files) { return files.size() == 1; }
 void DeckPanel::filesDropped(const juce::StringArray& files, int, int) { if (files.size() == 1 && onDrop) onDrop(juce::File(files[0])); }
 
-MainComponent::MainComponent(bool openAudio) : author("by Swir", juce::URL("https://github.com/Swir")) {
+MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
+    : author("by Swir", juce::URL("https://github.com/Swir")) {
     theme.setColour(juce::ResizableWindow::backgroundColourId, background);
     theme.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1b2d46));
     theme.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2163a3));
@@ -157,12 +174,36 @@ MainComponent::MainComponent(bool openAudio) : author("by Swir", juce::URL("http
     crossfader.onValueChange = [this] { engine.crossfader = static_cast<float>(crossfader.getValue()); };
     master.onValueChange = [this] { engine.master = static_cast<float>(master.getValue()); };
     headphone.onValueChange = [this] { engine.headphoneLevel = static_cast<float>(headphone.getValue()); };
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    keyLockResearchEnabled = enableKeyLockResearch;
+#else
+    juce::ignoreUnused(enableKeyLockResearch);
+#endif
     for (std::size_t i = 0; i < decks.size(); ++i) {
         decks[i] = std::make_unique<DeckPanel>(engine, i);
         decks[i]->onBrowse = [this, i] { browse(i); };
         decks[i]->onDrop = [this, i](const juce::File& file) { load(i, file); };
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+        static_cast<void>(keyLockLifecycle.setEnabled(i, keyLockResearchEnabled));
+        decks[i]->onBeforePlay = [this, i] {
+            if (keyLockResearchEnabled) serviceKeyLockDeck(i, false);
+        };
+        decks[i]->onKeyLockControlChanged = [this, i] {
+            if (keyLockResearchEnabled) keyLockLifecycle.noteTransportControlChanged(i);
+        };
+        decks[i]->onSeekRequested = [this, i](double position) {
+            if (keyLockResearchEnabled) keyLockLifecycle.noteSeekNormalized(i, position);
+        };
+#endif
         addAndMakeVisible(*decks[i]);
     }
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    if (keyLockResearchEnabled) {
+        status.setText(text("Developer key-lock research path enabled; live control changes fail closed to normal playback.",
+                            "Włączono testową ścieżkę key lock; zmiany podczas odtwarzania wracają bezpiecznie do zwykłego playbacku."),
+                       juce::dontSendNotification);
+    }
+#endif
     setSize(1280, 860);
     if (openAudio) setAudioChannels(0, 2);
     startTimerHz(25);
@@ -176,9 +217,23 @@ MainComponent::~MainComponent() {
 }
 void MainComponent::prepareToPlay(int, double rate) {
     audioReady = false;
-    try { engine.prepare(rate); audioReady = true; } catch (...) { /* UI timer reports unavailable audio. */ }
+    try {
+        engine.prepare(rate);
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+        if (keyLockResearchEnabled
+            && !keyLockLifecycle.configureAudioStopped(rate, engine.preparedMaxAudioBlockFrames())) {
+            keyLockResearchEnabled = false;
+        }
+#endif
+        audioReady = true;
+    } catch (...) { /* UI timer reports unavailable audio. */ }
 }
-void MainComponent::releaseResources() { audioReady = false; }
+void MainComponent::releaseResources() {
+    audioReady = false;
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    if (keyLockLifecycle.configured()) keyLockLifecycle.releaseAudioStopped();
+#endif
+}
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
     juce::ScopedNoDenormals noDenormals;
     if (!info.buffer || !audioReady.load()) { info.clearActiveBufferRegion(); return; }
@@ -210,8 +265,26 @@ void MainComponent::resized() {
         area.removeFromTop(12);
     }
 }
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+void MainComponent::serviceKeyLockDeck(std::size_t deck, bool playing) {
+    if (!keyLockResearchEnabled || !keyLockLifecycle.configured() || deck >= broke::deckCount) return;
+    auto& control = engine.control(deck);
+    static_cast<void>(keyLockLifecycle.service(
+        deck,
+        engine.meter(deck).position.load(std::memory_order_relaxed),
+        control.loop.load(std::memory_order_relaxed),
+        static_cast<double>(control.rate.load(std::memory_order_relaxed)),
+        playing));
+}
+#endif
 void MainComponent::timerCallback() {
     engine.collectRetired();
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    if (keyLockResearchEnabled && keyLockLifecycle.configured()) {
+        for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+            serviceKeyLockDeck(deck, engine.control(deck).playing.load(std::memory_order_relaxed));
+    }
+#endif
     for (auto& deck : decks) deck->refresh();
     const auto peak = engine.masterPeak.load();
     auto meter = peak > 0.000001f ? juce::String(20.0f * std::log10(peak), 1) + " dBFS" : juce::String("— dBFS");
@@ -244,7 +317,12 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
         juce::MessageManager::callAsync([safe, result, deck] {
             if (!safe) return;
             safe->loading[deck] = false; safe->decks[deck]->setLoading(false);
+            auto* submittedClip = result->clip.get();
             if (result->clip && safe->engine.submit(deck, std::move(result->clip))) {
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+                if (safe->keyLockResearchEnabled)
+                    safe->keyLockLifecycle.noteClipSubmitted(deck, submittedClip);
+#endif
                 safe->decks[deck]->setTrack(result->name, std::move(result->peaks));
                 safe->statusMessage(text("Loaded: ", "Wczytano: ") + result->name);
             } else {

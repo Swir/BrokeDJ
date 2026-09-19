@@ -35,15 +35,30 @@ The sanitizer switch applies to GCC/Clang; MSVC uses the ordinary core tests her
 
 ## Opt-in time-stretch/key-lock prototype
 
-The M2 research adapter is deliberately disabled by default so ordinary BrokeDJ playback remains independent of the experimental dependency. To build its deterministic ratio/pitch/seek and realtime-contract tests:
+The M2 research adapter is deliberately disabled by default so ordinary BrokeDJ playback remains independent of the experimental dependency. To build its deterministic ratio/pitch/seek, owner-lifecycle and realtime-contract tests:
 
 ```sh
 cmake -S . -B build/timestretch -DBROKEDJ_BUILD_APP=OFF -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build/timestretch --parallel 2
-ctest --test-dir build/timestretch --output-on-failure -R time_stretch
+ctest --test-dir build/timestretch --output-on-failure -R 'time_stretch|deck_playback_selector|engine_keylock_source|keylock_deck_lifecycle'
 ```
 
-This fetches Signalsmith Stretch at commit `57b93f4e9206a089a45387eaa39bdc9f310d3308` and Signalsmith Linear at commit `5668673560146a9cfe38c25315071e3fd68c8317`. Passing these tests does not make key lock a production deck feature; see [`TIME_STRETCH_PROTOTYPE.md`](TIME_STRETCH_PROTOTYPE.md).
+This fetches Signalsmith Stretch at commit `57b93f4e9206a089a45387eaa39bdc9f310d3308` and Signalsmith Linear at commit `5668673560146a9cfe38c25315071e3fd68c8317`. Passing these tests does not make key lock a production-qualified deck feature; see [`TIME_STRETCH_PROTOTYPE.md`](TIME_STRETCH_PROTOTYPE.md).
+
+### Native developer lifecycle path
+
+When the native application is configured with `BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON`, the same optional stack can be exercised through the real JUCE application lifecycle without adding a user-facing key-lock button:
+
+```powershell
+cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
+cmake --build --preset windows-release --parallel 2
+ctest --preset windows-release
+.\build\windows\BrokeDJ_artefacts\Release\BrokeDJ.exe --key-lock-research
+```
+
+`--key-lock-research` is a developer-only opt-in. The app configures and removes the four deck owners only at stopped-audio device boundaries, associates a successfully submitted immutable clip with its owner, and performs non-audio staging from the message-thread lifecycle. A live seek, loop or rate change disarms the optional path immediately so `Engine` falls back to its existing production rate converter; key lock is restaged only after the deck is paused. This conservative behavior is intentional until seamless live restaging, reviewed music-domain listening and physical device deadline/underrun evidence are qualified.
+
+The flag is unavailable in builds where `BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=OFF`; ordinary playback remains independent of Signalsmith. It is not a release feature or a claim of live-performance readiness.
 
 ## Reproducible dependency / offline configuration
 
