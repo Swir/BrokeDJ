@@ -22,13 +22,29 @@ Before connecting headphones or raising monitor volume, run from the folder cont
 ```powershell
 .\BrokeDJ.exe --device-probe
 Get-Content .\BrokeDJ-device-probe.txt
+$probe = Get-Content .\BrokeDJ-device-probe.json -Raw | ConvertFrom-Json
+$probe | Format-List schema_version,mode,backend_count,output_device_count,four_output_candidate_count,safety_invariants_ok
 ```
 
-The command scans JUCE driver/output descriptors and writes `BrokeDJ-device-probe.txt` in the current working directory. The probe does **not** open a device, start an audio callback or emit audio.
+The command writes a human-readable TXT report and a schema-versioned JSON report in the current working directory. The probe does **not** call `AudioIODevice::open`, start an audio callback or emit audio. The full local mode constructs JUCE device descriptors only to query their advertised capability lists.
 
-A device marked `four_output_candidate=yes` merely advertises at least four output channels through the driver descriptor. It does not prove that outputs 3/4 are physically independent or that the selected driver works correctly under load.
+Before using the report as evidence, verify:
 
-Review the report before sharing it because device names may identify the local hardware setup.
+- `schema_version` matches the documented probe contract;
+- `calls_device_open=false`;
+- `starts_audio_callback=false`;
+- `unexpected_open_state_count=0`;
+- `safety_invariants_ok=true`.
+
+The probe checks `AudioIODevice::isOpen()` before and after capability queries and returns non-zero if an unexpectedly open descriptor is observed. This is a guard on the diagnostic path, not a qualification of the driver.
+
+A device marked `four_output_candidate=true` in JSON (`four_output_candidate=yes` in TXT) merely advertises at least four output channels through the driver descriptor. It does not prove that outputs 3/4 are physically independent or that the selected driver works correctly under load.
+
+Review both reports before sharing them because device names may identify the local hardware setup. A useful private witness record can include the SHA-256 of the JSON file instead of publishing the full hardware inventory:
+
+```powershell
+Get-FileHash .\BrokeDJ-device-probe.json -Algorithm SHA256
+```
 
 ## 2. Clean launch and resize witness
 
@@ -85,6 +101,7 @@ A useful private witness note contains:
 - BrokeDJ commit SHA and artifact/checksum;
 - Windows 11 build and display scale;
 - backend and device name from the local probe;
+- device-probe JSON schema version and SHA-256;
 - advertised and actually verified output-channel count;
 - selected sample rate and buffer size;
 - clean-launch, resize, import, switching and 4-output cue results;
