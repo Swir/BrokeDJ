@@ -15,7 +15,6 @@ struct TrackRhythmAnalysis final {
     juce::String beatError;
     juce::String keyError;
     bool cacheHit = false;
-    bool beatGridOverride = false;
 };
 
 struct TrackAnalysisOptions final {
