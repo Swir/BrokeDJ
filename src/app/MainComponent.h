@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "core/Engine.h"
 #include "Decoder.h"
+#include "TrackAnalysis.h"
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
 #include "KeyLockDeckLifecycle.h"
 #endif
@@ -26,6 +27,8 @@ public:
     std::function<void(double)> onSeekRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
+    void setRhythmPending();
+    void setRhythmAnalysis(const TrackRhythmAnalysis&);
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -34,7 +37,7 @@ public:
 private:
     broke::Engine& engine;
     std::size_t index;
-    juce::Label heading, track, time;
+    juce::Label heading, track, time, rhythm;
     Waveform waveform;
     juce::TextButton load, play, rewind, loop, cue;
     std::array<juce::Slider, 7> knobs;
@@ -53,6 +56,7 @@ private:
     void timerCallback() override;
     void browse(std::size_t);
     void load(std::size_t, const juce::File&);
+    void startTrackAnalysis(std::size_t, const juce::File&);
     void showAudioSettings();
     void statusMessage(const juce::String&);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -66,8 +70,14 @@ private:
 #endif
     std::array<std::unique_ptr<DeckPanel>, broke::deckCount> decks;
     std::array<bool, broke::deckCount> loading{};
+    std::array<broke::BeatGrid, broke::deckCount> beatGrids;
+    std::array<std::shared_ptr<std::atomic<bool>>, broke::deckCount> analysisCancelled{};
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
     juce::ThreadPool loaders{1};
+    // Analysis is deliberately separate from decoding/playback preparation so a
+    // long BPM/grid pass cannot prevent another deck from becoming playable.
+    // One worker serializes cache writes and bounds background CPU pressure.
+    juce::ThreadPool analyzers{1};
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Component::SafePointer<juce::DialogWindow> audioSettings;
     juce::Label title, subtitle, status, crossLabel, masterLabel, cueLabel, meterLabel;
