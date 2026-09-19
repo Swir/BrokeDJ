@@ -196,6 +196,110 @@ public:
         return triggerHotCue(slot, duration);
     }
 
+    // Preserve the current fractional beat phase while moving by an explicit
+    // musical distance. An active beat-derived loop is exited before the seek;
+    // explicit whole-track LOOP remains unchanged.
+    [[nodiscard]] Result jumpBeatsAt(double cursorSeconds, double trackDurationSeconds,
+                                     double deltaBeats) noexcept {
+        if (!validDeck()) return Result::invalidDeck;
+        if (!hasReviewedGrid()) return Result::gridUnavailable;
+        if (!std::isfinite(cursorSeconds) || !std::isfinite(trackDurationSeconds)
+            || !std::isfinite(deltaBeats) || cursorSeconds < 0.0
+            || trackDurationSeconds <= 0.0 || deltaBeats == 0.0
+            || std::abs(deltaBeats) > 256.0) {
+            return Result::invalidRequest;
+        }
+        if (cursorSeconds >= trackDurationSeconds) return Result::outsideTrack;
+
+        const double sourceBeat = grid.beatAtTime(cursorSeconds);
+        if (!std::isfinite(sourceBeat)) return Result::invalidRequest;
+        const double targetSeconds = grid.timeAtBeat(sourceBeat + deltaBeats);
+        if (!std::isfinite(targetSeconds) || targetSeconds < 0.0
+            || targetSeconds >= trackDurationSeconds) {
+            return Result::outsideTrack;
+        }
+
+        if (activeBeatLoopBeats > 0.0) disarmLoop();
+        engine.control(deck).seek.store(targetSeconds / trackDurationSeconds,
+                                        std::memory_order_release);
+        return Result::applied;
+    }
+
+    [[nodiscard]] Result jumpBeatsFromTransport(double deltaBeats) noexcept {
+        if (!validDeck()) return Result::invalidDeck;
+        const auto cursor = engine.meter(deck).position.load(std::memory_order_acquire);
+        const auto duration = engine.meter(deck).duration.load(std::memory_order_acquire);
+        if (!std::isfinite(duration) || duration <= 0.0) return Result::trackUnavailable;
+        return jumpBeatsAt(cursor, duration, deltaBeats);
+    }
+
+    // Apply one bounded sync decision to this follower deck. Both grids must be
+    // reviewed snapshots from owners attached to the same Engine. Validation is
+    // completed before controls mutate. The current production Engine de-clicks
+    // the resulting seek/rate discontinuity; this is not continuous phase-lock.
+    [[nodiscard]] Result syncToAt(const PerformanceDeckOwner& master,
+                                  double followerSeconds, double followerDurationSeconds,
+                                  double masterSeconds, double masterDurationSeconds,
+                                  double maxRateDelta = 0.20,
+                                  double maxPhaseCorrectionBeats = 0.50) noexcept {
+        if (!validDeck() || !master.validDeck()) return Result::invalidDeck;
+        if (&engine != &master.engine || deck == master.deck) return Result::invalidRequest;
+        if (!hasReviewedGrid() || !master.hasReviewedGrid()) return Result::gridUnavailable;
+        if (!std::isfinite(followerSeconds) || !std::isfinite(followerDurationSeconds)
+            || !std::isfinite(masterSeconds) || !std::isfinite(masterDurationSeconds)
+            || !std::isfinite(maxRateDelta) || !std::isfinite(maxPhaseCorrectionBeats)
+            || followerSeconds < 0.0 || masterSeconds < 0.0
+            || followerDurationSeconds <= 0.0 || masterDurationSeconds <= 0.0
+            || maxRateDelta < 0.0 || maxRateDelta > 0.50
+            || maxPhaseCorrectionBeats < 0.0 || maxPhaseCorrectionBeats > 0.50) {
+            return Result::invalidRequest;
+        }
+        if (followerSeconds >= followerDurationSeconds || masterSeconds >= masterDurationSeconds)
+            return Result::outsideTrack;
+
+        const auto plan = planBeatSync(grid, followerSeconds,
+                                       master.grid, masterSeconds, maxRateDelta);
+        if (!plan.valid || !std::isfinite(plan.followerRate)
+            || !std::isfinite(plan.followerTargetSeconds)
+            || !std::isfinite(plan.phaseErrorBeats)) {
+            return Result::invalidRequest;
+        }
+        if (plan.followerTargetSeconds < 0.0
+            || plan.followerTargetSeconds >= followerDurationSeconds) {
+            return Result::outsideTrack;
+        }
+        if (std::abs(plan.phaseErrorBeats) > maxPhaseCorrectionBeats + 1.0e-12)
+            return Result::invalidRequest;
+        if (plan.followerRate < 0.5 || plan.followerRate > 1.5)
+            return Result::invalidRequest;
+
+        if (activeBeatLoopBeats > 0.0) disarmLoop();
+        auto& control = engine.control(deck);
+        control.rate.store(static_cast<float>(plan.followerRate), std::memory_order_release);
+        if (std::abs(plan.phaseErrorBeats) > 1.0e-9) {
+            control.seek.store(plan.followerTargetSeconds / followerDurationSeconds,
+                               std::memory_order_release);
+        }
+        return Result::applied;
+    }
+
+    [[nodiscard]] Result syncToTransport(const PerformanceDeckOwner& master,
+                                         double maxRateDelta = 0.20,
+                                         double maxPhaseCorrectionBeats = 0.50) noexcept {
+        if (!validDeck() || !master.validDeck()) return Result::invalidDeck;
+        const auto followerSeconds = engine.meter(deck).position.load(std::memory_order_acquire);
+        const auto followerDuration = engine.meter(deck).duration.load(std::memory_order_acquire);
+        const auto masterSeconds = engine.meter(master.deck).position.load(std::memory_order_acquire);
+        const auto masterDuration = engine.meter(master.deck).duration.load(std::memory_order_acquire);
+        if (!std::isfinite(followerDuration) || followerDuration <= 0.0
+            || !std::isfinite(masterDuration) || masterDuration <= 0.0) {
+            return Result::trackUnavailable;
+        }
+        return syncToAt(master, followerSeconds, followerDuration,
+                        masterSeconds, masterDuration,
+                        maxRateDelta, maxPhaseCorrectionBeats);
+    }
+
     void clearHotCue(std::size_t slot) noexcept {
         if (slot < hotCueCount) hotCues[slot] = {};
     }
