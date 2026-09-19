@@ -21,22 +21,21 @@ constexpr std::size_t minimumBeatPairs = 3;
     return std::isfinite(value) ? std::abs(static_cast<double>(value)) : 0.0;
 }
 
-[[nodiscard]] double normalizedCorrelation(const std::vector<double>& onset,
+[[nodiscard]] double normalizedCorrelation(const std::vector<double>& signal,
                                            std::size_t lag) {
-    if (lag == 0 || lag >= onset.size()) return 0.0;
+    if (lag == 0 || lag >= signal.size() || signal.size() - lag < minimumBeatPairs)
+        return 0.0;
     double dot = 0.0;
     double a2 = 0.0;
     double b2 = 0.0;
-    std::size_t contributing = 0;
-    for (std::size_t i = lag; i < onset.size(); ++i) {
-        const double a = onset[i];
-        const double b = onset[i - lag];
+    for (std::size_t i = lag; i < signal.size(); ++i) {
+        const double a = signal[i];
+        const double b = signal[i - lag];
         dot += a * b;
         a2 += a * a;
         b2 += b * b;
-        if (a > 0.0 || b > 0.0) ++contributing;
     }
-    if (contributing < minimumBeatPairs || a2 <= 1.0e-18 || b2 <= 1.0e-18) return 0.0;
+    if (a2 <= 1.0e-18 || b2 <= 1.0e-18) return 0.0;
     return std::clamp(dot / std::sqrt(a2 * b2), 0.0, 1.0);
 }
 
@@ -122,6 +121,17 @@ BeatAnalysisResult BeatAnalysisAccumulator::finish() {
     const double onsetEnergy = std::inner_product(onset.begin(), onset.end(), onset.begin(), 0.0);
     if (onsetEnergy <= 1.0e-12) return result;
 
+    // Autocorrelating a non-negative onset envelope without removing its DC
+    // component can make broadband/noisy material appear periodic. Keep the
+    // positive onset envelope for phase anchoring, but use a centered copy for
+    // tempo scoring so the confidence reflects repeated structure rather than
+    // the envelope's mean level.
+    const double onsetMean = std::accumulate(onset.begin(), onset.end(), 0.0)
+        / static_cast<double>(onset.size());
+    std::vector<double> correlationSignal(onset.size(), 0.0);
+    for (std::size_t i = 0; i < onset.size(); ++i)
+        correlationSignal[i] = onset[i] - onsetMean;
+
     const auto lagMin = static_cast<std::size_t>(std::max<long long>(1,
         std::llround(actualEnvelopeRate * 60.0 / options.maxBpm)));
     const auto lagMaxCandidate = static_cast<std::size_t>(std::max<long long>(1,
@@ -133,8 +143,9 @@ BeatAnalysisResult BeatAnalysisAccumulator::finish() {
     std::size_t bestLag = 0;
     double bestScore = 0.0;
     for (std::size_t lag = lagMin; lag <= lagMax; ++lag) {
-        double score = normalizedCorrelation(onset, lag);
-        if (lag * 2 <= lagMax) score += 0.12 * normalizedCorrelation(onset, lag * 2);
+        double score = normalizedCorrelation(correlationSignal, lag);
+        if (lag * 2 <= lagMax)
+            score += 0.12 * normalizedCorrelation(correlationSignal, lag * 2);
         scores[lag] = score;
         if (score > bestScore) {
             bestScore = score;
@@ -156,7 +167,8 @@ BeatAnalysisResult BeatAnalysisAccumulator::finish() {
     }
 
     const double bpm = 60.0 * actualEnvelopeRate / refinedLag;
-    if (!std::isfinite(bpm) || bpm < options.minBpm - 0.5 || bpm > options.maxBpm + 0.5) return result;
+    if (!std::isfinite(bpm) || bpm < options.minBpm - 0.5 || bpm > options.maxBpm + 0.5)
+        return result;
 
     constexpr std::size_t phaseTolerance = 2;
     const double maxOnset = *std::max_element(onset.begin(), onset.end());
@@ -184,7 +196,8 @@ BeatAnalysisResult BeatAnalysisAccumulator::finish() {
             const auto begin = centre > phaseTolerance ? centre - phaseTolerance : 0;
             const auto localEnd = std::min(onset.size() - 1, centre + phaseTolerance);
             double local = 0.0;
-            for (std::size_t i = begin; i <= localEnd; ++i) local = std::max(local, onset[i]);
+            for (std::size_t i = begin; i <= localEnd; ++i)
+                local = std::max(local, onset[i]);
             sum += local;
             ++count;
         }
