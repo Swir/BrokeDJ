@@ -22,6 +22,7 @@ struct Totals final {
     int rows = 0;
     int sourceErrors = 0;
     int bpmReferences = 0;
+    int bpmEstimates = 0;
     int bpmPassed = 0;
     int keyReferences = 0;
     int keyPassed = 0;
@@ -175,6 +176,7 @@ int main(int argc, char** argv) {
         if (ref.bpm) {
             ++totals.bpmReferences;
             if (result.beat.valid) {
+                ++totals.bpmEstimates;
                 const double error = std::abs(result.beat.bpm - *ref.bpm);
                 totals.bpmAbsoluteErrorSum += error;
                 const bool pass = error <= ref.bpmTolerance;
@@ -212,9 +214,11 @@ int main(int argc, char** argv) {
     std::cout << "SUMMARY\trows=" << totals.rows
               << "\tsource_errors=" << totals.sourceErrors
               << "\tbpm=" << totals.bpmPassed << '/' << totals.bpmReferences
+              << "\tbpm_estimates=" << totals.bpmEstimates
               << "\tkey=" << totals.keyPassed << '/' << totals.keyReferences;
-    if (totals.bpmReferences > 0)
-        std::cout << "\tbpm_mae=" << (totals.bpmAbsoluteErrorSum / totals.bpmReferences);
+    if (totals.bpmEstimates > 0)
+        std::cout << "\tbpm_mae_detected="
+                  << (totals.bpmAbsoluteErrorSum / totals.bpmEstimates);
     std::cout << '\n';
 
     const bool passed = !manifestError && totals.sourceErrors == 0
