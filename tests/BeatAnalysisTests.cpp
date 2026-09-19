@@ -82,6 +82,75 @@ void chunkingIsDeterministic() {
           "chunking does not change beat-grid anchor");
 }
 
+void editableBeatGridSupportsTempoChanges() {
+    broke::BeatAnalysisResult analysis;
+    analysis.valid = true;
+    analysis.bpm = 120.0;
+    analysis.beatZeroSeconds = 0.5;
+    analysis.confidence = 0.9;
+    analysis.segments.push_back({0.5, 120.0});
+
+    broke::BeatGrid grid(analysis);
+    check(grid.valid(), "analysis result seeds a valid editable grid");
+    check(grid.segments().size() == 1, "seeded grid starts with one tempo segment");
+    check(std::abs(grid.beatAtTime(1.0) - 1.0) < 1.0e-9,
+          "single-tempo grid maps time to beats");
+    check(std::abs(grid.timeAtBeat(4.0) - 2.5) < 1.0e-9,
+          "single-tempo grid maps beats to time");
+    check(std::abs(grid.quantizeTime(1.24, 0.5) - 1.25) < 1.0e-9,
+          "grid quantization uses musical beat steps");
+
+    check(grid.insertTempoChangeAtBeat(8.0, 90.0),
+          "tempo change can be inserted at an exact beat");
+    check(grid.segments().size() == 2, "tempo map contains the inserted segment");
+    check(std::abs(grid.segments()[1].startSeconds - 4.5) < 1.0e-9,
+          "tempo change boundary preserves beat continuity");
+    check(std::abs(grid.beatAtTime(4.5) - 8.0) < 1.0e-9,
+          "tempo boundary maps to the requested beat");
+    check(std::abs(grid.timeAtBeat(10.0) - (4.5 + 120.0 / 90.0)) < 1.0e-9,
+          "post-change beat mapping uses the new tempo");
+    check(std::abs(grid.beatAtTime(grid.timeAtBeat(13.75)) - 13.75) < 1.0e-9,
+          "variable-tempo beat/time mapping is reversible");
+
+    check(grid.setSegmentBpm(1, 100.0), "tempo segment can be edited safely");
+    check(std::abs(grid.timeAtBeat(10.0) - 5.7) < 1.0e-9,
+          "edited segment tempo immediately changes mapping");
+    check(!grid.setSegmentBpm(1, std::numeric_limits<double>::quiet_NaN()),
+          "non-finite manual tempo is rejected without corrupting the grid");
+    check(!grid.insertTempoChangeAtBeat(8.0, 110.0),
+          "duplicate tempo-change boundary is rejected");
+
+    check(grid.setBeatZero(0.75), "beat-zero edit shifts the complete tempo map");
+    check(std::abs(grid.segments()[0].startSeconds - 0.75) < 1.0e-9
+          && std::abs(grid.segments()[1].startSeconds - 4.75) < 1.0e-9,
+          "beat-zero edit preserves relative tempo-change boundaries");
+    check(std::abs(grid.beatAtTime(0.25) + 1.0) < 1.0e-9,
+          "times before beat zero retain a meaningful negative beat position");
+
+    check(grid.removeTempoChange(1), "later tempo change can be removed");
+    check(grid.segments().size() == 1 && grid.valid(),
+          "tempo-map removal returns to a valid single-tempo grid");
+    check(!grid.removeTempoChange(0), "base grid segment cannot be removed");
+
+    broke::BeatGrid transactional;
+    check(transactional.reset(0.25, 128.0), "manual grid can be initialized directly");
+    const auto oldZero = transactional.beatZeroSeconds();
+    check(!transactional.setBeatZero(-1.0), "negative beat zero is rejected transactionally");
+    check(std::abs(transactional.beatZeroSeconds() - oldZero) < 1.0e-12,
+          "rejected edit leaves the previous grid untouched");
+    check(std::isnan(transactional.quantizeTime(1.0, 0.0)),
+          "invalid quantization step fails closed");
+
+    broke::BeatAnalysisResult invalidAnalysis;
+    invalidAnalysis.valid = true;
+    invalidAnalysis.bpm = 120.0;
+    invalidAnalysis.beatZeroSeconds = 0.5;
+    invalidAnalysis.segments = {{0.5, 120.0}, {0.5, 130.0}};
+    check(!transactional.reset(invalidAnalysis),
+          "non-increasing imported tempo map is rejected");
+    check(transactional.valid(), "failed import does not destroy the existing grid");
+}
+
 void nonPeriodicMaterialDoesNotFabricateTempo() {
     constexpr double sampleRate = 48000.0;
     constexpr double seconds = 12.0;
@@ -147,10 +216,11 @@ int main() {
         checkEstimate(128.0, 0.37, true);
         checkEstimate(90.0, 1.10, false);
         chunkingIsDeterministic();
+        editableBeatGridSupportsTempoChanges();
         nonPeriodicMaterialDoesNotFabricateTempo();
         invalidAndNonFiniteInputsFailSafely();
         analysisWorkIsBounded();
-        std::cout << "PASS: " << checks << " beat-analysis checks\n";
+        std::cout << "PASS: " << checks << " beat-analysis/grid checks\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
