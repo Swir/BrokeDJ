@@ -150,6 +150,7 @@ void run() {
     // Adopt clips and let fixed buffers/control smoothers reach normal operation
     // before measuring the callback itself.
     renderBlock(engine, audio, out);
+    check(engine.setLoopRegionSeconds(0, 0.25, 1.25), "beat-loop realtime region armed");
     for (std::size_t deck = 0; deck < 2; ++deck) {
         auto& control = engine.control(deck);
         control.playing = true;
@@ -187,8 +188,8 @@ void run() {
 
     const auto observedAllocations = allocations.load(std::memory_order_relaxed);
     const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
-    check(observedAllocations == 0, "audio callback performs no heap allocation under transport/FX stress");
-    check(observedDeallocations == 0, "audio callback performs no heap deallocation under transport/FX stress");
+    check(observedAllocations == 0, "audio callback performs no heap allocation under transport/FX/beat-loop stress");
+    check(observedDeallocations == 0, "audio callback performs no heap deallocation under transport/FX/beat-loop stress");
     for (const auto& channel : audio) {
         check(std::all_of(channel.begin(), channel.end(), [](float value) { return std::isfinite(value); }),
               "callback output remains finite after stress");
@@ -201,6 +202,7 @@ void run() {
               << " heap_deallocations=" << observedDeallocations
               << " elapsed_ns=" << elapsedNs
               << " ns_per_rendered_frame=" << nsPerFrame
+              << " beat_loop_region_active=1"
               << " timing_is_diagnostic_only=1\n";
 
     // Release-build CI records these timing diagnostics across representative
