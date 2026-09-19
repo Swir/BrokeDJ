@@ -214,6 +214,17 @@ if(BROKEDJ_BUILD_APP)
         target_compile_options(brokedj_decoder PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
     endif()
 
+    # Local corpus validator. It is intentionally not an automatic CTest because
+    # the repository does not redistribute reference music. The target is built
+    # in normal app builds so the manifest-driven validator cannot silently rot.
+    add_executable(brokedj_analysis_validator tools/AnalysisValidator.cpp)
+    target_link_libraries(brokedj_analysis_validator PRIVATE brokedj_decoder)
+    if(MSVC)
+        target_compile_options(brokedj_analysis_validator PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(brokedj_analysis_validator PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    endif()
+
     if(BUILD_TESTING)
         add_executable(brokedj_decoder_tests tests/DecoderTests.cpp)
         target_link_libraries(brokedj_decoder_tests PRIVATE brokedj_decoder)
