@@ -19,6 +19,14 @@ juce::String text(const char* english, const char* polish) {
     static const bool usePolish = juce::SystemStats::getUserLanguage().startsWithIgnoreCase("pl");
     return juce::String::fromUTF8(usePolish ? polish : english);
 }
+void Waveform::setBeatGrid(const broke::BeatGrid& grid, bool manual) {
+    beatGrid = grid;
+    manualGrid = manual;
+    repaint();
+}
+void Waveform::setDuration(double seconds) noexcept {
+    durationSeconds = std::isfinite(seconds) && seconds > 0.0 ? seconds : 0.0;
+}
 void Waveform::paint(juce::Graphics& g) {
     auto area = getLocalBounds().toFloat();
     g.setColour(background); g.fillRoundedRectangle(area, 7.0f);
@@ -35,6 +43,27 @@ void Waveform::paint(juce::Graphics& g) {
         const float h = std::max(0.6f, peaks[i] * (middle - 5));
         g.drawLine(x, middle - h, x, middle + h, 1.0f);
     }
+
+    if (beatGrid.valid() && durationSeconds > 0.0) {
+        const double firstBeatValue = beatGrid.beatAtTime(0.0);
+        const double lastBeatValue = beatGrid.beatAtTime(durationSeconds);
+        if (std::isfinite(firstBeatValue) && std::isfinite(lastBeatValue)) {
+            const auto firstBeat = static_cast<long long>(std::floor(firstBeatValue));
+            const auto lastBeat = static_cast<long long>(std::ceil(lastBeatValue));
+            const auto span = std::max<long long>(0, lastBeat - firstBeat + 1);
+            long long stride = 1;
+            while (span / stride > 256) stride *= 2;
+            for (long long beat = firstBeat; beat <= lastBeat; beat += stride) {
+                const double seconds = beatGrid.timeAtBeat(static_cast<double>(beat));
+                if (!std::isfinite(seconds) || seconds < 0.0 || seconds > durationSeconds) continue;
+                const float x = static_cast<float>(seconds / durationSeconds) * area.getWidth();
+                const bool barLine = beat % 4 == 0;
+                g.setColour((manualGrid ? pale : muted).withAlpha(barLine ? 0.55f : 0.28f));
+                g.drawVerticalLine(static_cast<int>(std::lround(x)), 4.0f, area.getHeight() - 4.0f);
+            }
+        }
+    }
+
     const float x = juce::jlimit(0.0f, 1.0f, progress) * area.getWidth();
     g.setColour(pale); g.drawLine(x, 3, x, area.getHeight() - 3, 2.0f);
 }
@@ -101,6 +130,42 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
         knobNames[i].setJustificationType(juce::Justification::centred);
         knob.setName(names[i]); addAndMakeVisible(knob); addAndMakeVisible(knobNames[i]);
     }
+
+    configureLabel(gridZeroLabel, text("GRID ZERO", "ZERO SIATKI"), 10);
+    configureLabel(gridBpmLabel, text("GRID BPM", "BPM SIATKI"), 10);
+    gridZeroLabel.setJustificationType(juce::Justification::centred);
+    gridBpmLabel.setJustificationType(juce::Justification::centred);
+    for (auto* slider : {&gridZero, &gridBpm}) {
+        slider->setSliderStyle(juce::Slider::LinearHorizontal);
+        slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 76, 20);
+        slider->setChangeNotificationOnlyOnRelease(true);
+        slider->setEnabled(false);
+        addAndMakeVisible(slider);
+    }
+    gridZero.setRange(0.0, 24.0 * 60.0 * 60.0, 0.001);
+    gridZero.setNumDecimalPlacesToDisplay(3);
+    gridZero.setTextValueSuffix(" s");
+    gridBpm.setRange(30.0, 300.0, 0.01);
+    gridBpm.setNumDecimalPlacesToDisplay(2);
+    gridBpm.setTextValueSuffix(" BPM");
+    const auto commitGridEdit = [this] {
+        if (activeBeatGrid.valid() && onGridEdit)
+            onGridEdit(gridZero.getValue(), gridBpm.getValue());
+    };
+    gridZero.onValueChange = commitGridEdit;
+    gridBpm.onValueChange = commitGridEdit;
+    gridReset.setButtonText(text("Reset grid", "Reset siatki"));
+    gridReset.setEnabled(false);
+    gridReset.onClick = [this] { if (onGridReset) onGridReset(); };
+    addAndMakeVisible(gridZeroLabel); addAndMakeVisible(gridBpmLabel); addAndMakeVisible(gridReset);
+
+    const auto gridTooltip = text(
+        "Manual base-grid correction. Beat zero shifts all preserved tempo-change boundaries; GRID BPM edits segment 0 only. Changes are stored locally outside the audio callback.",
+        "Ręczna korekta podstawy siatki. Zero przesuwa wszystkie zachowane zmiany tempa; BPM SIATKI edytuje tylko segment 0. Zmiany są zapisywane lokalnie poza callbackiem audio.");
+    gridZero.setTooltip(gridTooltip);
+    gridBpm.setTooltip(gridTooltip);
+    gridReset.setTooltip(text("Erase the local manual override and return to the detected grid for this file.",
+                              "Usuń lokalną ręczną korektę i wróć do wykrytej siatki dla tego pliku."));
     knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Key lock has no GUI control yet.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Key lock nie ma jeszcze kontrolki GUI."));
     knobs[5].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
     loop.setTooltip(text("Loops the whole track, not a beat-length loop.", "Zapętla cały utwór, nie wybraną liczbę beatów."));
@@ -115,56 +180,90 @@ void DeckPanel::setTrack(const juce::String& name, std::vector<float> peaks) {
     waveform.peaks = std::move(peaks); waveform.repaint();
 }
 void DeckPanel::setRhythmPending() {
+    rhythmReady = false;
+    activeBeatGrid = {};
+    manualBeatGrid = false;
+    gridZero.setEnabled(false); gridBpm.setEnabled(false); gridReset.setEnabled(false);
+    waveform.setBeatGrid({}, false);
     rhythm.setText(text("Analyzing BPM / beat grid / key…", "Analiza BPM / siatki rytmu / tonacji…"), juce::dontSendNotification);
     rhythm.setTooltip(text("Offline musical analysis runs in a background worker and never in the audio callback.",
                            "Analiza muzyczna offline działa w tle i nigdy w callbacku audio."));
 }
-void DeckPanel::setRhythmAnalysis(const TrackRhythmAnalysis& analysis) {
+void DeckPanel::setRhythmAnalysis(const TrackRhythmAnalysis& analysis,
+                                  const broke::BeatGrid& grid,
+                                  bool manual) {
+    rhythmAnalysis = analysis;
+    rhythmReady = true;
+    activeBeatGrid = grid;
+    manualBeatGrid = manual;
+    refreshRhythmDisplay();
+}
+void DeckPanel::setBeatGrid(const broke::BeatGrid& grid, bool manual) {
+    activeBeatGrid = grid;
+    manualBeatGrid = manual;
+    if (rhythmReady) refreshRhythmDisplay();
+    else waveform.setBeatGrid(grid, manual);
+}
+void DeckPanel::refreshRhythmDisplay() {
     juce::String summary;
-    if (analysis.beat.valid) {
-        summary = "BPM " + juce::String(analysis.beat.bpm, 1)
-            + "  /  GRID +" + juce::String(analysis.beat.beatZeroSeconds, 3) + " s";
+    if (activeBeatGrid.valid() && !activeBeatGrid.segments().empty()) {
+        summary = "BPM " + juce::String(activeBeatGrid.segments().front().bpm, 1)
+            + (manualBeatGrid ? "  /  GRID* +" : "  /  GRID +")
+            + juce::String(activeBeatGrid.beatZeroSeconds(), 3) + " s";
     } else {
         summary = text("BPM —  /  GRID —", "BPM —  /  SIATKA —");
     }
 
-    if (analysis.key.valid) {
-        const auto mode = analysis.key.mode == broke::KeyMode::major
+    if (rhythmAnalysis.key.valid) {
+        const auto mode = rhythmAnalysis.key.mode == broke::KeyMode::major
             ? text("MAJ", "DUR") : text("MIN", "MOLL");
         summary += text("  /  KEY ", "  /  TONACJA ")
-            + juce::String(broke::keyName(analysis.key.tonic)) + " " + mode;
+            + juce::String(broke::keyName(rhythmAnalysis.key.tonic)) + " " + mode;
     } else {
         summary += text("  /  KEY —", "  /  TONACJA —");
     }
     rhythm.setText(summary, juce::dontSendNotification);
 
-    auto tooltip = text(
-        "Offline tempo/grid and musical-key estimates. Current accuracy evidence is deterministic/synthetic; manual grid editing and sync are not enabled yet.",
-        "Szacunki offline tempa/siatki i tonacji. Obecna walidacja dokładności jest deterministyczna/syntetyczna; ręczna edycja siatki i sync nie są jeszcze włączone.");
-    if (analysis.beat.valid) {
+    auto tooltip = manualBeatGrid
+        ? text("Manual beat-grid override is active for this exact local file. Key metadata remains the offline estimate.",
+               "Aktywna jest ręczna korekta siatki dla dokładnie tego lokalnego pliku. Tonacja pozostaje wynikiem analizy offline.")
+        : text("Offline tempo/grid and musical-key estimates. Current accuracy evidence is deterministic/synthetic; sync is not enabled yet.",
+               "Szacunki offline tempa/siatki i tonacji. Obecna walidacja dokładności jest deterministyczna/syntetyczna; sync nie jest jeszcze włączony.");
+    if (rhythmAnalysis.beat.valid) {
         const int confidence = juce::jlimit(0, 100,
-            static_cast<int>(std::lround(analysis.beat.confidence * 100.0)));
+            static_cast<int>(std::lround(rhythmAnalysis.beat.confidence * 100.0)));
         tooltip += text(" Tempo confidence: ", " Pewność tempa: ") + juce::String(confidence) + "%";
-    } else if (analysis.beatError.isNotEmpty()) {
-        tooltip += " " + analysis.beatError;
+    } else if (rhythmAnalysis.beatError.isNotEmpty()) {
+        tooltip += " " + rhythmAnalysis.beatError;
     }
-    if (analysis.key.valid) {
+    if (rhythmAnalysis.key.valid) {
         const int confidence = juce::jlimit(0, 100,
-            static_cast<int>(std::lround(analysis.key.confidence * 100.0)));
+            static_cast<int>(std::lround(rhythmAnalysis.key.confidence * 100.0)));
         tooltip += text(" Key confidence: ", " Pewność tonacji: ") + juce::String(confidence) + "%";
-    } else if (analysis.keyError.isNotEmpty()) {
-        tooltip += " " + analysis.keyError;
+    } else if (rhythmAnalysis.keyError.isNotEmpty()) {
+        tooltip += " " + rhythmAnalysis.keyError;
     }
-    if (analysis.error.isNotEmpty()) tooltip += " " + analysis.error;
-    if (analysis.cacheHit)
+    if (rhythmAnalysis.error.isNotEmpty()) tooltip += " " + rhythmAnalysis.error;
+    if (rhythmAnalysis.cacheHit)
         tooltip += text(" Loaded from local analysis cache.", " Wczytano z lokalnego cache analizy.");
     rhythm.setTooltip(tooltip);
+
+    const bool editable = activeBeatGrid.valid() && !activeBeatGrid.segments().empty();
+    gridZero.setEnabled(editable);
+    gridBpm.setEnabled(editable);
+    gridReset.setEnabled(editable && manualBeatGrid);
+    if (editable) {
+        gridZero.setValue(activeBeatGrid.beatZeroSeconds(), juce::dontSendNotification);
+        gridBpm.setValue(activeBeatGrid.segments().front().bpm, juce::dontSendNotification);
+    }
+    waveform.setBeatGrid(activeBeatGrid, manualBeatGrid);
 }
 void DeckPanel::refresh() {
     const auto& meter = engine.meter(index);
     const auto duration = meter.duration.load(), position = meter.position.load();
     time.setText(clockText(position) + " / " + clockText(duration), juce::dontSendNotification);
     waveform.progress = duration > 0 ? static_cast<float>(position / duration) : 0;
+    waveform.setDuration(duration);
     waveform.repaint();
     play.setButtonText(engine.control(index).playing.load() ? "PAUSE" : "PLAY");
 }
@@ -177,13 +276,19 @@ void DeckPanel::resized() {
     auto top = area.removeFromTop(24); time.setBounds(top.removeFromRight(160)); heading.setBounds(top);
     track.setBounds(area.removeFromTop(24));
     rhythm.setBounds(area.removeFromTop(18)); area.removeFromTop(4);
-    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 164)));
-    area.removeFromTop(8);
+    waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 210)));
+    area.removeFromTop(6);
     auto buttons = area.removeFromTop(30);
     std::array<juce::TextButton*, 5> list {&load, &play, &rewind, &loop, &cue};
     const int buttonWidth = buttons.getWidth() / 5;
     for (auto* button : list) button->setBounds(buttons.removeFromLeft(buttonWidth).reduced(2, 0));
-    area.removeFromTop(6);
+    area.removeFromTop(4);
+    auto gridArea = area.removeFromTop(44);
+    gridReset.setBounds(gridArea.removeFromRight(96).reduced(2, 7));
+    auto zeroArea = gridArea.removeFromLeft(gridArea.getWidth() / 2);
+    gridZeroLabel.setBounds(zeroArea.removeFromTop(14)); gridZero.setBounds(zeroArea);
+    gridBpmLabel.setBounds(gridArea.removeFromTop(14)); gridBpm.setBounds(gridArea);
+    area.removeFromTop(4);
     const int knobWidth = area.getWidth() / 7;
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         auto slot = area.removeFromLeft(knobWidth); knobNames[i].setBounds(slot.removeFromTop(18)); knobs[i].setBounds(slot);
@@ -232,6 +337,10 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
         decks[i] = std::make_unique<DeckPanel>(engine, i);
         decks[i]->onBrowse = [this, i] { browse(i); };
         decks[i]->onDrop = [this, i](const juce::File& file) { load(i, file); };
+        decks[i]->onGridEdit = [this, i](double beatZero, double bpm) {
+            applyBeatGridEdit(i, beatZero, bpm);
+        };
+        decks[i]->onGridReset = [this, i] { resetBeatGridEdit(i); };
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
         static_cast<void>(keyLockLifecycle.setEnabled(i, keyLockResearchEnabled));
         decks[i]->onBeforePlay = [this, i] {
@@ -374,6 +483,11 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
                 if (safe->keyLockResearchEnabled)
                     safe->keyLockLifecycle.noteClipSubmitted(deck, submittedClip);
 #endif
+                safe->gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel);
+                safe->deckFiles[deck] = file;
+                safe->detectedBeatGrids[deck] = {};
+                safe->beatGrids[deck] = {};
+                safe->gridIsManual[deck] = false;
                 safe->decks[deck]->setTrack(result->name, std::move(result->peaks));
                 safe->startTrackAnalysis(deck, file);
                 safe->statusMessage(text("Loaded: ", "Wczytano: ") + result->name);
@@ -389,26 +503,91 @@ void MainComponent::startTrackAnalysis(std::size_t deck, const juce::File& file)
     if (analysisCancelled[deck]) analysisCancelled[deck]->store(true);
     auto stop = std::make_shared<std::atomic<bool>>(false);
     analysisCancelled[deck] = stop;
+    detectedBeatGrids[deck] = {};
     beatGrids[deck] = {};
+    gridIsManual[deck] = false;
     decks[deck]->setRhythmPending();
 
     juce::Component::SafePointer<MainComponent> safe(this);
     analyzers.addJob([safe, stop, file, deck] {
         TrackAnalysisCache cache;
+        TrackBeatGridOverrideStore overrides;
         auto result = std::make_shared<TrackRhythmAnalysis>(
             analyzeTrackRhythmCached(file, *stop, cache));
         if (stop->load()) return;
 
-        broke::BeatGrid grid(result->beat);
-        if (result->beat.valid && !grid.valid()) {
+        broke::BeatGrid detected(result->beat);
+        if (result->beat.valid && !detected.valid()) {
             result->beat = {};
             result->beatError = "Detected rhythm metadata failed beat-grid validation.";
+            detected = {};
         }
-        juce::MessageManager::callAsync([safe, stop, result, grid, deck] {
+        const auto selection = selectTrackBeatGrid(file, result->beat, overrides);
+        juce::MessageManager::callAsync([safe, stop, result, detected, selection, deck, file] {
             if (!safe || stop->load() || safe->analysisCancelled[deck] != stop) return;
+            if (safe->deckFiles[deck].getFullPathName() != file.getFullPathName()) return;
             safe->analysisCancelled[deck].reset();
-            safe->beatGrids[deck] = grid.valid() ? grid : broke::BeatGrid{};
-            safe->decks[deck]->setRhythmAnalysis(*result);
+            safe->detectedBeatGrids[deck] = detected.valid() ? detected : broke::BeatGrid{};
+            safe->beatGrids[deck] = selection.grid.valid() ? selection.grid : broke::BeatGrid{};
+            safe->gridIsManual[deck] = selection.manualOverride;
+            safe->decks[deck]->setRhythmAnalysis(*result, safe->beatGrids[deck], selection.manualOverride);
+        });
+    });
+}
+void MainComponent::applyBeatGridEdit(std::size_t deck, double beatZeroSeconds, double bpm) {
+    if (deck >= broke::deckCount || !beatGrids[deck].valid() || !deckFiles[deck].existsAsFile()) {
+        statusMessage(text("Beat grid is not ready for editing.", "Siatka rytmu nie jest gotowa do edycji."));
+        return;
+    }
+
+    auto edited = beatGrids[deck];
+    if (!edited.setBeatZero(beatZeroSeconds) || !edited.setSegmentBpm(0, bpm)) {
+        statusMessage(text("Rejected invalid beat-grid correction.", "Odrzucono nieprawidłową korektę siatki."));
+        decks[deck]->setBeatGrid(beatGrids[deck], gridIsManual[deck]);
+        return;
+    }
+
+    const auto file = deckFiles[deck];
+    const auto generation = gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
+    beatGrids[deck] = edited;
+    gridIsManual[deck] = true;
+    decks[deck]->setBeatGrid(edited, true);
+
+    juce::Component::SafePointer<MainComponent> safe(this);
+    analyzers.addJob([safe, file, deck, generation, edited] {
+        if (!safe || safe->gridEditGeneration[deck].load(std::memory_order_acquire) != generation) return;
+        TrackBeatGridOverrideStore store;
+        const bool stored = store.store(file, edited);
+        juce::MessageManager::callAsync([safe, file, deck, generation, stored] {
+            if (!safe || safe->gridEditGeneration[deck].load(std::memory_order_acquire) != generation) return;
+            if (safe->deckFiles[deck].getFullPathName() != file.getFullPathName()) return;
+            safe->statusMessage(stored
+                ? text("Manual beat grid saved locally.", "Ręczna siatka rytmu zapisana lokalnie.")
+                : text("Manual grid is active for this session, but local persistence failed.",
+                       "Ręczna siatka działa w tej sesji, ale zapis lokalny nie powiódł się."));
+        });
+    });
+}
+void MainComponent::resetBeatGridEdit(std::size_t deck) {
+    if (deck >= broke::deckCount || !deckFiles[deck].existsAsFile()) return;
+    const auto file = deckFiles[deck];
+    const auto generation = gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
+    beatGrids[deck] = detectedBeatGrids[deck];
+    gridIsManual[deck] = false;
+    decks[deck]->setBeatGrid(beatGrids[deck], false);
+
+    juce::Component::SafePointer<MainComponent> safe(this);
+    analyzers.addJob([safe, file, deck, generation] {
+        if (!safe || safe->gridEditGeneration[deck].load(std::memory_order_acquire) != generation) return;
+        TrackBeatGridOverrideStore store;
+        const bool erased = store.erase(file);
+        juce::MessageManager::callAsync([safe, file, deck, generation, erased] {
+            if (!safe || safe->gridEditGeneration[deck].load(std::memory_order_acquire) != generation) return;
+            if (safe->deckFiles[deck].getFullPathName() != file.getFullPathName()) return;
+            safe->statusMessage(erased
+                ? text("Manual beat grid reset to detector result.", "Ręczna siatka zresetowana do wyniku detektora.")
+                : text("Grid reset is active for this session, but the stored override could not be removed.",
+                       "Reset siatki działa w tej sesji, ale nie udało się usunąć zapisanej korekty."));
         });
     });
 }
