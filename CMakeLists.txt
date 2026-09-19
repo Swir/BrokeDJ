@@ -68,6 +68,11 @@ if(BUILD_TESTING)
     target_link_libraries(brokedj_performance_deck_owner_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME performance_deck_owner COMMAND brokedj_performance_deck_owner_tests)
     set_tests_properties(performance_deck_owner PROPERTIES TIMEOUT 30)
+
+    add_executable(brokedj_tempo_segment_editor_model_tests tests/TempoSegmentEditorModelTests.cpp)
+    target_link_libraries(brokedj_tempo_segment_editor_model_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME tempo_segment_editor_model COMMAND brokedj_tempo_segment_editor_model_tests)
+    set_tests_properties(tempo_segment_editor_model PROPERTIES TIMEOUT 30)
 endif()
 
 if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)

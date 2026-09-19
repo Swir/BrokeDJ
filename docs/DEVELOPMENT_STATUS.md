@@ -4,52 +4,49 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch: `main` at merged PR #36 checkpoint `95792fdbbb63f756e04b826db5c8ed70e1507ae3`.
-- PR #36 (`M1: add silent audio-device witness probe`) final head `cbffd31b66303600d8dd0569a117c4826a2575ec` passed exact-head GitHub Actions run `35466737115`, then merged to `main`; merged-main run `35469501191` also passed.
-- Active development branch: `feat/m2-tempo-segment-owner`.
-- Current package adds transactional variable-tempo segment boundary operations to the JUCE-independent `BeatGrid`, routes reviewed-grid segment mutation through `PerformanceDeckOwner`, and extends deterministic core tests. A pull request / exact-head gate is required before this work can be integrated.
-- Roadmap source of truth remains `docs/progress.json`: 1/10 milestones complete (10.0%, PRE-ALPHA).
+- Verified default-branch baseline: `main` at `5c41243ab0a8fa68b76ae6fd0559a7da965c0d3e` (`M2: harden variable-tempo segment edit ownership`). Merged-main GitHub Actions run `35470560672` passed.
+- Active development branch: `feat/m2-tempo-segment-editor-model`.
+- Active package: a JUCE-independent, owner-bound variable-tempo segment editor model plus deterministic CTest coverage. It is a safety/interaction layer for the next native DeckPanel segment editor; it is not yet the user-facing add/move/remove control surface.
+- Exact-head CI for this development checkpoint is pending and must pass before any merge to `main`.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - No public BrokeDJ Release exists or is qualified by this checkpoint.
 
-## Newly integrated on main: PR #36
+## Newly integrated on main: variable-tempo edit ownership
 
-1. **Silent audio-device capability probe**
-   - `BrokeDJ.exe --device-probe` writes both TXT and schema-versioned JSON capability evidence without calling `AudioIODevice::open`, starting a callback or emitting sound.
-   - The full local probe checks descriptor open state before and after capability queries and fails closed if the non-opening invariant is violated.
-   - Four-output descriptors remain candidates only; they are not physical cue-routing certification.
-
-2. **Machine-readable CI contract**
-   - `--device-probe-ci` performs enumeration-only discovery without constructing per-device descriptors.
-   - Windows CI parses the JSON contract, verifies schema/safety booleans and rejects descriptor records in CI mode.
-   - Merged-main run `35469501191` passed the Linux sanitizer/progress gate and the Windows x64 build/test/GUI-smoke/device-probe/staging gate for `95792fdbbb63f756e04b826db5c8ed70e1507ae3`.
-
-3. **Manual M1 witness procedure**
-   - `docs/M1_HARDWARE_WITNESS.md` defines clean launch, resize/HiDPI, import/playback, device switching and physical outputs 1/2 versus cue 3/4 evidence.
-   - The procedure still requires a real Windows 11 machine and audio interface; automated enumeration is not treated as hardware qualification.
-
-## Current development package: variable-tempo edit ownership
-
-1. **Transactional tempo-boundary primitives**
-   - `BeatGrid::moveTempoChangeToBeat` moves any non-base tempo boundary to an exact musical beat using a candidate copy and commits only after complete validation.
-   - `BeatGrid::replaceTempoChange` combines boundary movement and BPM replacement transactionally.
-   - `BeatGrid::tempoChangeBeat` exposes a validated segment boundary in musical beat space for future UI/controller use.
-   - Segment zero remains the beat-zero boundary and cannot be moved or removed.
+1. **Transactional reviewed-grid primitives**
+   - `BeatGrid` can insert, move, replace and remove later tempo boundaries while preserving continuous musical beat numbering.
+   - Segment zero remains the immutable beat-zero boundary; invalid/duplicate edits fail without partially mutating the reviewed map.
 
 2. **Performance-owner mutation boundary**
-   - `PerformanceDeckOwner` now owns reviewed segment BPM edits, insertion, movement, combined replacement and removal instead of allowing a UI/controller layer to mutate the live reviewed grid behind the performance boundary.
-   - Successful grid replacement invalidates an armed beat-derived loop whose source-time bounds came from the previous map; rejected edits leave the prior reviewed grid and loop state untouched.
-   - These operations remain message/control-thread work. They add no disk/network I/O, decoding, locks or unbounded work to `Engine::process()`.
+   - `PerformanceDeckOwner` owns reviewed segment BPM edits and tempo-boundary insert/move/replace/remove operations.
+   - Successful map replacement invalidates any armed beat-derived loop whose source-time bounds came from the old map; rejected edits preserve the previous grid and loop state.
+   - These operations are message/control-thread work and add no file/network I/O, decoding, locks or allocation work to `Engine::process()`.
 
-3. **Deterministic regression coverage**
-   - Core tests cover exact boundary-beat reporting, successful boundary movement/replacement, base-boundary protection, duplicate/invalid edit rejection and transactional state preservation.
-   - Owner-level tests cover insert/edit/move/remove operations and fail-closed behavior across the reviewed-grid boundary.
-   - Existing `TrackBeatGridOverrideStore` tests already prove that multi-segment manual grids round-trip atomically, remain source-identity-bound and omit raw local paths/names from persisted payloads.
+3. **Verified merged baseline**
+   - GitHub Actions run `35470560672` passed for exact `main` head `5c41243ab0a8fa68b76ae6fd0559a7da965c0d3e`.
+   - This automated baseline does not close M1 hardware validation or M2 music-domain/listening gates.
+
+## Current development package: tempo-segment editor model
+
+1. **Owner-bound editor state**
+   - `TempoSegmentEditorModel` exposes validated segment rows in both source-time and musical-beat coordinates and routes every mutation through `PerformanceDeckOwner` rather than editing a `BeatGrid` behind the owner boundary.
+   - The model supports selecting a row, adding a boundary by beat or source time, moving/replacing the selected boundary, BPM editing and removal.
+   - The base boundary can be selected for BPM editing but cannot be moved or removed.
+
+2. **Stale-selection fail-closed behavior**
+   - Selection is anchored to the boundary values observed when the row was selected.
+   - If a track/grid replacement changes that boundary, the next mutation refuses the stale selection until the UI refreshes/reselects, preventing a stale row index from editing an unrelated tempo segment.
+   - When a selected boundary legitimately crosses another boundary, the model rebinds selection by musical beat instead of trusting the old numeric row index.
+
+3. **Deterministic regression target**
+   - New `tempo_segment_editor_model` CTest coverage checks row coordinates, crossing moves, combined beat/BPM replacement, add/remove behavior, duplicate rejection, immutable base-boundary rules, stale-selection rejection and clip-reset unavailability.
+   - The target links only the JUCE-independent core and therefore participates in core-only/sanitizer validation as well as the normal Windows CTest matrix.
 
 ## Gates still open
 
-- Exact-head Linux/Windows CI for the active tempo-segment owner branch before merge.
-- Native compact UI/controller controls for selecting, adding, moving and removing later tempo segments; this package deliberately does not claim that full segment editing is user-facing yet.
-- Real Windows 11 clean-machine/audio-interface validation, including actual device switching and independent four-output cue where supported.
+- Exact-head Linux/Windows CI for `feat/m2-tempo-segment-editor-model`; do not merge this package until the final head is green.
+- Native compact DeckPanel controls that bind this model to segment selection plus add/move/remove/BPM actions and persist the accepted owner grid through the existing source-identity-bound `TrackBeatGridOverrideStore` path.
+- Real Windows 11 clean-machine/audio-interface validation, including device switching and independent four-output cue where supported.
 - Manual resize/HiDPI usability review of the dense four-deck layout.
 - Representative legal local-music corpus validation for BPM/key/grid behavior, especially genuinely variable-tempo material.
 - Real listening/soak, controller and production-release qualification.
@@ -57,4 +54,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Require exact-head CI for the tempo-segment owner package first. If green, expose a compact native segment editor that uses this owner boundary and the already-existing `TrackBeatGridOverrideStore` persistence path, with safe add/move/remove actions and no new work in the audio callback. Then validate edited variable-tempo grids against a representative local corpus before making stronger detector or Sync claims.
+Require exact-head CI for the editor-model branch first. If green, keep the package on its PR until the normal integration window and wire the tested model into a compact native segment editor: selected segment, add-at-current-position, move boundary, BPM edit and remove, followed by asynchronous persistence of the complete accepted reviewed grid. After that, validate real variable-tempo material before strengthening Sync or detector claims.
