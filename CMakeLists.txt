@@ -8,7 +8,7 @@ option(BROKEDJ_BUILD_APP "Build the native JUCE application" ON)
 option(BROKEDJ_SANITIZE "Enable address and undefined-behavior sanitizers" OFF)
 option(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE "Build the opt-in Signalsmith time-stretch/key-lock prototype and tests" OFF)
 include(CTest)
-add_library(brokedj_core STATIC src/core/Engine.cpp)
+add_library(brokedj_core STATIC src/core/Engine.cpp src/core/BeatAnalysis.cpp)
 target_include_directories(brokedj_core PUBLIC src)
 if(MSVC)
     target_compile_options(brokedj_core PRIVATE /W4 /permissive- /utf-8)
@@ -50,6 +50,11 @@ if(BUILD_TESTING)
     target_link_libraries(brokedj_engine_deck_source_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME engine_deck_source COMMAND brokedj_engine_deck_source_tests)
     set_tests_properties(engine_deck_source PROPERTIES TIMEOUT 30)
+
+    add_executable(brokedj_beat_analysis_tests tests/BeatAnalysisTests.cpp)
+    target_link_libraries(brokedj_beat_analysis_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME beat_analysis COMMAND brokedj_beat_analysis_tests)
+    set_tests_properties(beat_analysis PROPERTIES TIMEOUT 60)
 endif()
 
 if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
@@ -189,9 +194,9 @@ if(BROKEDJ_BUILD_APP)
         GIT_PROGRESS TRUE)
     FetchContent_MakeAvailable(JUCE)
 
-    # Keep file decoding/read-ahead as a testable adapter instead of compiling it
-    # only as part of the GUI executable.
-    add_library(brokedj_decoder STATIC src/app/Decoder.cpp)
+    # Keep file decoding/read-ahead and offline track analysis as testable
+    # adapters instead of compiling them only as part of the GUI executable.
+    add_library(brokedj_decoder STATIC src/app/Decoder.cpp src/app/TrackAnalysis.cpp)
     target_include_directories(brokedj_decoder PUBLIC src)
     target_compile_definitions(brokedj_decoder PUBLIC JUCE_USE_MP3AUDIOFORMAT=1 JUCE_USE_CURL=0)
     target_link_libraries(brokedj_decoder PUBLIC brokedj_core juce::juce_audio_formats)
@@ -206,6 +211,11 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_decoder_tests PRIVATE brokedj_decoder)
         add_test(NAME decoder COMMAND brokedj_decoder_tests)
         set_tests_properties(decoder PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_track_analysis_tests tests/TrackAnalysisTests.cpp)
+        target_link_libraries(brokedj_track_analysis_tests PRIVATE brokedj_decoder)
+        add_test(NAME track_analysis COMMAND brokedj_track_analysis_tests)
+        set_tests_properties(track_analysis PROPERTIES TIMEOUT 90)
     endif()
 
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"
