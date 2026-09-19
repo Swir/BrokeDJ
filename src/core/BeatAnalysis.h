@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace broke {
@@ -45,6 +46,49 @@ public:
     [[nodiscard]] bool setSegmentBpm(std::size_t index, double bpm);
     [[nodiscard]] bool insertTempoChangeAtBeat(double beat, double bpm);
     [[nodiscard]] bool removeTempoChange(std::size_t index);
+
+    // UI/controller-facing segment edits remain transactional. Segment zero is
+    // the immutable beat-zero boundary and cannot be moved or removed. Moving a
+    // later boundary first removes that boundary from a candidate copy and then
+    // resolves the requested musical beat against the remaining map, so a failed
+    // edit never leaves the live reviewed grid half-mutated.
+    [[nodiscard]] bool moveTempoChangeToBeat(std::size_t index, double beat) {
+        if (!validate() || index == 0 || index >= tempoMap.size()) return false;
+        BeatGrid candidate = *this;
+        const double bpm = candidate.tempoMap[index].bpm;
+        candidate.tempoMap.erase(candidate.tempoMap.begin() + static_cast<std::ptrdiff_t>(index));
+        if (!candidate.insertTempoChangeAtBeat(beat, bpm)) return false;
+        *this = candidate;
+        return true;
+    }
+
+    [[nodiscard]] bool replaceTempoChange(std::size_t index, double beat, double bpm) {
+        if (!validate() || index == 0 || index >= tempoMap.size()) return false;
+        BeatGrid candidate = *this;
+        if (!candidate.moveTempoChangeToBeat(index, beat)) return false;
+        // Moving can change ordering when a boundary crosses another segment, so
+        // identify the moved boundary by its requested beat rather than reusing
+        // the old numeric index.
+        const double targetSeconds = candidate.timeAtBeat(beat);
+        if (!std::isfinite(targetSeconds)) return false;
+        std::size_t movedIndex = candidate.tempoMap.size();
+        for (std::size_t i = 1; i < candidate.tempoMap.size(); ++i) {
+            if (std::abs(candidate.tempoMap[i].startSeconds - targetSeconds) <= 1.0e-8) {
+                movedIndex = i;
+                break;
+            }
+        }
+        if (movedIndex >= candidate.tempoMap.size() || !candidate.setSegmentBpm(movedIndex, bpm))
+            return false;
+        *this = candidate;
+        return true;
+    }
+
+    [[nodiscard]] double tempoChangeBeat(std::size_t index) const noexcept {
+        if (!validate() || index >= tempoMap.size())
+            return std::numeric_limits<double>::quiet_NaN();
+        return beatAtTime(tempoMap[index].startSeconds);
+    }
 
     [[nodiscard]] double beatZeroSeconds() const noexcept { return beatZero; }
     [[nodiscard]] const std::vector<BeatGridSegment>& segments() const noexcept { return tempoMap; }
