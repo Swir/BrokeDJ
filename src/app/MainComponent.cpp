@@ -240,7 +240,11 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     gridReset.setButtonText(text("Reset grid", "Reset siatki"));
     gridReset.setEnabled(false);
     gridReset.onClick = [this] { if (onGridReset) onGridReset(); };
-    addAndMakeVisible(gridZeroLabel); addAndMakeVisible(gridBpmLabel); addAndMakeVisible(gridReset);
+    tempoMap.setButtonText(text("Tempo map", "Mapa tempa"));
+    tempoMap.setEnabled(false);
+    tempoMap.onClick = [this] { if (onTempoMapRequested) onTempoMapRequested(); };
+    addAndMakeVisible(gridZeroLabel); addAndMakeVisible(gridBpmLabel);
+    addAndMakeVisible(gridReset); addAndMakeVisible(tempoMap);
 
     const auto gridTooltip = text(
         "Manual base-grid correction. Beat zero shifts all preserved tempo-change boundaries; GRID BPM edits segment 0 only. Changes are stored locally outside the audio callback.",
@@ -249,6 +253,9 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     gridBpm.setTooltip(gridTooltip);
     gridReset.setTooltip(text("Erase the local manual override and return to the detected grid for this file.",
                               "Usuń lokalną ręczną korektę i wróć do wykrytej siatki dla tego pliku."));
+    tempoMap.setTooltip(text(
+        "Open the reviewed variable-tempo map editor. Add/move/remove later boundaries and edit segment BPM without doing file I/O in the audio callback.",
+        "Otwórz edytor zweryfikowanej mapy zmiennego tempa. Dodawaj/przesuwaj/usuwaj późniejsze granice i zmieniaj BPM segmentów bez I/O w callbacku audio."));
     knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Sync can update this control without feeding a second rate command back into the Engine.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Sync może zaktualizować tę kontrolkę bez wysyłania drugiej komendy tempa do silnika."));
     knobs[5].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
     loop.setTooltip(text("Loops the whole track. Beat-length looping is a separate reviewed-grid control.", "Zapętla cały utwór. Pętla beatowa ma osobną kontrolkę opartą o zweryfikowaną siatkę."));
@@ -273,7 +280,7 @@ void DeckPanel::setRhythmPending() {
     rhythmReady = false;
     activeBeatGrid = {};
     manualBeatGrid = false;
-    gridZero.setEnabled(false); gridBpm.setEnabled(false); gridReset.setEnabled(false);
+    gridZero.setEnabled(false); gridBpm.setEnabled(false); gridReset.setEnabled(false); tempoMap.setEnabled(false);
     broke::PerformanceDeckOwner::HotCueBank emptyCues{};
     setPerformanceState(false, false, 0.0, emptyCues, false, false, false);
     waveform.setBeatGrid({}, false);
@@ -366,6 +373,7 @@ void DeckPanel::refreshRhythmDisplay() {
     gridZero.setEnabled(editable);
     gridBpm.setEnabled(editable);
     gridReset.setEnabled(editable && manualBeatGrid);
+    tempoMap.setEnabled(editable);
     if (editable) {
         gridZero.setValue(activeBeatGrid.beatZeroSeconds(), juce::dontSendNotification);
         gridBpm.setValue(activeBeatGrid.segments().front().bpm, juce::dontSendNotification);
@@ -414,7 +422,9 @@ void DeckPanel::resized() {
         component->setBounds(performanceArea.removeFromLeft(performanceWidth).reduced(2, 0));
     area.removeFromTop(4);
     auto gridArea = area.removeFromTop(44);
-    gridReset.setBounds(gridArea.removeFromRight(96).reduced(2, 7));
+    auto actions = gridArea.removeFromRight(188);
+    gridReset.setBounds(actions.removeFromRight(92).reduced(2, 7));
+    tempoMap.setBounds(actions.reduced(2, 7));
     auto zeroArea = gridArea.removeFromLeft(gridArea.getWidth() / 2);
     gridZeroLabel.setBounds(zeroArea.removeFromTop(14)); gridZero.setBounds(zeroArea);
     gridBpmLabel.setBounds(gridArea.removeFromTop(14)); gridBpm.setBounds(gridArea);
@@ -465,6 +475,7 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
 #endif
     for (std::size_t i = 0; i < decks.size(); ++i) {
         performanceDecks[i] = std::make_unique<broke::PerformanceDeckOwner>(engine, i);
+        tempoSegmentEditors[i] = std::make_unique<broke::TempoSegmentEditorModel>(*performanceDecks[i]);
         decks[i] = std::make_unique<DeckPanel>(engine, i);
         decks[i]->onBrowse = [this, i] { browse(i); };
         decks[i]->onDrop = [this, i](const juce::File& file) { load(i, file); };
@@ -472,6 +483,7 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
             applyBeatGridEdit(i, beatZero, bpm);
         };
         decks[i]->onGridReset = [this, i] { resetBeatGridEdit(i); };
+        decks[i]->onTempoMapRequested = [this, i] { showTempoSegmentEditor(i); };
         decks[i]->onWholeTrackLoopRequested = [this, i](bool enabled) { setWholeTrackLoop(i, enabled); };
         decks[i]->onBeatLoopRequested = [this, i](double beats, bool enabled) {
             return setBeatLoop(i, beats, enabled);
@@ -512,6 +524,7 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
 MainComponent::~MainComponent() {
     stopTimer(); cancelled->store(true);
     for (auto& stop : analysisCancelled) if (stop) stop->store(true);
+    if (tempoSegmentDialog) delete tempoSegmentDialog.getComponent();
     if (audioSettings) delete audioSettings.getComponent();
     chooser.reset(); shutdownAudio();
     loaders.removeAllJobs(true, -1);
@@ -644,6 +657,7 @@ void MainComponent::load(std::size_t deck, const juce::File& file) {
             const double loadedDuration = submittedClip && submittedClip->valid()
                 ? static_cast<double>(submittedClip->frames()) / submittedClip->sampleRate : 0.0;
             if (result->clip && safe->engine.submit(deck, std::move(result->clip))) {
+                safe->closeTempoSegmentEditorForDeck(deck);
                 if (safe->performanceDecks[deck]) safe->performanceDecks[deck]->resetForClip();
                 if (safe->syncMasterDeck && *safe->syncMasterDeck == deck) safe->syncMasterDeck.reset();
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -729,6 +743,17 @@ void MainComponent::applyBeatGridEdit(std::size_t deck, double beatZeroSeconds, 
         return;
     }
 
+    adoptAndPersistReviewedGrid(deck, performanceDecks[deck]->reviewedGrid(),
+        text("Manual beat grid saved locally.", "Ręczna siatka rytmu zapisana lokalnie."));
+}
+void MainComponent::adoptAndPersistReviewedGrid(std::size_t deck, const broke::BeatGrid& edited,
+                                                const juce::String& successMessage) {
+    if (deck >= broke::deckCount || !edited.valid() || !deckFiles[deck].existsAsFile()) {
+        statusMessage(text("Tempo-map edit could not be persisted for this deck.",
+                           "Nie można zapisać edycji mapy tempa dla tego decku."));
+        return;
+    }
+
     const auto file = deckFiles[deck];
     const auto generation = gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
     beatGrids[deck] = edited;
@@ -736,22 +761,81 @@ void MainComponent::applyBeatGridEdit(std::size_t deck, double beatZeroSeconds, 
     decks[deck]->setBeatGrid(edited, true);
 
     juce::Component::SafePointer<MainComponent> safe(this);
-    analyzers.addJob([safe, file, deck, generation, edited] {
+    analyzers.addJob([safe, file, deck, generation, edited, successMessage] {
         if (!safe || safe->gridEditGeneration[deck].load(std::memory_order_acquire) != generation) return;
         TrackBeatGridOverrideStore store;
         const bool stored = store.store(file, edited);
-        juce::MessageManager::callAsync([safe, file, deck, generation, stored] {
+        juce::MessageManager::callAsync([safe, file, deck, generation, stored, successMessage] {
             if (!safe || safe->gridEditGeneration[deck].load(std::memory_order_acquire) != generation) return;
             if (safe->deckFiles[deck].getFullPathName() != file.getFullPathName()) return;
             safe->statusMessage(stored
-                ? text("Manual beat grid saved locally.", "Ręczna siatka rytmu zapisana lokalnie.")
-                : text("Manual grid is active for this session, but local persistence failed.",
-                       "Ręczna siatka działa w tej sesji, ale zapis lokalny nie powiódł się."));
+                ? successMessage
+                : text("Manual tempo map is active for this session, but local persistence failed.",
+                       "Ręczna mapa tempa działa w tej sesji, ale zapis lokalny nie powiódł się."));
         });
     });
 }
+void MainComponent::acceptTempoSegmentEdit(std::size_t deck) {
+    if (deck >= broke::deckCount || !performanceDecks[deck]
+        || !performanceDecks[deck]->hasReviewedGrid()) {
+        statusMessage(text("Reviewed tempo map is no longer available.",
+                           "Zweryfikowana mapa tempa nie jest już dostępna."));
+        return;
+    }
+    adoptAndPersistReviewedGrid(deck, performanceDecks[deck]->reviewedGrid(),
+        text("Tempo map saved locally.", "Mapa tempa zapisana lokalnie."));
+}
+void MainComponent::closeTempoSegmentEditorForDeck(std::size_t deck) {
+    if (!tempoSegmentDialog || !tempoSegmentDialogDeck || *tempoSegmentDialogDeck != deck) return;
+    delete tempoSegmentDialog.getComponent();
+    tempoSegmentDialog = nullptr;
+    tempoSegmentDialogDeck.reset();
+}
+void MainComponent::showTempoSegmentEditor(std::size_t deck) {
+    if (deck >= broke::deckCount || !tempoSegmentEditors[deck]
+        || !tempoSegmentEditors[deck]->available() || !deckFiles[deck].existsAsFile()) {
+        statusMessage(text("Tempo map needs a loaded track with a reviewed beat grid.",
+                           "Mapa tempa wymaga wczytanego utworu ze zweryfikowaną siatką rytmu."));
+        return;
+    }
+
+    if (tempoSegmentDialog) {
+        if (tempoSegmentDialogDeck && *tempoSegmentDialogDeck == deck) {
+            tempoSegmentDialog->toFront(true);
+            return;
+        }
+        delete tempoSegmentDialog.getComponent();
+        tempoSegmentDialog = nullptr;
+        tempoSegmentDialogDeck.reset();
+    }
+
+    auto* editor = new TempoSegmentEditorComponent(
+        *tempoSegmentEditors[deck],
+        [this, deck] {
+            const double position = engine.meter(deck).position.load(std::memory_order_acquire);
+            const double duration = engine.meter(deck).duration.load(std::memory_order_acquire);
+            return std::isfinite(position) && std::isfinite(duration)
+                    && position >= 0.0 && duration > 0.0 && position < duration
+                ? position : std::numeric_limits<double>::quiet_NaN();
+        },
+        [this, deck] { acceptTempoSegmentEdit(deck); },
+        [this](const juce::String& message) { statusMessage(message); });
+
+    juce::DialogWindow::LaunchOptions options;
+    options.dialogTitle = text("BrokeDJ / Tempo map / Deck ", "BrokeDJ / Mapa tempa / Deck ") + deckLetter(deck);
+    options.dialogBackgroundColour = background;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    options.escapeKeyTriggersCloseButton = true;
+    options.content.setOwned(editor);
+    options.content->setSize(680, 230);
+    options.componentToCentreAround = this;
+    tempoSegmentDialog = options.launchAsync();
+    tempoSegmentDialogDeck = deck;
+}
 void MainComponent::resetBeatGridEdit(std::size_t deck) {
     if (deck >= broke::deckCount || !deckFiles[deck].existsAsFile()) return;
+    closeTempoSegmentEditorForDeck(deck);
     const auto file = deckFiles[deck];
     const auto generation = gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel) + 1;
     beatGrids[deck] = detectedBeatGrids[deck];

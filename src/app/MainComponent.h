@@ -3,9 +3,11 @@
 #include <JuceHeader.h>
 #include "core/Engine.h"
 #include "core/PerformanceDeckOwner.h"
+#include "core/TempoSegmentEditor.h"
 #include "Decoder.h"
 #include "PerformanceStateStore.h"
 #include "TrackAnalysis.h"
+#include "TempoSegmentEditorComponent.h"
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
 #include "KeyLockDeckLifecycle.h"
 #endif
@@ -38,6 +40,7 @@ public:
     std::function<void(double)> onSeekRequested;
     std::function<void(double, double)> onGridEdit;
     std::function<void()> onGridReset;
+    std::function<void()> onTempoMapRequested;
     std::function<void(bool)> onWholeTrackLoopRequested;
     std::function<bool(double, bool)> onBeatLoopRequested;
     std::function<void(std::size_t, bool)> onHotCueRequested;
@@ -72,7 +75,7 @@ private:
     std::array<juce::Label, 7> knobNames;
     juce::Slider gridZero, gridBpm;
     juce::Label gridZeroLabel, gridBpmLabel;
-    juce::TextButton gridReset;
+    juce::TextButton gridReset, tempoMap;
     TrackRhythmAnalysis rhythmAnalysis;
     broke::BeatGrid activeBeatGrid;
     bool rhythmReady = false;
@@ -93,7 +96,11 @@ private:
     void load(std::size_t, const juce::File&);
     void startTrackAnalysis(std::size_t, const juce::File&);
     void applyBeatGridEdit(std::size_t, double beatZeroSeconds, double bpm);
+    void adoptAndPersistReviewedGrid(std::size_t, const broke::BeatGrid&, const juce::String& successMessage);
+    void acceptTempoSegmentEdit(std::size_t);
     void resetBeatGridEdit(std::size_t);
+    void showTempoSegmentEditor(std::size_t);
+    void closeTempoSegmentEditorForDeck(std::size_t);
     void setWholeTrackLoop(std::size_t, bool enabled);
     [[nodiscard]] bool setBeatLoop(std::size_t, double beats, bool enabled);
     void handleHotCue(std::size_t deck, std::size_t slot, bool clear);
@@ -116,6 +123,7 @@ private:
     bool keyLockResearchEnabled = false;
 #endif
     std::array<std::unique_ptr<broke::PerformanceDeckOwner>, broke::deckCount> performanceDecks;
+    std::array<std::unique_ptr<broke::TempoSegmentEditorModel>, broke::deckCount> tempoSegmentEditors;
     std::array<std::unique_ptr<DeckPanel>, broke::deckCount> decks;
     std::optional<std::size_t> syncMasterDeck;
     std::array<bool, broke::deckCount> loading{};
@@ -135,6 +143,8 @@ private:
     juce::ThreadPool analyzers{1};
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Component::SafePointer<juce::DialogWindow> audioSettings;
+    juce::Component::SafePointer<juce::DialogWindow> tempoSegmentDialog;
+    std::optional<std::size_t> tempoSegmentDialogDeck;
     juce::Label title, subtitle, status, crossLabel, masterLabel, cueLabel, meterLabel;
     juce::TextButton settings;
     juce::HyperlinkButton author;

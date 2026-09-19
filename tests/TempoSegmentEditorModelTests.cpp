@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -73,6 +74,47 @@ void selectionFollowsCrossingMoveAndReplacement() {
     selected = editor.selectedSegment();
     check(selected.has_value(), "selection remains valid after bpm edit");
     checkClose(selected->bpm, 111.0, 1.0e-9, "selected bpm edit is committed");
+}
+
+void playheadTimeActionsUseCurrentReviewedMapping() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner owner(engine, 0);
+    check(owner.setReviewedGrid(variableGrid()) == broke::PerformanceDeckOwner::Result::applied,
+          "playhead owner accepts reviewed grid");
+
+    broke::TempoSegmentEditorModel editor(owner);
+    check(editor.select(1) == broke::PerformanceDeckOwner::Result::applied,
+          "playhead move segment selection succeeds");
+
+    const double beat12Time = owner.reviewedGrid().timeAtBeat(12.0);
+    check(std::isfinite(beat12Time), "playhead fixture resolves beat 12 time");
+    check(editor.moveSelectedToTime(beat12Time) == broke::PerformanceDeckOwner::Result::applied,
+          "playhead time move converts through current reviewed map");
+    auto selected = editor.selectedSegment();
+    check(selected.has_value(), "playhead move keeps selection");
+    checkClose(selected->beat, 12.0, 1.0e-9,
+               "playhead move lands on the musical beat resolved before mutation");
+
+    const double beat24Time = owner.reviewedGrid().timeAtBeat(24.0);
+    check(std::isfinite(beat24Time), "playhead add fixture resolves beat 24 time after prior edit");
+    check(editor.addAtTime(beat24Time, 96.0) == broke::PerformanceDeckOwner::Result::applied,
+          "playhead time add uses the current reviewed mapping");
+    selected = editor.selectedSegment();
+    check(selected.has_value(), "new playhead boundary becomes selected");
+    checkClose(selected->beat, 24.0, 1.0e-9, "playhead add preserves resolved musical beat");
+    checkClose(selected->bpm, 96.0, 1.0e-9, "playhead add preserves requested BPM");
+
+    const auto before = owner.reviewedGrid();
+    const auto countBefore = editor.segmentCount();
+    check(editor.addAtTime(-1.0, 120.0) == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "negative playhead add fails closed");
+    check(editor.addAtTime(std::numeric_limits<double>::quiet_NaN(), 120.0)
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "non-finite playhead add fails closed");
+    check(editor.segmentCount() == countBefore,
+          "invalid playhead actions preserve complete map size");
+    checkClose(owner.reviewedGrid().timeAtBeat(32.0), before.timeAtBeat(32.0), 1.0e-9,
+               "invalid playhead actions preserve reviewed mapping");
 }
 
 void addRemoveAndInvalidRequestsFailClosed() {
@@ -159,6 +201,7 @@ int main() {
     try {
         rowsExposeStableBeatAndTimeCoordinates();
         selectionFollowsCrossingMoveAndReplacement();
+        playheadTimeActionsUseCurrentReviewedMapping();
         addRemoveAndInvalidRequestsFailClosed();
         staleSelectionCannotEditReplacementGrid();
         std::cout << "Tempo segment editor model checks passed: " << checks << "\n";
