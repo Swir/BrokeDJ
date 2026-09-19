@@ -2,6 +2,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "core/Engine.h"
+#include "core/PerformanceDeckOwner.h"
 #include "Decoder.h"
 #include "TrackAnalysis.h"
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -35,11 +36,14 @@ public:
     std::function<void(double)> onSeekRequested;
     std::function<void(double, double)> onGridEdit;
     std::function<void()> onGridReset;
+    std::function<void(bool)> onWholeTrackLoopRequested;
+    std::function<bool(double, bool)> onBeatLoopRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
     void setRhythmPending();
     void setRhythmAnalysis(const TrackRhythmAnalysis&, const broke::BeatGrid&, bool manual);
     void setBeatGrid(const broke::BeatGrid&, bool manual);
+    void setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats);
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -51,7 +55,8 @@ private:
     std::size_t index;
     juce::Label heading, track, time, rhythm;
     Waveform waveform;
-    juce::TextButton load, play, rewind, loop, cue;
+    juce::TextButton load, play, rewind, loop, beatLoop, cue;
+    juce::ComboBox beatLoopLength;
     std::array<juce::Slider, 7> knobs;
     std::array<juce::Label, 7> knobNames;
     juce::Slider gridZero, gridBpm;
@@ -78,6 +83,8 @@ private:
     void startTrackAnalysis(std::size_t, const juce::File&);
     void applyBeatGridEdit(std::size_t, double beatZeroSeconds, double bpm);
     void resetBeatGridEdit(std::size_t);
+    void setWholeTrackLoop(std::size_t, bool enabled);
+    [[nodiscard]] bool setBeatLoop(std::size_t, double beats, bool enabled);
     void showAudioSettings();
     void statusMessage(const juce::String&);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -89,6 +96,7 @@ private:
     broke::KeyLockDeckLifecycle keyLockLifecycle{engine};
     bool keyLockResearchEnabled = false;
 #endif
+    std::array<std::unique_ptr<broke::PerformanceDeckOwner>, broke::deckCount> performanceDecks;
     std::array<std::unique_ptr<DeckPanel>, broke::deckCount> decks;
     std::array<bool, broke::deckCount> loading{};
     std::array<juce::File, broke::deckCount> deckFiles;
