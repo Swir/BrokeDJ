@@ -23,6 +23,46 @@ struct BeatAnalysisResult final {
     std::vector<BeatGridSegment> segments;
 };
 
+// Editable tempo map used by deck/sync work. This is intentionally independent
+// from JUCE and the audio callback: editing, validation and beat/time conversion
+// happen on owner/UI workers and can later be persisted by the library layer.
+// Segment 0 always starts at beat zero. Later segments preserve continuous beat
+// numbering while allowing genuine tempo changes instead of forcing one BPM.
+class BeatGrid final {
+public:
+    static constexpr std::size_t maxSegments = 128;
+
+    BeatGrid() = default;
+    explicit BeatGrid(const BeatAnalysisResult& analysis);
+
+    [[nodiscard]] bool reset(double beatZeroSeconds, double bpm);
+    [[nodiscard]] bool reset(const BeatAnalysisResult& analysis);
+    [[nodiscard]] bool valid() const noexcept;
+
+    // Moving beat zero shifts every tempo-change boundary by the same amount,
+    // preserving the edited musical structure. Negative absolute time is rejected.
+    [[nodiscard]] bool setBeatZero(double seconds);
+    [[nodiscard]] bool setSegmentBpm(std::size_t index, double bpm);
+    [[nodiscard]] bool insertTempoChangeAtBeat(double beat, double bpm);
+    [[nodiscard]] bool removeTempoChange(std::size_t index);
+
+    [[nodiscard]] double beatZeroSeconds() const noexcept { return beatZero; }
+    [[nodiscard]] const std::vector<BeatGridSegment>& segments() const noexcept { return tempoMap; }
+
+    // Beat zero is beat 0. Negative beat numbers/times before beat zero are valid
+    // and use the first segment tempo. Non-finite/invalid requests return NaN.
+    [[nodiscard]] double beatAtTime(double seconds) const noexcept;
+    [[nodiscard]] double timeAtBeat(double beat) const noexcept;
+    [[nodiscard]] double quantizeTime(double seconds, double beatStep = 1.0) const noexcept;
+
+private:
+    [[nodiscard]] static bool validBpm(double bpm) noexcept;
+    [[nodiscard]] bool validate() const noexcept;
+
+    double beatZero = 0.0;
+    std::vector<BeatGridSegment> tempoMap;
+};
+
 struct BeatAnalysisOptions final {
     double minBpm = 70.0;
     double maxBpm = 180.0;
