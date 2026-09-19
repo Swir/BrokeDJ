@@ -68,6 +68,20 @@ private:
     juce::File root;
 };
 
+struct TrackBeatGridSelection final {
+    broke::BeatGrid grid;
+    bool manualOverride = false;
+};
+
+// Worker-only resolution contract used by the native app: a valid user override
+// wins over detector output for the exact current source identity. If no valid
+// override exists, the detected grid is used when valid. No file I/O belongs in
+// the audio callback.
+[[nodiscard]] TrackBeatGridSelection selectTrackBeatGrid(
+    const juce::File& source,
+    const broke::BeatAnalysisResult& detected,
+    const TrackBeatGridOverrideStore& overrides);
+
 // Sequential worker-only analysis. Decoding and cache I/O are deliberately
 // separate from playback and the realtime callback; cancellation is checked
 // between bounded read blocks. Beat and key accumulators consume the same decode
