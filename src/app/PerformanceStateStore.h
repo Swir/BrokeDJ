@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Swir
 #pragma once
 
-#include <array>
+#include "core/PerformanceDeckOwner.h"
+
 #include <cstddef>
 
 #include <juce_core/juce_core.h>
@@ -12,16 +13,10 @@
 // never to Engine::process(). The payload stores derived cue positions only and
 // never embeds the raw local source path or filename.
 struct TrackHotCueSnapshot final {
-    static constexpr std::size_t cueCount = 8;
+    using Cue = broke::PerformanceDeckOwner::HotCue;
+    static constexpr std::size_t cueCount = broke::PerformanceDeckOwner::hotCueCount;
 
-    struct Cue final {
-        bool set = false;
-        double seconds = 0.0;
-        bool quantized = false;
-        double beatStep = 1.0;
-    };
-
-    std::array<Cue, cueCount> cues{};
+    broke::PerformanceDeckOwner::HotCueBank cues{};
 };
 
 class TrackHotCueStore final {

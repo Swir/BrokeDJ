@@ -85,6 +85,61 @@ void roundTripIsSourceBoundAndPrivate() {
           "failed load returns a cleared snapshot");
 }
 
+void ownerRoundTripRestoresExactCueMetadataTransactionally() {
+    TempRoot temp;
+    const auto source = makeSource(temp.directory, "owner-roundtrip.wav");
+    TrackHotCueStore store(temp.directory.getChildFile("state"));
+
+    broke::Engine sourceEngine;
+    broke::PerformanceDeckOwner sourceOwner(sourceEngine, 0);
+    broke::BeatGrid grid;
+    check(grid.reset(0.5, 120.0), "owner persistence grid initializes");
+    check(sourceOwner.setReviewedGrid(grid) == broke::PerformanceDeckOwner::Result::applied,
+          "owner persistence grid is reviewed");
+    check(sourceOwner.storeHotCueAt(0, 1.30, 20.0, true, 1.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "owner stores quantized cue before persistence");
+    check(sourceOwner.storeHotCueAt(5, 7.125, 20.0, false, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "owner stores exact unquantized cue before persistence");
+
+    TrackHotCueSnapshot snapshot;
+    snapshot.cues = sourceOwner.hotCueBank();
+    check(store.store(source, snapshot), "owner cue bank persists");
+
+    TrackHotCueSnapshot loaded;
+    check(store.load(source, loaded), "owner cue bank reloads");
+
+    broke::Engine restoredEngine;
+    broke::PerformanceDeckOwner restoredOwner(restoredEngine, 0);
+    check(restoredOwner.restoreHotCueBank(loaded.cues, 20.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "loaded cue bank restores transactionally");
+    const auto cue0 = restoredOwner.hotCue(0);
+    const auto cue5 = restoredOwner.hotCue(5);
+    check(cue0.set && cue0.quantized && std::abs(cue0.seconds - 1.5) < 1.0e-9
+              && std::abs(cue0.beatStep - 1.0) < 1.0e-12,
+          "restore preserves exact quantized cue source time and metadata");
+    check(cue5.set && !cue5.quantized && std::abs(cue5.seconds - 7.125) < 1.0e-12
+              && std::abs(cue5.beatStep - 4.0) < 1.0e-12,
+          "restore preserves exact unquantized cue metadata");
+    check(restoredOwner.triggerHotCue(0, 20.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "restored cue remains a functional transport target");
+    check(std::abs(restoredEngine.control(0).seek.load() - 0.075) < 1.0e-12,
+          "restored cue publishes exact normalized seek");
+
+    auto invalidBank = loaded.cues;
+    invalidBank[7] = {true, 25.0, true, 1.0};
+    check(restoredOwner.restoreHotCueBank(invalidBank, 20.0)
+              == broke::PerformanceDeckOwner::Result::outsideTrack,
+          "out-of-track persisted bank is rejected");
+    check(restoredOwner.hotCue(0).set
+              && std::abs(restoredOwner.hotCue(0).seconds - 1.5) < 1.0e-9
+              && restoredOwner.hotCue(5).set,
+          "failed restore preserves previous complete in-memory cue bank");
+}
+
 void rewritesAreAtomicAndInvalidInputDoesNotClobber() {
     TempRoot temp;
     const auto source = makeSource(temp.directory, "track.flac");
@@ -152,6 +207,7 @@ void corruptUnknownAndOversizedPayloadsFailClosed() {
 int main() {
     try {
         roundTripIsSourceBoundAndPrivate();
+        ownerRoundTripRestoresExactCueMetadataTransactionally();
         rewritesAreAtomicAndInvalidInputDoesNotClobber();
         corruptUnknownAndOversizedPayloadsFailClosed();
         std::cout << "PerformanceStateStoreTests: " << checks << " checks passed\n";
