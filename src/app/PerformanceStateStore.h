@@ -25,6 +25,16 @@ public:
 
     [[nodiscard]] bool load(const juce::File& source, TrackHotCueSnapshot& snapshot) const;
     [[nodiscard]] bool store(const juce::File& source, const TrackHotCueSnapshot& snapshot) const;
+
+    // Message/worker-thread integration helpers. `loadInto` preserves the
+    // owner's existing complete bank if storage is missing/corrupt or if the
+    // persisted bank is invalid for the supplied track duration.
+    [[nodiscard]] bool loadInto(const juce::File& source,
+                                broke::PerformanceDeckOwner& owner,
+                                double trackDurationSeconds) const;
+    [[nodiscard]] bool storeFrom(const juce::File& source,
+                                 const broke::PerformanceDeckOwner& owner) const;
+
     [[nodiscard]] bool erase(const juce::File& source) const;
     [[nodiscard]] const juce::File& rootDirectory() const noexcept { return root; }
 

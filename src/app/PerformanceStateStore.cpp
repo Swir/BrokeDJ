@@ -153,6 +153,22 @@ bool TrackHotCueStore::store(const juce::File& source,
     return temporary.overwriteTargetFileWithTemporary();
 }
 
+bool TrackHotCueStore::loadInto(const juce::File& source,
+                                broke::PerformanceDeckOwner& owner,
+                                double trackDurationSeconds) const {
+    TrackHotCueSnapshot snapshot;
+    if (!load(source, snapshot)) return false;
+    return owner.restoreHotCueBank(snapshot.cues, trackDurationSeconds)
+        == broke::PerformanceDeckOwner::Result::applied;
+}
+
+bool TrackHotCueStore::storeFrom(const juce::File& source,
+                                 const broke::PerformanceDeckOwner& owner) const {
+    TrackHotCueSnapshot snapshot;
+    snapshot.cues = owner.hotCueBank();
+    return store(source, snapshot);
+}
+
 bool TrackHotCueStore::erase(const juce::File& source) const {
     if (source.getFullPathName().isEmpty()) return false;
     const auto stored = stateFileFor(source);

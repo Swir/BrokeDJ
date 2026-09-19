@@ -103,18 +103,13 @@ void ownerRoundTripRestoresExactCueMetadataTransactionally() {
               == broke::PerformanceDeckOwner::Result::applied,
           "owner stores exact unquantized cue before persistence");
 
-    TrackHotCueSnapshot snapshot;
-    snapshot.cues = sourceOwner.hotCueBank();
-    check(store.store(source, snapshot), "owner cue bank persists");
-
-    TrackHotCueSnapshot loaded;
-    check(store.load(source, loaded), "owner cue bank reloads");
+    check(store.storeFrom(source, sourceOwner),
+          "store helper snapshots the complete owner cue bank");
 
     broke::Engine restoredEngine;
     broke::PerformanceDeckOwner restoredOwner(restoredEngine, 0);
-    check(restoredOwner.restoreHotCueBank(loaded.cues, 20.0)
-              == broke::PerformanceDeckOwner::Result::applied,
-          "loaded cue bank restores transactionally");
+    check(store.loadInto(source, restoredOwner, 20.0),
+          "load helper restores persisted bank through owner validation");
     const auto cue0 = restoredOwner.hotCue(0);
     const auto cue5 = restoredOwner.hotCue(5);
     check(cue0.set && cue0.quantized && std::abs(cue0.seconds - 1.5) < 1.0e-9
@@ -129,6 +124,8 @@ void ownerRoundTripRestoresExactCueMetadataTransactionally() {
     check(std::abs(restoredEngine.control(0).seek.load() - 0.075) < 1.0e-12,
           "restored cue publishes exact normalized seek");
 
+    TrackHotCueSnapshot loaded;
+    check(store.load(source, loaded), "raw snapshot remains available for validation fixture");
     auto invalidBank = loaded.cues;
     invalidBank[7] = {true, 25.0, true, 1.0};
     check(restoredOwner.restoreHotCueBank(invalidBank, 20.0)
