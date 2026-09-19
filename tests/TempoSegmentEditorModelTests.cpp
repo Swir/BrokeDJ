@@ -117,6 +117,69 @@ void playheadTimeActionsUseCurrentReviewedMapping() {
                "invalid playhead actions preserve reviewed mapping");
 }
 
+void playheadSelectionAndUndoRedoStayTrackBound() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner owner(engine, 0);
+    check(owner.setReviewedGrid(variableGrid()) == broke::PerformanceDeckOwner::Result::applied,
+          "history owner accepts reviewed grid");
+
+    broke::TempoSegmentEditorModel editor(owner);
+    check(!editor.canUndo() && !editor.canRedo(), "fresh editor has no history");
+
+    const double segmentOneTime = owner.reviewedGrid().timeAtBeat(12.0);
+    check(editor.selectAtTime(segmentOneTime) == broke::PerformanceDeckOwner::Result::applied,
+          "playhead selection resolves governing segment");
+    auto selected = editor.selectedSegment();
+    check(selected.has_value() && selected->index == 1,
+          "playhead selection chooses middle tempo segment");
+    check(editor.selectAtTime(0.1) == broke::PerformanceDeckOwner::Result::applied,
+          "pre-beat-zero playhead selects base segment");
+    selected = editor.selectedSegment();
+    check(selected.has_value() && selected->base,
+          "base segment governs source time before beat zero");
+    check(editor.selectAtTime(std::numeric_limits<double>::quiet_NaN())
+              == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "non-finite playhead selection fails closed");
+
+    check(editor.select(1) == broke::PerformanceDeckOwner::Result::applied,
+          "history edit selects first later segment");
+    check(editor.setSelectedBpm(111.0) == broke::PerformanceDeckOwner::Result::applied,
+          "history edit changes segment bpm");
+    check(editor.canUndo() && !editor.canRedo(), "accepted edit creates undo state");
+    checkClose(owner.reviewedGrid().segments()[1].bpm, 111.0, 1.0e-9,
+               "accepted history edit reaches owner");
+
+    check(editor.undo() == broke::PerformanceDeckOwner::Result::applied,
+          "undo restores previous complete map");
+    checkClose(owner.reviewedGrid().segments()[1].bpm, 100.0, 1.0e-9,
+               "undo restores previous bpm");
+    check(!editor.canUndo() && editor.canRedo(), "undo exposes redo state");
+
+    check(editor.redo() == broke::PerformanceDeckOwner::Result::applied,
+          "redo restores accepted complete map");
+    checkClose(owner.reviewedGrid().segments()[1].bpm, 111.0, 1.0e-9,
+               "redo restores edited bpm");
+    check(editor.canUndo() && !editor.canRedo(), "redo restores undo availability");
+
+    check(editor.select(1) == broke::PerformanceDeckOwner::Result::applied,
+          "post-redo segment can be reselected");
+    check(editor.setSelectedBpm(112.0) == broke::PerformanceDeckOwner::Result::applied,
+          "second edit extends bounded history");
+
+    broke::BeatGrid replacement;
+    check(replacement.reset(1.25, 130.0), "history replacement grid initializes");
+    check(replacement.insertTempoChangeAtBeat(12.0, 105.0),
+          "history replacement boundary inserts");
+    check(owner.setReviewedGrid(replacement) == broke::PerformanceDeckOwner::Result::applied,
+          "external owner replacement succeeds");
+    check(!editor.canUndo() && !editor.canRedo(),
+          "history invalidates when owner grid identity changes externally");
+    check(editor.undo() == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "stale undo refuses to restore an older track/grid");
+    checkClose(owner.reviewedGrid().segments().front().bpm, 130.0, 1.0e-9,
+               "stale undo preserves replacement grid");
+}
+
 void addRemoveAndInvalidRequestsFailClosed() {
     broke::Engine engine;
     broke::PerformanceDeckOwner owner(engine, 2);
@@ -202,6 +265,7 @@ int main() {
         rowsExposeStableBeatAndTimeCoordinates();
         selectionFollowsCrossingMoveAndReplacement();
         playheadTimeActionsUseCurrentReviewedMapping();
+        playheadSelectionAndUndoRedoStayTrackBound();
         addRemoveAndInvalidRequestsFailClosed();
         staleSelectionCannotEditReplacementGrid();
         std::cout << "Tempo segment editor model checks passed: " << checks << "\n";

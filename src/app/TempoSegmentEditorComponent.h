@@ -37,8 +37,8 @@ public:
         beatLabel.setText(text("Boundary beat", "Beat granicy"), juce::dontSendNotification);
         bpmLabel.setText("BPM", juce::dontSendNotification);
         hint.setText(text(
-            "Base segment: BPM only. Later boundaries can be moved, replaced or removed. Add/Move @ playhead uses the current source-time position.",
-            "Segment bazowy: tylko BPM. Późniejsze granice można przesuwać, zastępować lub usuwać. Dodaj/Przesuń @ pozycja używa bieżącego czasu utworu."),
+            "Base segment: BPM only. Later boundaries can be moved, replaced or removed. Undo/Redo keeps a bounded per-track edit history.",
+            "Segment bazowy: tylko BPM. Późniejsze granice można przesuwać, zastępować lub usuwać. Cofnij/Ponów zachowuje ograniczoną historię edycji utworu."),
             juce::dontSendNotification);
         hint.setColour(juce::Label::textColourId, juce::Colour(0xff8199b8));
         hint.setFont(juce::Font(juce::FontOptions(11.0f)));
@@ -60,7 +60,20 @@ public:
         apply.setButtonText(text("APPLY", "ZASTOSUJ"));
         moveToPlayhead.setButtonText(text("MOVE @ PLAYHEAD", "PRZESUŃ @ POZYCJA"));
         remove.setButtonText(text("REMOVE", "USUŃ"));
+        selectAtPlayhead.setButtonText(text("SELECT @ PLAYHEAD", "WYBIERZ @ POZYCJA"));
+        undo.setButtonText(text("UNDO", "COFNIJ"));
+        redo.setButtonText(text("REDO", "PONÓW"));
         refresh.setButtonText(text("REFRESH", "ODŚWIEŻ"));
+
+        selectAtPlayhead.setTooltip(text(
+            "Select the tempo segment currently governing the playhead without changing the map.",
+            "Wybierz segment tempa obowiązujący w bieżącej pozycji bez zmiany mapy."));
+        undo.setTooltip(text(
+            "Undo the latest accepted tempo-map edit. History is bounded and invalidates on external track/grid replacement.",
+            "Cofnij ostatnią zaakceptowaną edycję mapy. Historia jest ograniczona i unieważnia się po zewnętrznej zmianie utworu/siatki."));
+        redo.setTooltip(text(
+            "Redo the latest undone tempo-map edit.",
+            "Ponów ostatnią cofniętą edycję mapy tempa."));
 
         segmentChoice.onChange = [this] {
             const int id = segmentChoice.getSelectedId();
@@ -134,14 +147,39 @@ public:
                                 "Usunięto granicę tempa i zlecono lokalny zapis."));
         };
 
+        selectAtPlayhead.onClick = [this] {
+            const double seconds = currentPosition ? currentPosition() : std::numeric_limits<double>::quiet_NaN();
+            const auto result = model.selectAtTime(seconds);
+            if (result != broke::PerformanceDeckOwner::Result::applied) {
+                reportRejected(text("A playable current position is required to select a tempo segment.",
+                                    "Do wyboru segmentu tempa wymagana jest bieżąca pozycja utworu."));
+                return;
+            }
+            if (onStatus)
+                onStatus(text("Selected the tempo segment at the playhead.",
+                              "Wybrano segment tempa w bieżącej pozycji."));
+            refreshFromModel();
+        };
+
+        undo.onClick = [this] {
+            finishMutation(model.undo(),
+                           text("Tempo-map edit undone and queued for local persistence.",
+                                "Cofnięto edycję mapy tempa i zlecono lokalny zapis."));
+        };
+        redo.onClick = [this] {
+            finishMutation(model.redo(),
+                           text("Tempo-map edit restored and queued for local persistence.",
+                                "Ponowiono edycję mapy tempa i zlecono lokalny zapis."));
+        };
         refresh.onClick = [this] { refreshFromModel(); };
 
-        const std::array<juce::Component*, 13> children{
+        const std::array<juce::Component*, 16> children{
             &title, &segmentLabel, &segmentChoice, &beatLabel, &beatEditor, &bpmLabel, &bpmEditor,
-            &addAtPlayhead, &apply, &moveToPlayhead, &remove, &refresh, &hint};
+            &addAtPlayhead, &apply, &moveToPlayhead, &remove,
+            &selectAtPlayhead, &undo, &redo, &refresh, &hint};
         for (auto* child : children) addAndMakeVisible(child);
 
-        setSize(680, 230);
+        setSize(680, 270);
         refreshFromModel();
     }
 
@@ -186,14 +224,21 @@ public:
         beatEditor.setBounds(editRow.removeFromLeft(160).reduced(2, 5));
         bpmLabel.setBounds(editRow.removeFromLeft(44));
         bpmEditor.setBounds(editRow.removeFromLeft(130).reduced(2, 5));
-        refresh.setBounds(editRow.removeFromRight(96).reduced(2, 5));
         area.removeFromTop(6);
 
         auto actions = area.removeFromTop(32);
-        std::array<juce::Component*, 4> buttons{&addAtPlayhead, &apply, &moveToPlayhead, &remove};
-        const int width = actions.getWidth() / static_cast<int>(buttons.size());
-        for (auto* button : buttons)
-            button->setBounds(actions.removeFromLeft(width).reduced(2, 0));
+        std::array<juce::Component*, 4> actionButtons{&addAtPlayhead, &apply, &moveToPlayhead, &remove};
+        const int actionWidth = actions.getWidth() / static_cast<int>(actionButtons.size());
+        for (auto* button : actionButtons)
+            button->setBounds(actions.removeFromLeft(actionWidth).reduced(2, 0));
+
+        area.removeFromTop(4);
+        auto history = area.removeFromTop(32);
+        std::array<juce::Component*, 4> historyButtons{&selectAtPlayhead, &undo, &redo, &refresh};
+        const int historyWidth = history.getWidth() / static_cast<int>(historyButtons.size());
+        for (auto* button : historyButtons)
+            button->setBounds(history.removeFromLeft(historyWidth).reduced(2, 0));
+
         area.removeFromTop(6);
         hint.setBounds(area);
     }
@@ -215,6 +260,9 @@ private:
         const bool available = selected.has_value();
         segmentChoice.setEnabled(model.available());
         addAtPlayhead.setEnabled(model.available());
+        selectAtPlayhead.setEnabled(model.available());
+        undo.setEnabled(model.canUndo());
+        redo.setEnabled(model.canRedo());
         apply.setEnabled(available);
         beatEditor.setEnabled(available && !selected->base);
         moveToPlayhead.setEnabled(available && !selected->base);
@@ -260,5 +308,6 @@ private:
     juce::Label title, segmentLabel, beatLabel, bpmLabel, hint;
     juce::ComboBox segmentChoice;
     juce::TextEditor beatEditor, bpmEditor;
-    juce::TextButton addAtPlayhead, apply, moveToPlayhead, remove, refresh;
+    juce::TextButton addAtPlayhead, apply, moveToPlayhead, remove;
+    juce::TextButton selectAtPlayhead, undo, redo, refresh;
 };
