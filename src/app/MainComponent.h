@@ -4,6 +4,7 @@
 #include "core/Engine.h"
 #include "core/PerformanceDeckOwner.h"
 #include "Decoder.h"
+#include "PerformanceStateStore.h"
 #include "TrackAnalysis.h"
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
 #include "KeyLockDeckLifecycle.h"
@@ -38,12 +39,15 @@ public:
     std::function<void()> onGridReset;
     std::function<void(bool)> onWholeTrackLoopRequested;
     std::function<bool(double, bool)> onBeatLoopRequested;
+    std::function<void(std::size_t, bool)> onHotCueRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
     void setRhythmPending();
     void setRhythmAnalysis(const TrackRhythmAnalysis&, const broke::BeatGrid&, bool manual);
     void setBeatGrid(const broke::BeatGrid&, bool manual);
-    void setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats);
+    void setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats,
+                             const broke::PerformanceDeckOwner::HotCueBank& hotCues,
+                             bool trackReady);
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -57,6 +61,7 @@ private:
     Waveform waveform;
     juce::TextButton load, play, rewind, loop, beatLoop, cue;
     juce::ComboBox beatLoopLength;
+    std::array<juce::TextButton, broke::PerformanceDeckOwner::hotCueCount> hotCuePads;
     std::array<juce::Slider, 7> knobs;
     std::array<juce::Label, 7> knobNames;
     juce::Slider gridZero, gridBpm;
@@ -85,6 +90,11 @@ private:
     void resetBeatGridEdit(std::size_t);
     void setWholeTrackLoop(std::size_t, bool enabled);
     [[nodiscard]] bool setBeatLoop(std::size_t, double beats, bool enabled);
+    void handleHotCue(std::size_t deck, std::size_t slot, bool clear);
+    void restoreHotCues(std::size_t deck, const juce::File& file, double trackDurationSeconds,
+                        std::uint64_t generation);
+    void persistHotCues(std::size_t deck, const juce::File& file, std::uint64_t generation,
+                        broke::PerformanceDeckOwner::HotCueBank snapshot);
     void showAudioSettings();
     void statusMessage(const juce::String&);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -104,13 +114,14 @@ private:
     std::array<broke::BeatGrid, broke::deckCount> beatGrids;
     std::array<bool, broke::deckCount> gridIsManual{};
     std::array<std::atomic<std::uint64_t>, broke::deckCount> gridEditGeneration{};
+    std::array<std::atomic<std::uint64_t>, broke::deckCount> hotCueGeneration{};
     std::array<std::shared_ptr<std::atomic<bool>>, broke::deckCount> analysisCancelled{};
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
     juce::ThreadPool loaders{1};
-    // Analysis is deliberately separate from decoding/playback preparation so a
-    // long BPM/grid pass cannot prevent another deck from becoming playable.
-    // One worker serializes analysis and beat-grid persistence, bounding CPU and
-    // keeping all cache/override disk I/O off the audio callback.
+    // Analysis/persistence is deliberately separate from decoding/playback preparation so a
+    // long BPM/grid pass or hotcue state write cannot prevent another deck from becoming playable.
+    // One worker serializes analysis and local state I/O, bounding CPU and keeping all cache/
+    // persistence work off the audio callback.
     juce::ThreadPool analyzers{1};
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Component::SafePointer<juce::DialogWindow> audioSettings;
