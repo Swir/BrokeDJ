@@ -77,10 +77,20 @@ struct TrackBeatGridSelection final {
 // wins over detector output for the exact current source identity. If no valid
 // override exists, the detected grid is used when valid. No file I/O belongs in
 // the audio callback.
-[[nodiscard]] TrackBeatGridSelection selectTrackBeatGrid(
+[[nodiscard]] inline TrackBeatGridSelection selectTrackBeatGrid(
     const juce::File& source,
     const broke::BeatAnalysisResult& detected,
-    const TrackBeatGridOverrideStore& overrides);
+    const TrackBeatGridOverrideStore& overrides) {
+    TrackBeatGridSelection selection;
+    broke::BeatGrid manual;
+    if (overrides.load(source, manual) && manual.valid()) {
+        selection.grid = std::move(manual);
+        selection.manualOverride = true;
+        return selection;
+    }
+    selection.grid = broke::BeatGrid(detected);
+    return selection;
+}
 
 // Sequential worker-only analysis. Decoding and cache I/O are deliberately
 // separate from playback and the realtime callback; cancellation is checked
