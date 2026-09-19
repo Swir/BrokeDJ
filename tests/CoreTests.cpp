@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#include "core/BeatGridPerformance.h"
 #include "core/Engine.h"
 #include <algorithm>
 #include <array>
@@ -76,6 +77,40 @@ void run() {
         check(f.audio[0][400] > 0.0f, "loop produces output");
         f.engine.control(1).seek = 99.0; f.render();
         check(std::isfinite(f.audio[0][400]), "out-of-range seek is bounded");
+    }
+    {
+        Fixture f; f.load(0, 0.25f, 4 * 48000);
+        broke::BeatAnalysisResult analysis;
+        analysis.valid = true;
+        analysis.bpm = 120.0;
+        analysis.beatZeroSeconds = 0.0;
+        analysis.confidence = 1.0;
+        analysis.segments.push_back({0.0, 120.0});
+        const broke::BeatGrid grid(analysis);
+        check(grid.valid(), "beat-loop fixture grid valid");
+        const auto plan = broke::planBeatLoop(grid, 0.75, 4.0);
+        check(plan.valid, "four-beat loop plan valid");
+        check(std::abs(plan.startSeconds - 0.5) < 1.0e-9, "loop plan snaps to previous beat");
+        check(std::abs(plan.endSeconds - 2.5) < 1.0e-9, "loop plan resolves beat-space endpoint");
+        check(!f.engine.setLoopRegionSeconds(4, plan.startSeconds, plan.endSeconds), "invalid loop deck rejected");
+        check(!f.engine.setLoopRegionSeconds(0, plan.endSeconds, plan.startSeconds), "reversed loop region rejected");
+        check(!f.engine.setLoopRegionSeconds(0, std::numeric_limits<double>::quiet_NaN(), plan.endSeconds), "non-finite loop region rejected");
+        check(f.engine.setLoopRegionSeconds(0, plan.startSeconds, plan.endSeconds), "reviewed beat-loop region armed");
+        check(f.engine.loopRegionEnabled(0), "loop-region state published");
+        f.engine.control(0).seek = plan.startSeconds / 4.0;
+        f.engine.control(0).loop = true;
+        f.engine.control(0).playing = true;
+        f.render(240);
+        const double wrappedPosition = f.engine.meter(0).position.load();
+        check(f.engine.control(0).playing.load(), "beat loop keeps transport playing");
+        check(wrappedPosition >= plan.startSeconds && wrappedPosition < plan.endSeconds,
+              "beat loop wraps inside reviewed region");
+        check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float sample) {
+            return std::isfinite(sample);
+        }), "beat-loop render remains finite");
+        f.engine.clearLoopRegion(0);
+        check(!f.engine.loopRegionEnabled(0), "beat-loop region disarmed atomically");
+        f.engine.control(0).loop = false;
     }
     {
         Fixture f; f.load(0);
