@@ -52,6 +52,16 @@ A non-audio `StreamCacheDiagnostics` snapshot reports the requested frame/chunk,
 
 This architecture bounds sample-cache memory independently of track duration and retires the previous 256 MiB full-decode ceiling for the streaming path. It is still pre-alpha: no claim is made that every disk/codec/seek sequence is dropout-free. Real-codec long-loop boundaries, slow-storage stress, reviewed listening and cancellation of a decoder blocked inside OS/file I/O remain hardening work.
 
+## Musical analysis and manual grid ownership
+
+BPM/grid and musical-key analysis run only on the dedicated analysis worker after a deck becomes playable. The worker performs one bounded sequential decode pass for both analyzers, then publishes immutable result snapshots to the message thread. Detector cache records and manual-grid override records are separate: both bind to source size/modification identity and omit the raw source path/name from payload data.
+
+`BeatGrid` remains JUCE-independent and owns validated beat↔time mapping plus bounded variable-tempo segments. The message thread owns each deck's currently displayed detected grid and active grid. `TrackBeatGridOverrideStore` is consulted on the analysis worker; a valid matching manual override wins over detector output. Compact UI edits copy and transactionally validate the current grid, then update the message-thread snapshot immediately while persistence is serialized through the analysis worker. A per-deck generation counter prevents stale completion messages from replacing status after a newer edit/reset/load. Reset immediately restores the detected grid and queues override deletion. None of these operations run in `Engine::process()`.
+
+The waveform remains an amplitude preview. Beat lines are a bounded rendering overlay derived from the validated active grid, with display stride increased when needed so painting cannot iterate an unbounded number of beats. A brighter overlay identifies a manual grid. The current compact editor exposes beat-zero and segment-0 BPM only; later tempo-change segments remain preserved in the model and persisted record but are not yet a full segment editor.
+
+`brokedj_analysis_validator` is a local developer tool built alongside the native app. It reads a manifest outside the repository, invokes the uncached offline detector path on user-owned/licensed audio and reports stable manifest IDs plus aggregate BPM/key evidence without printing source paths. It is deliberately not an automatic CTest because no reference music is redistributed with BrokeDJ. See [`ANALYSIS_VALIDATION.md`](ANALYSIS_VALIDATION.md).
+
 ## Quality validation boundary
 
 Deterministic tests cover transport transitions, finite output during aggressive controls, stream-cache publication/miss/seek behavior, starvation episode accounting and refill-onset smoothing. The streaming fixture can model a 90-minute track without allocating full-track audio, exercise repeated distant seeks, a prepared whole-track loop edge and intentional starvation/refill recovery.
@@ -64,4 +74,4 @@ Automated render checks support implementation confidence but do not replace rev
 
 ## Planned extension boundaries
 
-Analysis/cache workers feed immutable beat-grid/metadata results. Effect racks will have prepared fixed-capacity graph snapshots rather than GUI-owned objects accessed by audio. Plugin scanning is out-of-process; runtime isolation and recovery require latency, routing and license evaluation. Optional AI separation must not be a dependency of ordinary playback. No permanent hardware or universal plugin compatibility claims without a test matrix.
+Corrected beat grids will feed later sync, quantized hotcue and beat-loop scheduling through immutable/prepared snapshots rather than adding filesystem or analysis work to the audio callback. Effect racks will have prepared fixed-capacity graph snapshots rather than GUI-owned objects accessed by audio. Plugin scanning is out-of-process; runtime isolation and recovery require latency, routing and license evaluation. Optional AI separation must not be a dependency of ordinary playback. No permanent hardware or universal plugin compatibility claims without a test matrix.
