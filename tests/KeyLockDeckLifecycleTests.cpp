@@ -48,6 +48,12 @@ int main() {
     CHECK(engine.submit(0, std::move(clip)));
     lifecycle.noteClipSubmitted(0, clipAddress);
     CHECK(lifecycle.dirty(0));
+
+    // Engine adopts a newly submitted clip at the next callback boundary and,
+    // by design, forces its play control back to stopped. Stage/play assertions
+    // therefore start only after this ordinary production adoption block.
+    process(engine);
+    CHECK(!engine.control(0).playing.load());
     CHECK(lifecycle.service(0, 0.0, false, 1.0, false)
         == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
     CHECK(lifecycle.armed(0));
