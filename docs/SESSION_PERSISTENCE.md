@@ -14,11 +14,13 @@ Session schema version 1 uses a compact binary envelope with an explicit magic v
 
 Writes are bounded to a 1 MiB session file and 64 KiB per local path. Saving writes a temporary file first, reads it back through the same validator, preserves an existing session as a temporary backup, publishes the verified file by rename and attempts rollback if publication fails. A rejected or invalid new snapshot must not destroy the last valid session.
 
+Backup recovery is explicit rather than silent. `load()` accepts only the requested primary snapshot. `loadRecoveringBackup()` may be used by a future recovery UI to read a verified `.bak` snapshot if an interrupted publish left the primary missing or corrupt; it reports whether backup recovery was used. It never starts audio or rewrites the damaged primary file automatically.
+
 `wasPlaying` is persisted only as session history/state. Future native restore wiring must not silently auto-start audio merely because a saved deck was playing; resuming playback must remain an explicit product decision with safe user-visible behavior.
 
 ## Test evidence
 
-`tests/LibraryDatabaseTests.cpp` exercises deterministic session save/load alongside the local-library persistence suite. Coverage includes four-deck independence, mixer/control round-trip, NaN rejection without replacing the previous valid session, future-schema rejection, checksum-corruption detection and oversized-path rejection. The header also passes a strict standalone C++20 compile with warnings promoted to errors in the development checkpoint.
+`tests/LibraryDatabaseTests.cpp` exercises deterministic session save/load alongside the local-library persistence suite. Coverage includes four-deck independence, mixer/control round-trip, NaN rejection without replacing the previous valid session, future-schema rejection, checksum-corruption detection, oversized-path rejection, missing-primary backup recovery and corrupt-primary backup recovery. The header also passes a strict standalone C++20 compile with warnings promoted to errors in the development checkpoint.
 
 ## Still open for M4
 
