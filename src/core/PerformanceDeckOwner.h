@@ -52,6 +52,15 @@ public:
 
     using HotCueBank = std::array<HotCue, hotCueCount>;
 
+    struct SyncMaintenanceResult final {
+        Result result = Result::invalidRequest;
+        bool rateChanged = false;
+        bool phaseCorrected = false;
+        double followerRate = 1.0;
+        double phaseErrorBeats = 0.0;
+        double normalizedSeek = -1.0;
+    };
+
     PerformanceDeckOwner(Engine& targetEngine, std::size_t deckIndex) noexcept
         : engine(targetEngine), deck(deckIndex) {}
 
@@ -476,6 +485,119 @@ public:
         return syncToAt(master, followerSeconds, followerDuration,
                         masterSeconds, masterDuration,
                         maxRateDelta, maxPhaseCorrectionBeats);
+    }
+
+    // Maintain an already-established Sync relationship from the message/control
+    // thread without turning the audio callback into a beat scheduler. Tempo is
+    // corrected when it materially drifts; phase seeks are issued only outside a
+    // small deadband and inside a stricter bounded correction envelope. Beat-loop,
+    // Reverse or Slip ownership on either deck makes maintenance fail closed so a
+    // continuous lock never fights another transport workflow.
+    [[nodiscard]] SyncMaintenanceResult maintainSyncToAt(
+        const PerformanceDeckOwner& master,
+        double followerSeconds, double followerDurationSeconds,
+        double masterSeconds, double masterDurationSeconds,
+        double maxRateDelta = 0.20,
+        double phaseDeadbandBeats = 0.08,
+        double maxPhaseCorrectionBeats = 0.35,
+        double rateEpsilon = 0.0005) noexcept {
+        SyncMaintenanceResult outcome;
+        if (!validDeck() || !master.validDeck()) {
+            outcome.result = Result::invalidDeck;
+            return outcome;
+        }
+        if (&engine != &master.engine || deck == master.deck) {
+            outcome.result = Result::invalidRequest;
+            return outcome;
+        }
+        if (!hasReviewedGrid() || !master.hasReviewedGrid()) {
+            outcome.result = Result::gridUnavailable;
+            return outcome;
+        }
+        if (!std::isfinite(followerSeconds) || !std::isfinite(followerDurationSeconds)
+            || !std::isfinite(masterSeconds) || !std::isfinite(masterDurationSeconds)
+            || !std::isfinite(maxRateDelta) || !std::isfinite(phaseDeadbandBeats)
+            || !std::isfinite(maxPhaseCorrectionBeats) || !std::isfinite(rateEpsilon)
+            || followerSeconds < 0.0 || masterSeconds < 0.0
+            || followerDurationSeconds <= 0.0 || masterDurationSeconds <= 0.0
+            || maxRateDelta < 0.0 || maxRateDelta > 0.50
+            || phaseDeadbandBeats < 0.0 || phaseDeadbandBeats > 0.25
+            || maxPhaseCorrectionBeats < phaseDeadbandBeats
+            || maxPhaseCorrectionBeats > 0.50
+            || rateEpsilon < 0.0 || rateEpsilon > 0.05) {
+            outcome.result = Result::invalidRequest;
+            return outcome;
+        }
+        if (followerSeconds >= followerDurationSeconds || masterSeconds >= masterDurationSeconds) {
+            outcome.result = Result::outsideTrack;
+            return outcome;
+        }
+        if (activeBeatLoopBeats > 0.0 || engine.loopRegionEnabled(deck)
+            || reverseEnabled() || slipEnabled()
+            || master.activeBeatLoopBeats > 0.0 || engine.loopRegionEnabled(master.deck)
+            || master.reverseEnabled() || master.slipEnabled()) {
+            outcome.result = Result::rendererBusy;
+            return outcome;
+        }
+
+        const double masterPlaybackRate = static_cast<double>(
+            engine.control(master.deck).rate.load(std::memory_order_acquire));
+        const double currentFollowerRate = static_cast<double>(
+            engine.control(deck).rate.load(std::memory_order_acquire));
+        if (!std::isfinite(masterPlaybackRate) || !std::isfinite(currentFollowerRate)
+            || masterPlaybackRate < 0.5 || masterPlaybackRate > 1.5
+            || currentFollowerRate < 0.5 || currentFollowerRate > 1.5) {
+            outcome.result = Result::invalidRequest;
+            return outcome;
+        }
+
+        const auto plan = planBeatSync(grid, followerSeconds, master.grid, masterSeconds,
+                                       maxRateDelta, masterPlaybackRate);
+        if (!plan.valid || !std::isfinite(plan.followerRate)
+            || !std::isfinite(plan.followerTargetSeconds)
+            || !std::isfinite(plan.phaseErrorBeats)
+            || plan.followerRate < 0.5 || plan.followerRate > 1.5
+            || plan.followerTargetSeconds < 0.0
+            || plan.followerTargetSeconds >= followerDurationSeconds
+            || std::abs(plan.phaseErrorBeats) > maxPhaseCorrectionBeats + 1.0e-12) {
+            outcome.result = Result::invalidRequest;
+            return outcome;
+        }
+
+        outcome.result = Result::applied;
+        outcome.followerRate = plan.followerRate;
+        outcome.phaseErrorBeats = plan.phaseErrorBeats;
+        outcome.rateChanged = std::abs(currentFollowerRate - plan.followerRate) > rateEpsilon;
+        outcome.phaseCorrected = std::abs(plan.phaseErrorBeats) > phaseDeadbandBeats;
+        if (outcome.phaseCorrected)
+            outcome.normalizedSeek = plan.followerTargetSeconds / followerDurationSeconds;
+
+        auto& control = engine.control(deck);
+        if (outcome.rateChanged)
+            control.rate.store(static_cast<float>(plan.followerRate), std::memory_order_release);
+        if (outcome.phaseCorrected)
+            control.seek.store(outcome.normalizedSeek, std::memory_order_release);
+        return outcome;
+    }
+
+    [[nodiscard]] SyncMaintenanceResult maintainSyncToTransport(
+        const PerformanceDeckOwner& master,
+        double maxRateDelta = 0.20,
+        double phaseDeadbandBeats = 0.08,
+        double maxPhaseCorrectionBeats = 0.35,
+        double rateEpsilon = 0.0005) noexcept {
+        if (!validDeck() || !master.validDeck())
+            return SyncMaintenanceResult{Result::invalidDeck};
+        const auto followerSeconds = engine.meter(deck).position.load(std::memory_order_acquire);
+        const auto followerDuration = engine.meter(deck).duration.load(std::memory_order_acquire);
+        const auto masterSeconds = engine.meter(master.deck).position.load(std::memory_order_acquire);
+        const auto masterDuration = engine.meter(master.deck).duration.load(std::memory_order_acquire);
+        if (!std::isfinite(followerDuration) || followerDuration <= 0.0
+            || !std::isfinite(masterDuration) || masterDuration <= 0.0)
+            return SyncMaintenanceResult{Result::trackUnavailable};
+        return maintainSyncToAt(master, followerSeconds, followerDuration,
+                                masterSeconds, masterDuration, maxRateDelta,
+                                phaseDeadbandBeats, maxPhaseCorrectionBeats, rateEpsilon);
     }
 
     void clearHotCue(std::size_t slot) noexcept {

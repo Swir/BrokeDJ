@@ -233,6 +233,142 @@ void syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope() {
           "planner reports effective master tempo snapshot for diagnostics");
 }
 
+
+void continuousSyncMaintenanceUsesDeadbandAndFailsClosedOnTransportOwnership() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner follower(engine, 0);
+    broke::PerformanceDeckOwner master(engine, 1);
+    broke::BeatGrid followerGrid;
+    broke::BeatGrid masterGrid;
+    check(followerGrid.reset(0.0, 120.0), "continuous-sync follower grid initializes");
+    check(masterGrid.reset(0.0, 128.0), "continuous-sync master grid initializes");
+    check(follower.setReviewedGrid(followerGrid) == broke::PerformanceDeckOwner::Result::applied
+              && master.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "continuous-sync owners accept reviewed grids");
+
+    engine.control(0).rate.store(1.0f);
+    engine.control(0).seek.store(-1.0);
+    auto outcome = follower.maintainSyncToAt(master, 4.25, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::applied
+              && outcome.rateChanged && !outcome.phaseCorrected,
+          "continuous sync updates tempo while phase stays inside deadband");
+    check(std::abs(outcome.phaseErrorBeats - (1.0 / 30.0)) < 1.0e-9
+              && std::abs(static_cast<double>(engine.control(0).rate.load()) - (128.0 / 120.0)) < 1.0e-6,
+          "deadband maintenance reports phase error and publishes reviewed tempo ratio");
+    check(engine.control(0).seek.load() < 0.0,
+          "phase deadband does not create a seek mailbox command");
+
+    engine.control(0).seek.store(-1.0);
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::applied
+              && !outcome.rateChanged && outcome.phaseCorrected,
+          "continuous sync corrects material phase drift without rate churn");
+    check(outcome.normalizedSeek > 0.0
+              && std::abs(engine.control(0).seek.load() - outcome.normalizedSeek) < 1.0e-12,
+          "bounded phase correction publishes exactly the reported normalized target");
+
+    engine.control(0).seek.store(0.222);
+    outcome = follower.maintainSyncToAt(master, 4.0, 20.0, 3.984375, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "continuous sync rejects phase error outside correction envelope");
+    check(std::abs(engine.control(0).seek.load() - 0.222) < 1.0e-12,
+          "oversized phase error fails closed without overwriting transport");
+
+    check(follower.armBeatLoopAt(4.0, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "continuous-sync ownership fixture arms follower beat loop");
+    const double preservedRate = static_cast<double>(engine.control(0).rate.load());
+    const double preservedSeek = engine.control(0).seek.load();
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "beat-loop ownership suspends continuous sync fail closed");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - preservedRate) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - preservedSeek) < 1.0e-12,
+          "transport-owner conflict leaves rate and seek unchanged");
+    follower.disarmLoop();
+
+    check(master.setReverseSlipMode(broke::PerformanceDeckOwner::ReverseSlipMode::slipReverse)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "continuous-sync master can enter explicit slip-reverse fixture");
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "master split transport suspends continuous sync rather than following hidden cursor");
+    master.clearReverseSlip();
+
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0,
+                                        0.20, 0.10, 0.05, 0.0005);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "continuous sync rejects correction envelope narrower than its deadband");
+}
+
+void continuousSyncTracksVariableTempoAndClipIdentityFailClosed() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner follower(engine, 0);
+    broke::PerformanceDeckOwner master(engine, 1);
+
+    broke::BeatGrid followerGrid;
+    broke::BeatGrid masterGrid;
+    check(followerGrid.reset(0.0, 120.0),
+          "variable-sync follower grid initializes");
+    check(masterGrid.reset(0.0, 120.0),
+          "variable-sync master grid initializes");
+    check(followerGrid.insertTempoChangeAtBeat(8.0, 100.0),
+          "variable-sync follower tempo boundary inserts");
+    check(masterGrid.insertTempoChangeAtBeat(8.0, 110.0),
+          "variable-sync master tempo boundary inserts");
+    check(follower.setReviewedGrid(followerGrid) == broke::PerformanceDeckOwner::Result::applied
+              && master.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "variable-sync owners accept reviewed tempo maps");
+
+    engine.control(0).rate.store(0.95f);
+    engine.control(0).seek.store(-1.0);
+    auto beforeBoundary = follower.maintainSyncToAt(master, 3.75, 20.0, 3.75, 20.0);
+    check(beforeBoundary.result == broke::PerformanceDeckOwner::Result::applied
+              && beforeBoundary.rateChanged && !beforeBoundary.phaseCorrected,
+          "continuous sync uses pre-boundary local tempos");
+    check(std::abs(beforeBoundary.followerRate - 1.0) < 1.0e-12
+              && std::abs(static_cast<double>(engine.control(0).rate.load()) - 1.0) < 1.0e-6,
+          "pre-boundary equal tempos restore unity follower rate");
+
+    const double followerBeatTen = followerGrid.timeAtBeat(10.0);
+    const double masterBeatTen = masterGrid.timeAtBeat(10.0);
+    check(std::abs(followerBeatTen - 5.2) < 1.0e-9
+              && std::abs(masterBeatTen - (4.0 + 120.0 / 110.0)) < 1.0e-9,
+          "tempo maps resolve deterministic post-boundary beat times");
+    auto afterBoundary = follower.maintainSyncToAt(
+        master, followerBeatTen, 20.0, masterBeatTen, 20.0);
+    check(afterBoundary.result == broke::PerformanceDeckOwner::Result::applied
+              && afterBoundary.rateChanged && !afterBoundary.phaseCorrected,
+          "continuous sync re-evaluates local tempo after both boundaries");
+    check(std::abs(afterBoundary.followerRate - 1.10) < 1.0e-12
+              && std::abs(static_cast<double>(engine.control(0).rate.load()) - 1.10) < 1.0e-6,
+          "post-boundary follower tracks 110 BPM master against 100 BPM local segment");
+
+    follower.resetForClip();
+    engine.control(0).rate.store(0.87f);
+    engine.control(0).seek.store(0.321);
+    const auto missingFollowerGrid = follower.maintainSyncToAt(
+        master, 2.0, 20.0, masterBeatTen, 20.0);
+    check(missingFollowerGrid.result == broke::PerformanceDeckOwner::Result::gridUnavailable,
+          "clip replacement invalidates stale follower reviewed-grid sync intent");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 0.87) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - 0.321) < 1.0e-12,
+          "missing follower grid fails closed without rate or seek drift");
+
+    check(follower.setReviewedGrid(followerGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "replacement clip can adopt a newly reviewed follower grid");
+    master.resetForClip();
+    engine.control(0).rate.store(0.91f);
+    engine.control(0).seek.store(0.456);
+    const auto missingMasterGrid = follower.maintainSyncToAt(
+        master, followerBeatTen, 20.0, 2.0, 20.0);
+    check(missingMasterGrid.result == broke::PerformanceDeckOwner::Result::gridUnavailable,
+          "master clip replacement invalidates stale continuous-sync reference");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - 0.91) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - 0.456) < 1.0e-12,
+          "missing master grid fails closed without follower control drift");
+}
+
 void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
     broke::Engine engine;
     broke::PerformanceDeckOwner owner(engine, 0);
@@ -416,6 +552,8 @@ int main() {
         hotCuesUseReviewedGridAndSafeTransportRules();
         beatJumpAndSyncAreBoundedReviewedGridActions();
         syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope();
+        continuousSyncMaintenanceUsesDeadbandAndFailsClosedOnTransportOwnership();
+        continuousSyncTracksVariableTempoAndClipIdentityFailClosed();
         reverseSlipOwnershipAndTransportJumpsAreFailClosed();
         failClosedBoundariesDoNotDriftControls();
         std::cout << "PerformanceDeckOwnerTests: " << checks << " checks passed\n";

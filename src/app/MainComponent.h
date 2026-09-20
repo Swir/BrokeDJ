@@ -47,7 +47,7 @@ public:
     std::function<void(std::size_t, bool)> onHotCueRequested;
     std::function<void(double)> onBeatJumpRequested;
     std::function<void(bool)> onSyncMasterRequested;
-    std::function<void()> onSyncRequested;
+    std::function<bool(bool)> onSyncRequested;
     std::function<bool(broke::PerformanceDeckOwner::ReverseSlipMode)> onReverseSlipModeRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
@@ -56,7 +56,8 @@ public:
     void setBeatGrid(const broke::BeatGrid&, bool manual);
     void setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats,
                              const broke::PerformanceDeckOwner::HotCueBank& hotCues,
-                             bool trackReady, bool isSyncMaster, bool syncAvailable);
+                             bool trackReady, bool isSyncMaster, bool syncAvailable, bool syncLocked);
+    [[nodiscard]] bool jogScratchActive() const noexcept { return jogScratch.active(); }
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -111,6 +112,9 @@ private:
     [[nodiscard]] bool jumpBeats(std::size_t deck, double beats);
     void setSyncMaster(std::size_t deck, bool enabled);
     [[nodiscard]] bool syncDeck(std::size_t followerDeck);
+    [[nodiscard]] bool setSyncLock(std::size_t followerDeck, bool enabled);
+    void clearSyncFollowers() noexcept;
+    void serviceContinuousSync();
     void restoreHotCues(std::size_t deck, const juce::File& file, double trackDurationSeconds,
                         std::uint64_t generation);
     void persistHotCues(std::size_t deck, const juce::File& file, std::uint64_t generation,
@@ -130,6 +134,8 @@ private:
     std::array<std::unique_ptr<broke::TempoSegmentEditorModel>, broke::deckCount> tempoSegmentEditors;
     std::array<std::unique_ptr<DeckPanel>, broke::deckCount> decks;
     std::optional<std::size_t> syncMasterDeck;
+    std::array<bool, broke::deckCount> syncFollowers{};
+    std::uint32_t syncServiceTick = 0;
     std::array<bool, broke::deckCount> loading{};
     std::array<juce::File, broke::deckCount> deckFiles;
     std::array<broke::BeatGrid, broke::deckCount> detectedBeatGrids;
