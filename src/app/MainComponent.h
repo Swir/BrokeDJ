@@ -47,6 +47,7 @@ public:
     std::function<void(double)> onBeatJumpRequested;
     std::function<void(bool)> onSyncMasterRequested;
     std::function<void()> onSyncRequested;
+    std::function<bool(broke::PerformanceDeckOwner::ReverseSlipMode)> onReverseSlipModeRequested;
     void setTrack(const juce::String&, std::vector<float>);
     void setLoading(bool);
     void setRhythmPending();
@@ -69,7 +70,7 @@ private:
     juce::TextButton load, play, rewind, loop, beatLoop, cue;
     juce::ComboBox beatLoopLength;
     std::array<juce::TextButton, broke::PerformanceDeckOwner::hotCueCount> hotCuePads;
-    juce::TextButton jumpBack, jumpForward, syncMaster, sync;
+    juce::TextButton jumpBack, jumpForward, reverse, slip, syncMaster, sync;
     juce::ComboBox jumpLength;
     std::array<juce::Slider, 7> knobs;
     std::array<juce::Label, 7> knobNames;
@@ -103,6 +104,7 @@ private:
     void closeTempoSegmentEditorForDeck(std::size_t);
     void setWholeTrackLoop(std::size_t, bool enabled);
     [[nodiscard]] bool setBeatLoop(std::size_t, double beats, bool enabled);
+    [[nodiscard]] bool setReverseSlipMode(std::size_t deck, broke::PerformanceDeckOwner::ReverseSlipMode mode);
     void handleHotCue(std::size_t deck, std::size_t slot, bool clear);
     [[nodiscard]] bool jumpBeats(std::size_t deck, double beats);
     void setSyncMaster(std::size_t deck, bool enabled);
