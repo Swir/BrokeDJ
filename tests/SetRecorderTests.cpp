@@ -105,7 +105,6 @@ void testInvalidStartFailsClosed() {
 } // namespace
 
 int main() {
-    juce::ScopedJuceInitialiser_GUI initialiseJuce;
     testCleanFinalize();
     testOverflowIsMeasuredNotBlocking();
     testInvalidStartFailsClosed();
