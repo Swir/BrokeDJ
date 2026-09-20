@@ -158,6 +158,9 @@ public:
     void getNextAudioBlock(const juce::AudioSourceChannelInfo&) override;
     void paint(juce::Graphics&) override;
     void resized() override;
+    void loadFileIntoDeck(std::size_t deck, const juce::File& file) {
+        if (deck < broke::deckCount) load(deck, file);
+    }
 private:
     void timerCallback() override;
     void browse(std::size_t);

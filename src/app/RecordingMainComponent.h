@@ -3,6 +3,7 @@
 #pragma once
 
 #include "MainComponent.h"
+#include "LibraryWorkflow.h"
 #include "SetRecorder.h"
 #include "core/MasterPathProcessor.h"
 
@@ -21,11 +22,11 @@
 class RecordingMainComponent final : public MainComponent {
 public:
     explicit RecordingMainComponent(bool openAudio = true, bool enableKeyLockResearch = false)
-        : MainComponent(openAudio, enableKeyLockResearch) {
+        : MainComponent(openAudio, enableKeyLockResearch), libraryWorkflow(*this) {
         recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
         recordButton.setTooltip(text(
             "Record post-limiter master outputs 1/2 to a 24-bit WAV. Disk encoding runs on a background thread; FIFO overflow is counted as a recording dropout instead of blocking playback.",
-            "Nagraj wyjście master 1/2 po limiterze do WAV 24-bit. Zapis na dysk działa w tle; przepełnienie bufora jest liczone jako dropout nagrania zamiast blokować odtwarzanie."));
+            "Nagraj wyjście master 1/2 po limiterze do WAV 24-bit. Zapis na dysku działa w tle; przepełnienie bufora jest liczone jako dropout nagrania zamiast blokować odtwarzanie."));
         recordButton.onClick = [this] { toggleRecording(); };
         addAndMakeVisible(recordButton);
 
@@ -236,6 +237,10 @@ public:
 
         constexpr int ioWidth = 64;
         micIoButton.setBounds(right - ioWidth, 20, ioWidth, 34);
+        right -= ioWidth + gap;
+
+        constexpr int libraryWidth = 82;
+        libraryWorkflow.setButtonBounds({right - libraryWidth, 20, libraryWidth, 34});
     }
 
 private:
@@ -381,5 +386,6 @@ private:
     std::atomic<bool> microphoneInputAvailable{false};
     std::atomic<bool> boothOutputAvailable{false};
 
+    LibraryWorkflow libraryWorkflow;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordingMainComponent)
 };
