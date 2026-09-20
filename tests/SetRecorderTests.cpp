@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-#include <JuceHeader.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include "app/SetRecorder.h"
 
 #include <algorithm>
