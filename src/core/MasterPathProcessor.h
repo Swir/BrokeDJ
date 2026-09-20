@@ -35,9 +35,9 @@ public:
     void prepare(double rate) noexcept {
         sampleRate = std::isfinite(rate) && rate >= 8000.0 && rate <= 384000.0
             ? rate : 48000.0;
-        micAttackCoeff = coefficientForMilliseconds(5.0);
-        micReleaseCoeff = coefficientForMilliseconds(220.0);
-        limiterReleaseCoeff = coefficientForMilliseconds(120.0);
+        micAttackCoeff = static_cast<float>(coefficientForMilliseconds(5.0));
+        micReleaseCoeff = static_cast<float>(coefficientForMilliseconds(220.0));
+        limiterReleaseCoeff = static_cast<float>(coefficientForMilliseconds(120.0));
         resetRealtimeState();
         resetMetrics();
     }
@@ -151,7 +151,12 @@ public:
                     // described as transparent or true-peak limiting.
                     limiterGainState = requestedGain;
                 } else {
-                    limiterGainState = 1.0f - (1.0f - limiterGainState) * limiterReleaseCoeff;
+                    // The release may only rise as far as the current sample is
+                    // safe. Without this clamp, a sustained peak can alternate
+                    // between attack and release and briefly exceed the ceiling.
+                    const float releaseCandidate = 1.0f
+                        - (1.0f - limiterGainState) * limiterReleaseCoeff;
+                    limiterGainState = std::min(requestedGain, releaseCandidate);
                 }
             }
 
