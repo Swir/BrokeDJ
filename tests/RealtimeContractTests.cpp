@@ -168,6 +168,8 @@ void run() {
             auto& a = engine.control(0);
             a.seek = (block % 74) == 0 ? 0.18 : 0.72;
             a.rate = (block % 111) == 0 ? 1.35f : 0.82f;
+            a.trimDb = (block % 74) == 0 ? 9.0f : -6.0f;
+            a.gain = (block % 148) == 0 ? 1.25f : 0.62f;
             a.low = (block % 2) == 0 ? 0.4f : 1.6f;
             a.mid = (block % 3) == 0 ? 0.6f : 1.4f;
             a.high = (block % 5) == 0 ? 0.7f : 1.3f;
@@ -179,6 +181,7 @@ void run() {
             auto& b = engine.control(1);
             b.seek = (block % 106) == 0 ? 0.18 : 0.61;
             b.rate = (block % 159) == 0 ? 1.2f : 0.95f;
+            b.trimDb = (block % 106) == 0 ? 12.0f : -12.0f;
             const int phase = (block / 53) % 4;
             b.reverse = phase == 1 || phase == 3;
             b.slip = phase == 2 || phase == 3;
@@ -195,12 +198,20 @@ void run() {
 
     const auto observedAllocations = allocations.load(std::memory_order_relaxed);
     const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
-    check(observedAllocations == 0, "audio callback performs no heap allocation under transport/FX/beat-loop/reverse/slip/crossfader-curve stress");
-    check(observedDeallocations == 0, "audio callback performs no heap deallocation under transport/FX/beat-loop/reverse/slip/crossfader-curve stress");
+    check(observedAllocations == 0, "audio callback performs no heap allocation under trim/fader/transport/FX/beat-loop/reverse/slip/crossfader-curve stress");
+    check(observedDeallocations == 0, "audio callback performs no heap deallocation under trim/fader/transport/FX/beat-loop/reverse/slip/crossfader-curve stress");
     for (const auto& channel : audio) {
         check(std::all_of(channel.begin(), channel.end(), [](float value) { return std::isfinite(value); }),
               "callback output remains finite after stress");
     }
+    for (std::size_t deck = 0; deck < 2; ++deck) {
+        check(std::isfinite(engine.meter(deck).preFaderPeak.load())
+                  && std::isfinite(engine.meter(deck).peak.load())
+                  && std::isfinite(engine.meter(deck).rms.load()),
+              "realtime gain-staging meters remain finite under automation stress");
+    }
+    check(std::isfinite(engine.masterPeak.load()) && std::isfinite(engine.masterRms.load()),
+          "master peak and RMS remain finite under automation stress");
 
     const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count();
     constexpr double renderedFrames = 1200.0 * 256.0;
@@ -212,6 +223,7 @@ void run() {
               << " beat_loop_region_active=1"
               << " reverse_slip_stress=1"
               << " crossfader_curve_stress=1"
+              << " trim_fader_meter_stress=1"
               << " timing_is_diagnostic_only=1\n";
 
     // Release-build CI records these timing diagnostics across representative

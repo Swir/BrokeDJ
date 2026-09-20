@@ -19,6 +19,13 @@ inline constexpr std::size_t resamplerPhases = 128;
 inline constexpr std::size_t resamplerCutoffBins = 64;
 inline constexpr float resamplerMinCutoff = 0.06f;
 inline constexpr int defaultMaxAudioBlockFrames = 8192;
+inline constexpr float minTrimDb = -24.0f;
+inline constexpr float maxTrimDb = 12.0f;
+
+[[nodiscard]] inline float decibelsToGain(float decibels) noexcept {
+    const float safe = std::isfinite(decibels) ? std::clamp(decibels, minTrimDb, maxTrimDb) : 0.0f;
+    return std::pow(10.0f, safe / 20.0f);
+}
 
 struct StreamCacheDiagnostics final {
     std::int64_t requestedFrame = 0;
@@ -138,18 +145,22 @@ public:
 // Reverse changes the audible/source direction. Slip keeps the underlying
 // transport moving forward while reverse is audible, so releasing reverse can
 // rejoin the uninterrupted timeline. Beat-loop and external source renderers
-// reject these modes fail-closed in Engine::process().
+// reject these modes fail-closed in Engine::process(). trimDb is an input trim
+// before EQ/FX/cue; gain remains the post-FX channel fader.
 struct Controls final {
     std::atomic<bool> playing{false}, loop{false}, headphone{false};
     std::atomic<bool> reverse{false}, slip{false};
-    std::atomic<float> gain{0.7f}, rate{1.0f};
+    std::atomic<float> trimDb{0.0f}, gain{0.7f}, rate{1.0f};
     std::atomic<float> low{1.0f}, mid{1.0f}, high{1.0f};
     std::atomic<float> echo{0.0f}, drive{0.0f};
     std::atomic<double> seek{-1.0};
 };
 struct Meter final {
     std::atomic<double> position{0.0}, audiblePosition{0.0}, duration{0.0};
-    std::atomic<float> peak{0.0f};
+    // preFaderPeak is post-trim/EQ/FX and is intended for gain staging. peak/rms
+    // are post-channel-fader and therefore describe the signal sent to the mix.
+    std::atomic<float> preFaderPeak{0.0f}, peak{0.0f}, rms{0.0f};
+    std::atomic<bool> overloaded{false};
 };
 
 // Immutable clip ownership: publisher -> pending -> audio -> retired -> publisher.
@@ -544,13 +555,13 @@ public:
     std::atomic<float> crossfader{0.5f}, master{0.5f}, headphoneLevel{0.5f};
     std::atomic<std::uint8_t> crossfaderCurve{
         static_cast<std::uint8_t>(CrossfaderCurve::constantPower)};
-    std::atomic<float> masterPeak{0.0f};
+    std::atomic<float> masterPeak{0.0f}, masterRms{0.0f};
     std::atomic<bool> clipped{false};
 private:
     struct State {
         double cursor = 0.0;
         double audibleCursor = 0.0;
-        float gain = 0.0f, rate = 1.0f, cue = 0.0f;
+        float trim = 1.0f, gain = 0.0f, rate = 1.0f, cue = 0.0f;
         float low = 1.0f, mid = 1.0f, high = 1.0f;
         float echo = 0.0f, drive = 0.0f;
         std::array<float, 2> bass{}, treble{};

@@ -139,8 +139,8 @@ private:
     std::array<juce::TextButton, broke::PerformanceDeckOwner::hotCueCount> hotCuePads;
     juce::TextButton jumpBack, jumpForward, reverse, slip, syncMaster, sync;
     juce::ComboBox jumpLength;
-    std::array<juce::Slider, 7> knobs;
-    std::array<juce::Label, 7> knobNames;
+    std::array<juce::Slider, 8> knobs;
+    std::array<juce::Label, 8> knobNames;
     juce::Slider gridZero, gridBpm;
     juce::Label gridZeroLabel, gridBpmLabel;
     juce::TextButton gridReset, tempoMap;
