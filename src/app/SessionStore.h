@@ -4,6 +4,7 @@
 
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -13,9 +14,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <type_traits>
 #include <vector>
-#include <cmath>
 
 namespace broke::session {
 
@@ -186,6 +185,47 @@ public:
             return loadFile(file, error);
         } catch (...) {
             setError(error, "Unexpected failure while loading session");
+            return std::nullopt;
+        }
+    }
+
+    // A .bak file can remain only when publication/rollback was interrupted. Recovery is explicit:
+    // ordinary load() never silently substitutes another snapshot, while callers that offer a
+    // recovery UI can opt into the last verified pre-replacement state.
+    [[nodiscard]] std::optional<SessionState> loadRecoveringBackup(
+        const std::filesystem::path& file,
+        bool* usedBackup = nullptr,
+        std::string* error = nullptr) const noexcept {
+        if (usedBackup != nullptr) *usedBackup = false;
+        try {
+            std::string primaryError;
+            if (auto primary = loadFile(file, &primaryError)) return primary;
+
+            auto backup = file;
+            backup += ".bak";
+            std::string backupError;
+            if (auto recovered = loadFile(backup, &backupError)) {
+                if (usedBackup != nullptr) *usedBackup = true;
+                if (error != nullptr) {
+                    error->assign("Primary session unavailable; recovered verified backup");
+                    if (!primaryError.empty()) {
+                        error->append(": ");
+                        error->append(primaryError);
+                    }
+                }
+                return recovered;
+            }
+
+            if (error != nullptr) {
+                error->assign(primaryError.empty() ? "Primary session could not be loaded" : primaryError);
+                if (!backupError.empty()) {
+                    error->append("; backup recovery failed: ");
+                    error->append(backupError);
+                }
+            }
+            return std::nullopt;
+        } catch (...) {
+            setError(error, "Unexpected failure while recovering session");
             return std::nullopt;
         }
     }
