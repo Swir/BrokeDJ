@@ -1,0 +1,22 @@
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 848c67f..64c8ef2 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -58,10 +58,16 @@ BPM/grid and musical-key analysis run only on the dedicated analysis worker afte
+ 
+ `BeatGrid` remains JUCE-independent and owns validated beat↔time mapping plus bounded variable-tempo segments. The message thread owns each deck's currently displayed detected grid and active grid. `TrackBeatGridOverrideStore` is consulted on the analysis worker; a valid matching manual override wins over detector output. Compact UI edits copy and transactionally validate the current grid, then update the message-thread snapshot immediately while persistence is serialized through the analysis worker. A per-deck generation counter prevents stale completion messages from replacing status after a newer edit/reset/load. Reset immediately restores the detected grid and queues override deletion. None of these operations run in `Engine::process()`.
+ 
+-The waveform remains an amplitude preview. Beat lines are a bounded rendering overlay derived from the validated active grid, with display stride increased when needed so painting cannot iterate an unbounded number of beats. A brighter overlay identifies a manual grid. The current compact editor exposes beat-zero and segment-0 BPM only; later tempo-change segments remain preserved in the model and persisted record but are not yet a full segment editor.
++The waveform remains an amplitude preview. Beat lines are a bounded rendering overlay derived from the validated active grid, with display stride increased when needed so painting cannot iterate an unbounded number of beats. A brighter overlay identifies a manual grid. The deck exposes fast beat-zero/segment-0 BPM controls plus a native reviewed tempo-map dialog. Later boundaries can be added at the playhead, selected, moved, replaced or removed with bounded Undo/Redo; accepted snapshots flow through `PerformanceDeckOwner` and persist asynchronously outside `Engine::process()`.
+ 
+ `brokedj_analysis_validator` is a local developer tool built alongside the native app. It reads a manifest outside the repository, invokes the uncached offline detector path on user-owned/licensed audio and reports stable manifest IDs plus aggregate BPM/key evidence without printing source paths. It is deliberately not an automatic CTest because no reference music is redistributed with BrokeDJ. See [`ANALYSIS_VALIDATION.md`](ANALYSIS_VALIDATION.md).
+ 
++## Continuous reviewed-grid Sync ownership
++
++Continuous Sync remains a control-thread feature rather than an audio-callback beat scheduler. Enabling a follower first uses the existing bounded reviewed-grid alignment. While both master and follower are playing, a 5 Hz message-thread service asks `PerformanceDeckOwner` to re-evaluate local variable-tempo BPM and beat phase against the selected master. The owner only writes a new rate when it differs by more than a small epsilon, suppresses phase seeks inside an 0.08-beat deadband, and rejects corrections beyond a 0.35-beat envelope or outside the qualified 0.8–1.2 relative-rate range.
++
++Reviewed Beat Loop or Reverse/Slip ownership on either deck fails maintenance closed so Sync cannot fight another transport workflow. Native Jog/Scratch activity is observed by the UI integration and temporarily suspends maintenance while the platter is touched; release resumes the existing lock rather than changing callback topology. Replacing the master clears follower locks, and replacing a follower clip clears only that deck's lock. Optional key-lock research is notified of any accepted rate/phase maintenance so it can continue to fall back conservatively. These rules are deterministic software behavior only; MIDI/controller timing, physical latency and reviewed music-domain accuracy still require separate qualification.
++
+ ## Quality validation boundary
+ 
+ Deterministic tests cover transport transitions, finite output during aggressive controls, stream-cache publication/miss/seek behavior, starvation episode accounting and refill-onset smoothing. The streaming fixture can model a 90-minute track without allocating full-track audio, exercise repeated distant seeks, a prepared whole-track loop edge and intentional starvation/refill recovery.

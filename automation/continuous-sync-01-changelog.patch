@@ -1,0 +1,18 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1532c93..e4b4fb1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,13 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
+ 
+ ## Unreleased
+ 
++### Performance deck sync and tempo-map workflow
++
++- Added bounded continuous reviewed-grid Sync on top of the existing one-shot alignment: followers track the selected master from the message thread at 5 Hz instead of adding beat scheduling to the realtime callback.
++- Continuous Sync suppresses phase seeks inside an 0.08-beat deadband, rejects corrections beyond 0.35 beat, avoids rate-write churn with an epsilon and releases fail-closed when Beat Loop or Reverse/Slip owns either transport.
++- Native Jog/Scratch temporarily suspends Sync maintenance while a platter gesture is active, preventing the sync service from fighting user jog velocity; clip/master replacement clears stale follower locks.
++- Documented the already-integrated native variable-tempo editor (add/move/replace/remove boundaries plus bounded Undo/Redo), REV/SLIP and native JOG/SCRATCH controls instead of continuing to list them as wholly open work.
++
+ ### Long-track playback foundation
+ 
+ - Added a fixed-capacity lock-free stream cache to the JUCE-independent core.
