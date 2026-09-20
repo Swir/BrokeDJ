@@ -1,0 +1,39 @@
+name: Apply continuous Sync ownership hardening
+
+on:
+  push:
+    branches: [feat/m2-continuous-sync-lock]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[sync-ownership-applied]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Apply verified hardening patch
+        shell: bash
+        run: |
+          git apply --check automation/sync-ownership-hardening.patch
+          git apply automation/sync-ownership-hardening.patch
+      - name: Verify dependency-free core and progress
+        shell: bash
+        run: |
+          cmake -S . -B build/bootstrap-core -DBROKEDJ_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/bootstrap-core --parallel 2
+          ctest --test-dir build/bootstrap-core --output-on-failure
+          python3 scripts/update_progress.py --check
+      - name: Commit implementation and remove transfer helpers
+        shell: bash
+        run: |
+          rm -f automation/sync-ownership-hardening.patch .github/workflows/apply-sync-ownership-hardening.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'M2: harden continuous Sync ownership [sync-ownership-applied]'
+          git push origin HEAD:feat/m2-continuous-sync-lock
