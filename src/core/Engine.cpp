@@ -334,7 +334,9 @@ bool Engine::submit(std::size_t deck, std::unique_ptr<Clip> clip) {
 void Engine::collectRetired() noexcept { for (auto& c : clips) c.collect(); }
 bool Engine::setDeckSourceRenderer(std::size_t deck, DeckSourceRenderer* renderer) noexcept {
     if (deck >= deckCount) return false;
-    sourceRenderers[deck] = renderer;
+    // nullptr removes an optional/research provider and restores the built-in
+    // loop-region owner instead of leaving production transport unowned.
+    sourceRenderers[deck] = renderer != nullptr ? renderer : &loopRegionRenderers[deck];
     return true;
 }
 void Engine::process(float* const* output, int channels, int frames) noexcept {
