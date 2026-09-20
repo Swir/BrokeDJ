@@ -2,6 +2,9 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
 
+#include <array>
+#include <utility>
+
 namespace {
 
 juce::String oneLine(juce::String value) {
@@ -224,7 +227,10 @@ public:
         const bool smokeTest = arguments.contains("--smoke-test");
         const bool keyLockResearch = arguments.contains("--key-lock-research");
         window = std::make_unique<Window>(!smokeTest, keyLockResearch);
-        if (smokeTest) juce::Timer::callAfterDelay(1200, [this] { quit(); });
+        if (smokeTest) {
+            guiSmokeSteps.clear();
+            juce::Timer::callAfterDelay(100, [this] { runGuiSmokeStep(0); });
+        }
     }
     void shutdown() override { window.reset(); juce::Logger::setCurrentLogger(nullptr); logger.reset(); }
     void systemRequestedQuit() override { quit(); }
@@ -240,6 +246,73 @@ private:
         }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
+
+    void finishGuiSmoke(bool success, const juce::String& error = {}) {
+        auto* root = new juce::DynamicObject();
+        juce::var report(root);
+        root->setProperty("schema_version", 1);
+        root->setProperty("mode", "native-resize-lifecycle");
+        root->setProperty("plays_audio", false);
+        root->setProperty("opens_audio_device", false);
+        root->setProperty("success", success);
+        root->setProperty("step_count", guiSmokeSteps.size());
+        root->setProperty("steps", guiSmokeSteps);
+        root->setProperty("qualification_note",
+                          "No-audio GUI lifecycle/resize evidence only; this does not certify manual usability, HiDPI appearance, audio-device switching, controller input, or live readiness.");
+        if (error.isNotEmpty()) root->setProperty("error", oneLine(error));
+
+        const auto output = juce::File::getCurrentWorkingDirectory().getChildFile("BrokeDJ-gui-smoke.json");
+        if (!output.replaceWithText(juce::JSON::toString(report, false) + "\n")) {
+            setApplicationReturnValue(5);
+            juce::Logger::writeToLog("GUI smoke could not write BrokeDJ-gui-smoke.json");
+            quit();
+            return;
+        }
+
+        if (!success) setApplicationReturnValue(4);
+        juce::Logger::writeToLog(success ? "GUI smoke resize sequence passed." : "GUI smoke resize sequence failed: " + error);
+        quit();
+    }
+
+    void runGuiSmokeStep(std::size_t step) {
+        static constexpr std::array<std::pair<int, int>, 4> smokeSizes{{
+            {1050, 800}, {1280, 860}, {1600, 900}, {1050, 800}
+        }};
+
+        if (!window) {
+            finishGuiSmoke(false, "Application window disappeared during smoke sequence.");
+            return;
+        }
+        if (step >= smokeSizes.size()) {
+            finishGuiSmoke(true);
+            return;
+        }
+
+        const auto [requestedWidth, requestedHeight] = smokeSizes[step];
+        window->setSize(requestedWidth, requestedHeight);
+        auto* content = window->getContentComponent();
+
+        auto* row = new juce::DynamicObject();
+        row->setProperty("step", static_cast<int>(step));
+        row->setProperty("requested_width", requestedWidth);
+        row->setProperty("requested_height", requestedHeight);
+        row->setProperty("window_width", window->getWidth());
+        row->setProperty("window_height", window->getHeight());
+        row->setProperty("content_width", content != nullptr ? content->getWidth() : 0);
+        row->setProperty("content_height", content != nullptr ? content->getHeight() : 0);
+        guiSmokeSteps.add(juce::var(row));
+
+        const bool acceptedSize = window->getWidth() == requestedWidth && window->getHeight() == requestedHeight;
+        const bool contentSane = content != nullptr && content->getWidth() > 0 && content->getHeight() > 0;
+        if (!acceptedSize || !contentSane) {
+            finishGuiSmoke(false, "Native window/content did not accept a deterministic resize target.");
+            return;
+        }
+
+        juce::Timer::callAfterDelay(120, [this, next = step + 1] { runGuiSmokeStep(next); });
+    }
+
+    juce::Array<juce::var> guiSmokeSteps;
     std::unique_ptr<juce::FileLogger> logger;
     std::unique_ptr<Window> window;
 };

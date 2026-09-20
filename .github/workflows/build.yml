@@ -44,13 +44,35 @@ jobs:
           $exitCode = $LASTEXITCODE
           $log | Tee-Object -FilePath build/windows/diagnostics/audio-metrics.txt
           if ($exitCode -ne 0) { throw "Audio diagnostics failed: $exitCode" }
-      - name: Native GUI lifecycle smoke test (no audio hardware)
+      - name: Native GUI lifecycle and resize smoke test (no audio hardware)
         shell: pwsh
         run: |
           $exe = Resolve-Path 'build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe'
+          Remove-Item 'BrokeDJ-gui-smoke.json' -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -PassThru
           if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'GUI smoke test timed out' }
           if ($p.ExitCode -ne 0) { throw "GUI smoke test failed: $($p.ExitCode)" }
+          if (-not (Test-Path 'BrokeDJ-gui-smoke.json')) { throw 'GUI smoke JSON report missing' }
+
+          $smoke = Get-Content 'BrokeDJ-gui-smoke.json' -Raw | ConvertFrom-Json
+          if ($smoke.schema_version -ne 1 -or
+              $smoke.mode -ne 'native-resize-lifecycle' -or
+              $smoke.plays_audio -ne $false -or
+              $smoke.opens_audio_device -ne $false -or
+              $smoke.success -ne $true -or
+              $smoke.step_count -ne 4 -or
+              @($smoke.steps).Count -ne 4) {
+            throw 'GUI smoke JSON contract is inconsistent'
+          }
+          foreach ($step in @($smoke.steps)) {
+            if ($step.requested_width -lt 1050 -or $step.requested_height -lt 800 -or
+                $step.window_width -ne $step.requested_width -or
+                $step.window_height -ne $step.requested_height -or
+                $step.content_width -le 0 -or $step.content_height -le 0) {
+              throw 'GUI smoke resize step failed geometry validation'
+            }
+          }
+          Copy-Item 'BrokeDJ-gui-smoke.json' build/windows/diagnostics/gui-smoke.json
       - name: Silent audio-device enumeration smoke
         shell: pwsh
         run: |
@@ -102,6 +124,7 @@ jobs:
           git archive --format=zip --output=dist/BrokeDJ-source.zip HEAD
           Copy-Item docs/TESTING.md dist/BrokeDJ/VALIDATION.md
           Copy-Item build/windows/diagnostics/audio-metrics.txt dist/BrokeDJ/AUDIO-DIAGNOSTICS.txt
+          Copy-Item build/windows/diagnostics/gui-smoke.json dist/BrokeDJ/GUI-SMOKE.json
           Copy-Item build/windows/diagnostics/device-probe-ci.txt dist/BrokeDJ/DEVICE-PROBE-CI.txt
           Copy-Item build/windows/diagnostics/device-probe-ci.json dist/BrokeDJ/DEVICE-PROBE-CI.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

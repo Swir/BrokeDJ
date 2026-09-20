@@ -32,9 +32,8 @@ void process(broke::Engine& engine, int frames = 128) {
     CHECK(frames <= static_cast<int>(left.size()));
     engine.process(channels.data(), 2, frames);
 }
-}
 
-int main() {
+void runSingleDeckLifecycle() {
     broke::Engine engine;
     engine.prepare(48000.0, 256);
     broke::KeyLockDeckLifecycle lifecycle(engine);
@@ -237,6 +236,146 @@ int main() {
     CHECK(lifecycle.armed(0));
 
     lifecycle.releaseAudioStopped();
+}
+
+void runFourDeckTransitionIsolation() {
+    broke::Engine engine;
+    engine.prepare(48000.0, 256);
+    broke::KeyLockDeckLifecycle lifecycle(engine);
+    CHECK(lifecycle.configureAudioStopped(48000.0, 256));
+
+    std::array<const broke::Clip*, broke::deckCount> identities{};
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        CHECK(lifecycle.setEnabled(deck, true));
+        auto clip = makeClip(48000.0, 96000, 220.0 + 110.0 * static_cast<double>(deck));
+        identities[deck] = clip.get();
+        CHECK(engine.submit(deck, std::move(clip)));
+        lifecycle.noteClipSubmitted(deck, identities[deck]);
+    }
+
+    process(engine); // adopt all four immutable clips while stopped
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        CHECK(!engine.control(deck).playing.load());
+        CHECK(lifecycle.service(deck, 0.0, false, 1.0, false)
+            == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+        CHECK(lifecycle.armed(deck));
+        engine.control(deck).playing.store(true);
+    }
+    process(engine);
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+        CHECK(lifecycle.lastRenderAccepted(deck));
+
+    // An unannounced rate change on deck B must disarm only B. The other three
+    // qualified renderers keep their snapshots and continue accepting blocks.
+    const std::array<std::uint64_t, broke::deckCount> beforeRateChange{
+        lifecycle.generation(0), lifecycle.generation(1),
+        lifecycle.generation(2), lifecycle.generation(3)};
+    engine.control(1).rate.store(1.25f);
+    CHECK(lifecycle.service(1, engine.meter(1).position.load(), false, 1.25, true)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::deferredWhilePlaying);
+    CHECK(!lifecycle.armed(1));
+    for (std::size_t deck : {std::size_t{0}, std::size_t{2}, std::size_t{3}}) {
+        CHECK(lifecycle.armed(deck));
+        CHECK(lifecycle.generation(deck) == beforeRateChange[deck]);
+    }
+    process(engine);
+    CHECK(!lifecycle.lastRenderAccepted(1));
+    CHECK(lifecycle.lastRenderAccepted(0));
+    CHECK(lifecycle.lastRenderAccepted(2));
+    CHECK(lifecycle.lastRenderAccepted(3));
+
+    engine.control(1).playing.store(false);
+    process(engine);
+    CHECK(lifecycle.service(1, engine.meter(1).position.load(), false, 1.25, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+    engine.control(1).playing.store(true);
+    process(engine);
+    CHECK(lifecycle.lastRenderAccepted(1));
+
+    // A bad pitch request on deck C is sticky and deck-local. A/B/D keep their
+    // active owners while C remains fail-closed until an explicit valid request.
+    CHECK(!lifecycle.setPitchSemitones(2, 30.0f));
+    CHECK(lifecycle.service(2, engine.meter(2).position.load(), false, 1.0, true)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::invalidControl);
+    CHECK(!lifecycle.armed(2));
+    CHECK(lifecycle.armed(0));
+    CHECK(lifecycle.armed(1));
+    CHECK(lifecycle.armed(3));
+    process(engine);
+    CHECK(!lifecycle.lastRenderAccepted(2));
+    CHECK(lifecycle.lastRenderAccepted(0));
+    CHECK(lifecycle.lastRenderAccepted(1));
+    CHECK(lifecycle.lastRenderAccepted(3));
+
+    engine.control(2).playing.store(false);
+    process(engine);
+    CHECK(lifecycle.setPitchSemitones(2, -2.0f));
+    CHECK(lifecycle.service(2, engine.meter(2).position.load(), false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+    engine.control(2).playing.store(true);
+    process(engine);
+    CHECK(lifecycle.lastRenderAccepted(2));
+
+    // Disabling deck D must not churn or disarm its siblings, and re-enabling
+    // while stopped stages only D again.
+    const auto generationA = lifecycle.generation(0);
+    const auto generationB = lifecycle.generation(1);
+    const auto generationC = lifecycle.generation(2);
+    CHECK(lifecycle.setEnabled(3, false));
+    CHECK(lifecycle.service(3, engine.meter(3).position.load(), false, 1.0, true)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::disabled);
+    CHECK(!lifecycle.armed(3));
+    CHECK(lifecycle.generation(0) == generationA);
+    CHECK(lifecycle.generation(1) == generationB);
+    CHECK(lifecycle.generation(2) == generationC);
+    engine.control(3).playing.store(false);
+    process(engine);
+    CHECK(lifecycle.setEnabled(3, true));
+    CHECK(lifecycle.service(3, engine.meter(3).position.load(), false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+    engine.control(3).playing.store(true);
+    process(engine);
+    CHECK(lifecycle.lastRenderAccepted(3));
+
+    // A stopped-audio device transition invalidates every prepared research DSP
+    // instance together, keeps each immutable clip intent, and can restage all
+    // four decks on a new valid device rate without cross-deck state leakage.
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+        engine.control(deck).playing.store(false);
+    process(engine);
+    lifecycle.releaseAudioStopped();
+    CHECK(!lifecycle.configured());
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        CHECK(!lifecycle.armed(deck));
+        CHECK(lifecycle.dirty(deck));
+    }
+
+    CHECK(!lifecycle.configureAudioStopped(1000.0, 512));
+    CHECK(!lifecycle.configured());
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+        CHECK(lifecycle.service(deck, engine.meter(deck).position.load(), false,
+                                static_cast<double>(engine.control(deck).rate.load()), false)
+            == broke::KeyLockDeckLifecycle::ServiceStatus::notConfigured);
+
+    engine.prepare(44100.0, 512);
+    CHECK(lifecycle.configureAudioStopped(44100.0, 512));
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        const double rate = static_cast<double>(engine.control(deck).rate.load());
+        CHECK(lifecycle.service(deck, engine.meter(deck).position.load(), false, rate, false)
+            == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+        CHECK(lifecycle.armed(deck));
+    }
+
+    CHECK(!lifecycle.setEnabled(broke::deckCount, true));
+    CHECK(lifecycle.service(broke::deckCount, 0.0, false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::invalidControl);
+    lifecycle.releaseAudioStopped();
+}
+} // namespace
+
+int main() {
+    runSingleDeckLifecycle();
+    runFourDeckTransitionIsolation();
     std::cout << "Key-lock native lifecycle tests passed\n";
     return 0;
 }
