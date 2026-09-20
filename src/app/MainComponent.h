@@ -20,12 +20,13 @@ juce::String text(const char* english, const char* polish);
 
 class CrossfaderSlider final : public juce::Slider {
 public:
-    explicit CrossfaderSlider(broke::Engine& targetEngine) : engine(targetEngine) {
-        refreshTooltip();
+    explicit CrossfaderSlider(broke::Engine& targetEngine, bool enableCurveMenu = true)
+        : engine(targetEngine), curveMenuEnabled(enableCurveMenu) {
+        if (curveMenuEnabled) refreshTooltip();
     }
 
     void mouseDown(const juce::MouseEvent& event) override {
-        if (!event.mods.isPopupMenu()) {
+        if (!curveMenuEnabled || !event.mods.isPopupMenu()) {
             juce::Slider::mouseDown(event);
             return;
         }
@@ -77,6 +78,7 @@ private:
     }
 
     broke::Engine& engine;
+    bool curveMenuEnabled = true;
 };
 
 class Waveform final : public juce::Component {
@@ -220,8 +222,7 @@ private:
     juce::Label title, subtitle, status, crossLabel, masterLabel, cueLabel, meterLabel;
     juce::TextButton settings;
     juce::HyperlinkButton author;
-    CrossfaderSlider crossfader{engine};
-    juce::Slider master, headphone;
+    CrossfaderSlider crossfader{engine}, master{engine, false}, headphone{engine, false};
     std::atomic<bool> audioReady{false};
     juce::TooltipWindow tooltips{this, 600};
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
