@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include <JuceHeader.h>
-#include "MainComponent.h"
+#include "RecordingMainComponent.h"
 
 #include <array>
 #include <utility>
@@ -240,7 +240,7 @@ private:
     public:
         Window(bool openAudio, bool keyLockResearch)
             : DocumentWindow("BrokeDJ — by Swir", juce::Colour(0xff080e1a), allButtons) {
-            setUsingNativeTitleBar(true); setContentOwned(new MainComponent(openAudio, keyLockResearch), true);
+            setUsingNativeTitleBar(true); setContentOwned(new RecordingMainComponent(openAudio, keyLockResearch), true);
             setResizable(true, false); setResizeLimits(1050, 800, 3840, 2160);
             centreWithSize(getWidth(), getHeight()); setVisible(true);
         }

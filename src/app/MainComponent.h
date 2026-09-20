@@ -149,7 +149,7 @@ private:
     bool rhythmReady = false;
     bool manualBeatGrid = false;
 };
-class MainComponent final : public juce::AudioAppComponent, private juce::Timer {
+class MainComponent : public juce::AudioAppComponent, private juce::Timer {
 public:
     explicit MainComponent(bool openAudio = true, bool enableKeyLockResearch = false);
     ~MainComponent() override;
