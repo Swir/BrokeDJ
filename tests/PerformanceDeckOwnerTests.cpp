@@ -237,16 +237,39 @@ void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
     broke::Engine engine;
     broke::PerformanceDeckOwner owner(engine, 0);
     broke::PerformanceDeckOwner master(engine, 1);
+    using Mode = broke::PerformanceDeckOwner::ReverseSlipMode;
+
+    check(owner.reverseSlipMode() == Mode::forward,
+          "reverse/slip mode starts in forward state");
+    check(owner.setReverseSlipMode(Mode::reverse) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::reverse,
+          "named mode enters reverse-only transport");
+    check(owner.setReverseSlipMode(Mode::slipArmed) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::slipArmed,
+          "named mode can arm slip without audible reverse");
+    check(owner.setReverseSlipMode(Mode::slipReverse) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::slipReverse,
+          "named mode enters slip reverse with both engine flags active");
+    check(owner.setReverseSlipMode(Mode::forward) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::forward,
+          "named mode returns to ordinary forward transport");
+    check(owner.setReverseSlipMode(static_cast<Mode>(255))
+              == broke::PerformanceDeckOwner::Result::invalidRequest
+              && owner.reverseSlipMode() == Mode::forward,
+          "unknown controller mode fails closed without transport drift");
 
     check(!owner.reverseEnabled() && !owner.slipEnabled(),
-          "reverse/slip owner starts inactive");
+          "reverse/slip owner starts inactive after forward reset");
     check(owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
           "slip intent can be armed before reverse");
+    check(owner.reverseSlipMode() == Mode::slipArmed,
+          "legacy slip setter maps to named slip-armed mode");
     check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
           "reverse intent applies through performance owner");
-    check(owner.reverseEnabled() && owner.slipEnabled()
+    check(owner.reverseSlipMode() == Mode::slipReverse
+              && owner.reverseEnabled() && owner.slipEnabled()
               && engine.control(0).reverse.load() && engine.control(0).slip.load(),
-          "performance owner publishes reverse/slip atomics");
+          "legacy setters converge on named slip-reverse mode");
 
     check(owner.setWholeTrackLoop(true) == broke::PerformanceDeckOwner::Result::applied,
           "whole-track loop remains compatible with reverse/slip");
@@ -257,6 +280,8 @@ void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
     check(owner.setReverseEnabled(false) == broke::PerformanceDeckOwner::Result::applied
               && owner.setSlipEnabled(false) == broke::PerformanceDeckOwner::Result::applied,
           "reverse/slip can be disarmed explicitly");
+    check(owner.reverseSlipMode() == Mode::forward,
+          "independent legacy disables converge on named forward mode");
     check(owner.setWholeTrackLoop(false) == broke::PerformanceDeckOwner::Result::applied,
           "whole-track loop fixture disables");
 
@@ -270,6 +295,11 @@ void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
     check(owner.armBeatLoopAt(4.0, 20.0, 4.0)
               == broke::PerformanceDeckOwner::Result::applied,
           "reverse/slip fixture arms reviewed beat loop");
+    check(owner.setReverseSlipMode(Mode::slipReverse)
+              == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "beat-loop ownership rejects complete slip-reverse mode atomically");
+    check(owner.reverseSlipMode() == Mode::forward,
+          "rejected complete mode leaves forward intent unchanged");
     check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::rendererBusy
               && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::rendererBusy,
           "beat-loop ownership rejects reverse/slip activation");
@@ -313,12 +343,14 @@ void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
               && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
           "reverse/slip re-arm before clip reset");
     owner.resetForClip();
-    check(!owner.reverseEnabled() && !owner.slipEnabled(),
+    check(!owner.reverseEnabled() && !owner.slipEnabled()
+              && owner.reverseSlipMode() == Mode::forward,
           "clip reset clears transient reverse/slip intent immediately");
 
     broke::PerformanceDeckOwner invalid(engine, broke::deckCount);
     check(invalid.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::invalidDeck
-              && invalid.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::invalidDeck,
+              && invalid.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::invalidDeck
+              && invalid.setReverseSlipMode(Mode::slipReverse) == broke::PerformanceDeckOwner::Result::invalidDeck,
           "invalid deck cannot publish reverse/slip intent");
 }
 

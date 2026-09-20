@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 namespace broke {
 
@@ -29,6 +30,17 @@ public:
         outsideTrack,
         rendererBusy,
         cueUnavailable
+    };
+
+    // Compact message/controller-thread view of the two Engine transport flags.
+    // The Engine atomics remain authoritative because the realtime path may clear
+    // an incompatible request fail-closed. Keeping the four combinations named
+    // prevents UI/controller code from inventing different transition rules.
+    enum class ReverseSlipMode : std::uint8_t {
+        forward = 0,
+        reverse,
+        slipArmed,
+        slipReverse
     };
 
     struct HotCue final {
@@ -58,6 +70,48 @@ public:
     [[nodiscard]] bool slipEnabled() const noexcept {
         return validDeck() && engine.control(deck).slip.load(std::memory_order_acquire);
     }
+    [[nodiscard]] ReverseSlipMode reverseSlipMode() const noexcept {
+        const bool reverse = reverseEnabled();
+        const bool slip = slipEnabled();
+        if (reverse) return slip ? ReverseSlipMode::slipReverse : ReverseSlipMode::reverse;
+        return slip ? ReverseSlipMode::slipArmed : ReverseSlipMode::forward;
+    }
+
+    // Publish a complete controller intent using an ordering that avoids a
+    // misleading reverse-without-slip interval when entering Slip Reverse and
+    // drops audible Reverse before disarming Slip when leaving a split cursor.
+    // This is deliberately message/controller-thread logic; it adds no callback
+    // synchronization, allocation or I/O. The realtime Engine may still clear an
+    // incompatible request fail-closed, so callers must refresh from
+    // reverseSlipMode() rather than assuming a request is latched forever.
+    [[nodiscard]] Result setReverseSlipMode(ReverseSlipMode mode) noexcept {
+        if (!validDeck()) return Result::invalidDeck;
+        if (mode != ReverseSlipMode::forward
+            && (activeBeatLoopBeats > 0.0 || engine.loopRegionEnabled(deck))) {
+            return Result::rendererBusy;
+        }
+
+        auto& control = engine.control(deck);
+        switch (mode) {
+            case ReverseSlipMode::forward:
+                control.reverse.store(false, std::memory_order_release);
+                control.slip.store(false, std::memory_order_release);
+                return Result::applied;
+            case ReverseSlipMode::reverse:
+                control.slip.store(false, std::memory_order_release);
+                control.reverse.store(true, std::memory_order_release);
+                return Result::applied;
+            case ReverseSlipMode::slipArmed:
+                control.reverse.store(false, std::memory_order_release);
+                control.slip.store(true, std::memory_order_release);
+                return Result::applied;
+            case ReverseSlipMode::slipReverse:
+                control.slip.store(true, std::memory_order_release);
+                control.reverse.store(true, std::memory_order_release);
+                return Result::applied;
+        }
+        return Result::invalidRequest;
+    }
 
     // Reverse and Slip are control intents owned on the message/controller side.
     // A reviewed beat-loop region has separate cursor ownership, so enabling
@@ -68,25 +122,21 @@ public:
     // atomics on the next callback; UI must therefore refresh from the atomics
     // instead of assuming a request remains active forever.
     [[nodiscard]] Result setReverseEnabled(bool enabled) noexcept {
-        if (!validDeck()) return Result::invalidDeck;
-        if (enabled && (activeBeatLoopBeats > 0.0 || engine.loopRegionEnabled(deck)))
-            return Result::rendererBusy;
-        engine.control(deck).reverse.store(enabled, std::memory_order_release);
-        return Result::applied;
+        const bool slip = slipEnabled();
+        return setReverseSlipMode(enabled
+            ? (slip ? ReverseSlipMode::slipReverse : ReverseSlipMode::reverse)
+            : (slip ? ReverseSlipMode::slipArmed : ReverseSlipMode::forward));
     }
 
     [[nodiscard]] Result setSlipEnabled(bool enabled) noexcept {
-        if (!validDeck()) return Result::invalidDeck;
-        if (enabled && (activeBeatLoopBeats > 0.0 || engine.loopRegionEnabled(deck)))
-            return Result::rendererBusy;
-        engine.control(deck).slip.store(enabled, std::memory_order_release);
-        return Result::applied;
+        const bool reverse = reverseEnabled();
+        return setReverseSlipMode(enabled
+            ? (reverse ? ReverseSlipMode::slipReverse : ReverseSlipMode::slipArmed)
+            : (reverse ? ReverseSlipMode::reverse : ReverseSlipMode::forward));
     }
 
     void clearReverseSlip() noexcept {
-        if (!validDeck()) return;
-        engine.control(deck).reverse.store(false, std::memory_order_release);
-        engine.control(deck).slip.store(false, std::memory_order_release);
+        static_cast<void>(setReverseSlipMode(ReverseSlipMode::forward));
     }
 
     // Replacing a reviewed grid invalidates an armed musical loop rather than
