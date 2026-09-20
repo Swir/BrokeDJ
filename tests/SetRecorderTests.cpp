@@ -93,6 +93,26 @@ void testOverflowIsMeasuredNotBlocking() {
     require(dir.deleteRecursively(), "could not remove overflow recording fixture");
 }
 
+void testLateDestinationIsNeverOverwritten() {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 512;
+    auto dir = freshDirectory("collision");
+    const auto requested = dir.getChildFile("collision.wav");
+    std::vector<float> left(frames, 0.1f), right(frames, -0.1f);
+
+    SetRecorder recorder(4096);
+    require(recorder.start(requested, rate), "collision fixture failed to start");
+    recorder.capture(left.data(), right.data(), frames);
+    require(requested.replaceWithText("external-owner\n"), "could not create late destination collision");
+    recorder.stop();
+    const auto state = recorder.snapshot();
+    require(!state.finalized, "late destination collision was incorrectly finalized");
+    require(requested.loadFileAsString() == "external-owner\n", "late destination was overwritten");
+    require(state.recoveryFile.existsAsFile(), "collision did not retain recovery recording");
+    require(state.error.containsIgnoreCase("not overwritten"), "collision did not expose overwrite protection error");
+    require(dir.deleteRecursively(), "could not remove collision recording fixture");
+}
+
 void testInvalidStartFailsClosed() {
     auto dir = freshDirectory("invalid");
     SetRecorder recorder;
@@ -107,6 +127,7 @@ void testInvalidStartFailsClosed() {
 int main() {
     testCleanFinalize();
     testOverflowIsMeasuredNotBlocking();
+    testLateDestinationIsNeverOverwritten();
     testInvalidStartFailsClosed();
     std::cout << "SetRecorderTests passed\n";
     return 0;
