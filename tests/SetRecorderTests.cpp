@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "app/SetRecorder.h"
+#include "core/MasterPathProcessor.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -40,6 +42,108 @@ void verifyWav(const juce::File& file, double expectedRate, std::int64_t expecte
     for (int channel = 0; channel < 2; ++channel)
         for (int frame = 0; frame < inspect; ++frame)
             require(std::isfinite(buffer.getSample(channel, frame)), "recorded WAV contains non-finite samples");
+}
+
+void testMasterPathTransparentBelowCeiling() {
+    constexpr int frames = 1024;
+    broke::MasterPathProcessor processor;
+    processor.prepare(48000.0);
+    processor.setMicrophoneEnabled(false);
+    processor.setLimiterEnabled(true);
+
+    std::vector<float> left(frames, 0.25f), right(frames, -0.20f);
+    processor.process(nullptr, left.data(), right.data(), frames);
+
+    for (int i = 0; i < frames; ++i) {
+        require(std::abs(left[static_cast<std::size_t>(i)] - 0.25f) < 1.0e-6f,
+                "master limiter changed below-ceiling left audio");
+        require(std::abs(right[static_cast<std::size_t>(i)] + 0.20f) < 1.0e-6f,
+                "master limiter changed below-ceiling right audio");
+    }
+    const auto state = processor.snapshot();
+    require(state.maxGainReductionDb < 1.0e-4f,
+            "below-ceiling master path reported false limiter reduction");
+    require(state.maxOutputPeak > 0.249f && state.maxOutputPeak < 0.251f,
+            "master-path peak evidence does not match transparent fixture");
+}
+
+void testMasterLimiterBoundsAndLinksStereo() {
+    constexpr int frames = 2048;
+    broke::MasterPathProcessor processor;
+    processor.prepare(48000.0);
+    processor.setMicrophoneEnabled(false);
+    processor.setLimiterEnabled(true);
+    processor.setLimiterCeilingDb(-1.0f);
+
+    std::vector<float> left(frames, 1.50f), right(frames, 0.75f);
+    processor.process(nullptr, left.data(), right.data(), frames);
+
+    const float ceiling = std::pow(10.0f, -1.0f / 20.0f);
+    float peak = 0.0f;
+    for (int i = 0; i < frames; ++i) {
+        const auto l = left[static_cast<std::size_t>(i)];
+        const auto r = right[static_cast<std::size_t>(i)];
+        require(std::isfinite(l) && std::isfinite(r), "master limiter produced non-finite output");
+        peak = std::max(peak, std::max(std::abs(l), std::abs(r)));
+        require(std::abs(r) > 1.0e-6f && std::abs(l / r - 2.0f) < 1.0e-4f,
+                "linked-stereo limiter changed the channel ratio");
+    }
+    const auto state = processor.snapshot();
+    require(peak <= ceiling + 1.0e-5f, "sample-peak limiter exceeded its configured ceiling");
+    require(state.maxInputPeak > 1.49f, "limiter did not retain pre-reduction peak evidence");
+    require(state.maxGainReductionDb > 4.0f, "limiter did not report expected gain reduction");
+    require(state.limiterGain < 0.70f, "limiter gain state did not remain reduced under sustained overload");
+}
+
+void testMicrophoneDuckingMixesWithoutBlockingMaster() {
+    constexpr int frames = 4096;
+    broke::MasterPathProcessor processor;
+    processor.prepare(48000.0);
+    processor.setLimiterEnabled(false);
+    processor.setMicrophoneEnabled(true);
+    processor.setMicrophoneGainDb(0.0f);
+    processor.setDuckDepthDb(12.0f);
+
+    std::vector<float> left(frames, 0.50f), right(frames, 0.50f), microphone(frames, 0.20f);
+    processor.process(microphone.data(), left.data(), right.data(), frames);
+
+    const auto state = processor.snapshot();
+    require(state.microphoneEnabled, "microphone fixture was not enabled");
+    require(state.microphoneEnvelope > 0.15f, "microphone envelope did not follow sustained speech-level input");
+    require(state.duckGain < 0.40f, "microphone activity did not materially duck the music bus");
+    require(left.back() > 0.20f && left.back() < 0.45f,
+            "microphone mix/duck output is outside the expected bounded range");
+    require(std::abs(left.back() - right.back()) < 1.0e-6f,
+            "mono microphone injection unexpectedly unbalanced the stereo master");
+}
+
+void testMasterPathSanitizesNonFiniteInput() {
+    broke::MasterPathProcessor processor;
+    processor.prepare(48000.0);
+    processor.setMicrophoneEnabled(true);
+    processor.setLimiterEnabled(true);
+
+    std::vector<float> left{
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        0.5f};
+    std::vector<float> right{
+        std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN(),
+        0.25f,
+        -std::numeric_limits<float>::infinity()};
+    std::vector<float> microphone(left.size(), std::numeric_limits<float>::quiet_NaN());
+    processor.process(microphone.data(), left.data(), right.data(), static_cast<int>(left.size()));
+
+    require(std::all_of(left.begin(), left.end(), [](float value) { return std::isfinite(value); }),
+            "master-path sanitation left a non-finite left sample");
+    require(std::all_of(right.begin(), right.end(), [](float value) { return std::isfinite(value); }),
+            "master-path sanitation left a non-finite right sample");
+    const auto state = processor.snapshot();
+    require(std::isfinite(state.maxInputPeak) && std::isfinite(state.maxOutputPeak)
+                && std::isfinite(state.maxGainReductionDb),
+            "master-path metrics became non-finite after invalid input");
 }
 
 void testCleanFinalize() {
@@ -127,6 +231,10 @@ void testInvalidStartFailsClosed() {
 } // namespace
 
 int main() {
+    testMasterPathTransparentBelowCeiling();
+    testMasterLimiterBoundsAndLinksStereo();
+    testMicrophoneDuckingMixesWithoutBlockingMaster();
+    testMasterPathSanitizesNonFiniteInput();
     testCleanFinalize();
     testOverflowIsMeasuredNotBlocking();
     testLateDestinationIsNeverOverwritten();
