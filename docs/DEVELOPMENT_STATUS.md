@@ -4,37 +4,27 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `043fcd0e0b7a95c8f8886b6490454f806bf81cf6`; PR #52 (`M3: add microphone ducking, measured limiter and booth routing`) is merged.
-- PR #52 exact-head workflow run `35533540860` completed successfully before merge across the required Linux/Windows/package development gate.
-- Active development: PR #53 on `feat/m3-eq-qualification`.
-- Current PR #53 head at this checkpoint is the branch head containing deterministic production-EQ response fixtures plus `docs/EQ_VALIDATION.md`; exact-head CI is required before any merge.
-- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). The new EQ evidence does not close M3 or replace listening/hardware qualification.
+- Default branch baseline: `main` at `dfbd62a43a5cab3fcae4d6dcc7c01ff58365ba3b`; PR #53 (`M3: qualify three-band EQ response`) is merged after exact-head run `35534970058` succeeded.
+- Active development: PR #54 on `feat/m4-library-db-foundation`.
+- Implementation checkpoint before this status-only commit: `09151c15f4a06efabf7ff97bfaef066dcb721e79`; PR workflow run `35538706728` was queued when recorded. The status update itself requires its own exact-head CI before merge.
+- Local verification: core-only ASan/UBSan build passed 12/12 CTest targets; the new library tests passed with strict GCC warnings and again under ASan/UBSan using the available local SQLite 3.46.1. Windows/MSVC plus the pinned SQLite 3.53.4 path remain CI-gated.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). This M4 foundation does not close M4.
 - GitHub Releases remains empty; no public BrokeDJ Release is qualified by this checkpoint.
 
-## Active M3 slice: deterministic three-band EQ qualification
+## Active M4 slice: local library database foundation
 
-1. **Exercise the real Engine path**
-   - Generated stereo sine fixtures run through the production JUCE-independent `Engine`, not through a duplicate test-only filter.
-   - The fixture settles the existing smoothed controls and measures the final rendered master block at 48 kHz.
-
-2. **Verify broad band behavior without inventing a calibrated curve**
-   - 80 Hz checks LOW dominance, 1 kHz checks MID dominance and 8 kHz checks HIGH dominance with deliberately broad regression thresholds.
-   - Unity LOW/MID/HIGH verifies nominal level reconstruction; full three-band kill verifies at least 60 dB suppression in the fixture.
-   - NaN/Inf band controls must fail to finite bounded output.
-
-3. **Document the current limitation honestly**
-   - `docs/EQ_VALIDATION.md` records the present complementary first-order split (approximately 200 Hz / 2.4 kHz boundaries) and the current 0.0–2.0 linear band-gain range.
-   - This is deterministic software evidence, not a claim of commercial isolator parity, phase-linear behavior or reviewed listening quality.
+- Added a JUCE-independent application-side SQLite adapter for track metadata, search, tags, ordered playlists and play history.
+- Added missing/moved-file rebinding and content-hash duplicate grouping without touching original music files.
+- Added transactional schema migration, future-schema rejection, bounded backup retries and integrity-checked backup/restore; corrupt/future backups are rejected before replacement.
+- SQLite 3.53.4 is pinned to the official amalgamation SHA3-256 in CMake and documented in `THIRD_PARTY_NOTICES.md`; database/file I/O stays outside the realtime audio callback.
 
 ## Gates still open
 
-- PR #53 must stay unmerged until its exact-final-head Linux/Windows/package run is green; normal BrokeDJ default-branch integration cadence still applies.
-- M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical four-output master 1/2 versus cue 3/4 verification; six-output Booth also needs physical interface validation before support claims.
-- Representative user-owned/licensed music-domain BPM/key/grid evidence remains open.
-- Production key-lock listening/latency, MIDI/controller mappings and concrete controller profiles remain unqualified.
-- M3 still needs reviewed EQ/listening evidence plus physical microphone/limiter/Booth/recording/long-session evidence. Automated tests do not certify a particular interface or monitoring chain.
-- Physical storage/underrun behavior, multi-hour soak and public alpha/beta Release qualification remain open.
+- PR #54 must not merge until its exact-final-head Linux/Windows/package workflow is green.
+- M4 still needs native library/import UI integration, analysis/waveform-cache ownership, complete session persistence and real large-library/backup workflow qualification.
+- M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical master/cue/booth verification.
+- Representative music-domain BPM/key/grid evidence, production key-lock listening/latency, controller profiles, long-session soak and physical recording/microphone evidence remain separate gates.
 
 ## Next largest step
 
-Require a fully green exact-final-head run for PR #53 and repair any regression before integration. After this internally testable EQ gap is closed, keep FINISH FIRST: do not widen M3 with optional features; use the next run for the highest-value remaining current-target qualification or blocker-removal work while the physical Windows/audio-interface gates stay explicit.
+First repair any PR #54 build/test regression exposed by exact-head CI. Once the database foundation is green, continue FINISH FIRST by connecting the native import/search/library workflow to this persistence layer before widening optional DSP scope.
