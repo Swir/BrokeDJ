@@ -560,13 +560,29 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
         decks[i]->onBeforePlay = [this, i] {
             if (keyLockResearchEnabled) serviceKeyLockDeck(i, false);
         };
-        decks[i]->onKeyLockControlChanged = [this, i] {
-            if (keyLockResearchEnabled) keyLockLifecycle.noteTransportControlChanged(i);
-        };
-        decks[i]->onSeekRequested = [this, i](double position) {
-            if (keyLockResearchEnabled) keyLockLifecycle.noteSeekNormalized(i, position);
-        };
 #endif
+        // A manual follower rate/loop action takes transport ownership from Sync.
+        // Master rate changes remain legal: followers deliberately re-evaluate the
+        // master's effective tempo on the next bounded maintenance tick.
+        decks[i]->onKeyLockControlChanged = [this, i] {
+            syncFollowers[i] = false;
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+            if (keyLockResearchEnabled) keyLockLifecycle.noteTransportControlChanged(i);
+#endif
+        };
+        // Explicit cursor jumps are stronger than a phase-maintenance lock. A
+        // follower jump releases only that follower; a master jump releases all
+        // followers so no deck receives a delayed corrective seek after the DJ
+        // intentionally moved the reference timeline.
+        decks[i]->onSeekRequested = [this, i](double position) {
+            if (syncMasterDeck && *syncMasterDeck == i) clearSyncFollowers();
+            else syncFollowers[i] = false;
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+            if (keyLockResearchEnabled) keyLockLifecycle.noteSeekNormalized(i, position);
+#else
+            static_cast<void>(position);
+#endif
+        };
         addAndMakeVisible(*decks[i]);
     }
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -945,10 +961,15 @@ bool MainComponent::setBeatLoop(std::size_t deck, double beats, bool enabled) {
 
     const auto result = owner.armBeatLoopFromTransport(beats, broke::QuantizeDirection::previous);
     if (result == broke::PerformanceDeckOwner::Result::applied) {
-        syncFollowers[deck] = false;
+        const bool wasMaster = syncMasterDeck && *syncMasterDeck == deck;
+        if (wasMaster) clearSyncFollowers();
+        else syncFollowers[deck] = false;
         statusMessage(text("Beat loop armed: ", "Pętla beatowa: ") + juce::String(beats, 0)
-                      + text(" beats. Continuous Sync released for this deck.",
-                             " beatów. Ciągły Sync zwolniony dla tego decku."));
+                      + (wasMaster
+                          ? text(" beats. Master transport ownership released all Sync followers.",
+                                 " beatów. Transport mastera zwolnił wszystkie followery Sync.")
+                          : text(" beats. Continuous Sync released for this deck.",
+                                 " beatów. Ciągły Sync zwolniony dla tego decku.")));
         return true;
     }
     if (result == broke::PerformanceDeckOwner::Result::gridUnavailable)
@@ -977,8 +998,10 @@ bool MainComponent::setReverseSlipMode(std::size_t deck, broke::PerformanceDeckO
 #endif
     const auto result = performanceDecks[deck]->setReverseSlipMode(mode);
     if (result == broke::PerformanceDeckOwner::Result::applied) {
-        if (mode != broke::PerformanceDeckOwner::ReverseSlipMode::forward)
-            syncFollowers[deck] = false;
+        if (mode != broke::PerformanceDeckOwner::ReverseSlipMode::forward) {
+            if (syncMasterDeck && *syncMasterDeck == deck) clearSyncFollowers();
+            else syncFollowers[deck] = false;
+        }
         switch (mode) {
             case broke::PerformanceDeckOwner::ReverseSlipMode::forward:
                 statusMessage(text("Reverse / Slip disabled.", "Reverse / Slip wyłączone."));
@@ -1024,6 +1047,8 @@ void MainComponent::handleHotCue(std::size_t deck, std::size_t slot, bool clear)
         const auto duration = engine.meter(deck).duration.load(std::memory_order_acquire);
         const auto result = owner.triggerHotCue(slot, duration);
         if (result == broke::PerformanceDeckOwner::Result::applied) {
+            if (syncMasterDeck && *syncMasterDeck == deck) clearSyncFollowers();
+            else syncFollowers[deck] = false;
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
             if (keyLockResearchEnabled && std::isfinite(duration) && duration > 0.0)
                 keyLockLifecycle.noteSeekNormalized(deck, cueState.seconds / duration);
@@ -1056,6 +1081,8 @@ bool MainComponent::jumpBeats(std::size_t deck, double beats) {
     if (deck >= broke::deckCount || !performanceDecks[deck]) return false;
     const auto result = performanceDecks[deck]->jumpBeatsFromTransport(beats);
     if (result == broke::PerformanceDeckOwner::Result::applied) {
+        if (syncMasterDeck && *syncMasterDeck == deck) clearSyncFollowers();
+        else syncFollowers[deck] = false;
         const auto target = engine.control(deck).seek.load(std::memory_order_acquire);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
         if (keyLockResearchEnabled && std::isfinite(target) && target >= 0.0)
@@ -1083,9 +1110,8 @@ void MainComponent::setSyncMaster(std::size_t deck, bool enabled) {
     const auto duration = engine.meter(deck).duration.load(std::memory_order_acquire);
     if (enabled) {
         if (!performanceDecks[deck]->hasReviewedGrid() || !std::isfinite(duration) || duration <= 0.0) {
-            syncMasterDeck.reset();
-            clearSyncFollowers();
-            statusMessage(text("Sync master needs a loaded track with a reviewed beat grid.", "Master Sync wymaga wczytanego utworu ze zweryfikowaną siatką rytmu."));
+            statusMessage(text("Sync master request rejected; the current valid master is unchanged. Load a track with a reviewed beat grid first.",
+                               "Odrzucono zmianę mastera Sync; obecny poprawny master pozostaje bez zmian. Najpierw wczytaj utwór ze zweryfikowaną siatką rytmu."));
             return;
         }
         if (!syncMasterDeck || *syncMasterDeck != deck)

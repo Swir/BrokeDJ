@@ -7,8 +7,8 @@ This file is the durable engineering checkpoint for the current repository state
 - Default branch: `main` at `45864d24edba862e7af794548e9aa907f82defeb` after PR #46 (`M1/M2: harden four-deck transitions and native resize smoke`).
 - Active development branch: `feat/m2-continuous-sync-lock`.
 - Active pull request: #47 (`M2: add bounded continuous reviewed-grid Sync lock`).
-- Implementation head before this status-only checkpoint: `bc8c8f386f46d85e97fa9001ff58d91ff058a5e6`.
-- Exact-head Build and test run `35513860812` started for that implementation head; this checkpoint commit intentionally requires a fresh exact-head PR run before merge.
+- Previous exact-head `0b14405c3ac73c9664064b466e95170a703115e5` passed Build and test run `35513887685` across Linux sanitizers/progress/full CTest and Windows x64 build/full CTest/audio diagnostics/native resize smoke/silent device probe/staging.
+- Current work extends the same PR with explicit manual-transport Sync ownership rules plus variable-tempo/clip-replacement regression coverage; a fresh exact-head PR run is required before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases remains empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
@@ -24,11 +24,11 @@ This file is the durable engineering checkpoint for the current repository state
    - Native Jog/Scratch temporarily suspends maintenance while the platter is touched; Beat Loop or Reverse/Slip releases that follower lock.
    - Master replacement/clear releases followers and follower clip replacement clears only that follower. Optional key-lock research is notified only for accepted rate/phase maintenance changes.
 
-3. **Deterministic coverage and truthful documentation**
-   - Dependency-free Release core CTest passed 12/12 locally from the PR #46 source artifact plus this patch.
-   - Selected ASan/UBSan tests passed 4/4: performance deck owner, tempo-segment editor model, jog/scratch controller and reverse/slip stream stress.
-   - Transfer workflow run `35513788334` applied the exact verified patch and reran dependency-free core tests plus `scripts/update_progress.py --check` successfully.
-   - README, ROADMAP, ARCHITECTURE, TESTING and CHANGELOG now describe the already-integrated native variable-tempo editor, REV/SLIP, native JOG/SCRATCH and the new bounded continuous Sync without changing milestone completion.
+3. **Manual transport ownership and variable-tempo regression hardening**
+   - Explicit follower rate/loop/seek, Hot Cue and Beat Jump actions release that follower's lock instead of being silently overwritten by the next maintenance tick.
+   - Incompatible Beat Loop or Reverse/Slip ownership on the MASTER releases all followers immediately; manual master-rate changes intentionally remain trackable through effective-tempo re-evaluation.
+   - Invalid MASTER selection preserves the already-valid master/follower relationship instead of destructively clearing it.
+   - Core regression coverage now crosses reviewed variable-tempo boundaries and verifies follower/master clip replacement invalidates stale grid intent without drifting rate/seek controls.
 
 ## Gates still open
 
@@ -40,4 +40,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Fix any exact-head PR regression first. If the final PR head passes Linux and Windows required controls, integrate this coherent Sync slice; then prioritize representative analysis evidence and controller/key-lock qualification while preserving the manual M1 hardware gates.
+Run the full exact-head Linux sanitizer + Windows x64 gate for this hardened Sync slice. If green, integrate the coherent PR; then prioritize representative analysis evidence and the remaining M2 key-lock/controller qualification without weakening the manual M1 hardware gates.
