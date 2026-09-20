@@ -1,12 +1,22 @@
 # BrokeDJ session persistence
 
-This document describes the current M4 session-snapshot foundation. It is local-only persistence and is not yet a complete user-facing Save/Load Session workflow.
+This document describes the current M4 local session-snapshot and native restore workflow. It is not a claim that M4, release qualification or live-performance qualification is complete.
 
 ## Scope
 
-`src/app/SessionStore.h` stores a bounded snapshot for the four BrokeDJ decks plus mixer state. The snapshot currently contains each deck's local source path, transport position, playback rate, trim, channel gain, three-band EQ, echo, drive, headphone-cue state, whole-track-loop state and whether the deck was playing when captured. Mixer state stores crossfader, master level and headphone level.
+`src/app/SessionStore.h` stores a bounded snapshot for the four BrokeDJ decks plus mixer state. The snapshot contains each deck's local source path, transport position, playback rate, trim, channel gain, three-band EQ, echo, drive, headphone-cue state, whole-track-loop state and whether the deck was playing when captured. Mixer state stores crossfader, master level and headphone level.
 
-The store never edits or overwrites source music. Session files are separate BrokeDJ-owned files and all session filesystem work belongs outside the realtime audio callback.
+The native Library menu now exposes Save Session, Load Session and explicit verified-backup recovery. Session save/load runs on the existing bounded application worker, never in `MainComponent::getNextAudioBlock()`. The store never edits or overwrites source music. Session files are separate BrokeDJ-owned files and no cloud/account service is required.
+
+## Native restore safety
+
+Loading a valid snapshot first pauses all four current transports and restores mixer state. Existing track paths are then decoded through BrokeDJ's normal asynchronous loader. Saved transport/EQ/FX/fader/cue/loop controls are applied only after the expected file is actually loaded and adopted by the audio engine; a failed decode cannot apply saved controls to the wrong clip.
+
+The restore coordinator does not infer adoption from a path match or an old duration meter. After the expected source is published, it arms a zero-position `Controls::seek` marker. `Engine::process()` adopts pending clips before consuming that atomic seek mailbox, so observing the marker consumed is the acknowledgement that an audio callback has passed the adoption point for that publication. Only then can saved controls and position be applied. If audio callbacks are unavailable, the marker remains unconsumed and the restore fails boundedly instead of mutating stale audio state.
+
+Saved `wasPlaying` state is intentionally **not** auto-resumed. Every restored deck remains paused until the DJ explicitly presses Play. This avoids surprise audio when opening a session. Missing source files fail closed and are counted in the restore report. A restore waiting for clip adoption is bounded; an unavailable audio path cannot leave the UI waiting forever or be reported as a successful deck restore.
+
+Current pre-alpha limitation: an empty saved deck slot does not yet eject a source that was already loaded in that slot before restore; the old source is paused and the completion dialog states this limitation. A true realtime-safe deck-eject command remains open M4 work.
 
 ## Format and recovery contract
 
@@ -14,14 +24,14 @@ Session schema version 1 uses a compact binary envelope with an explicit magic v
 
 Writes are bounded to a 1 MiB session file and 64 KiB per local path. Saving writes a temporary file first, reads it back through the same validator, preserves an existing session as a temporary backup, publishes the verified file by rename and attempts rollback if publication fails. A rejected or invalid new snapshot must not destroy the last valid session.
 
-Backup recovery is explicit rather than silent. `load()` accepts only the requested primary snapshot. `loadRecoveringBackup()` may be used by a future recovery UI to read a verified `.bak` snapshot if an interrupted publish left the primary missing or corrupt; it reports whether backup recovery was used. It never starts audio or rewrites the damaged primary file automatically.
+Backup recovery is explicit rather than silent. `load()` accepts only the requested primary snapshot. The native Recover command uses `loadRecoveringBackup()` and reports when verified `.bak` recovery was used. Recovery never starts audio or silently rewrites the damaged primary file.
 
-`wasPlaying` is persisted only as session history/state. Future native restore wiring must not silently auto-start audio merely because a saved deck was playing; resuming playback must remain an explicit product decision with safe user-visible behavior.
+## Test and CI evidence
 
-## Test evidence
+`tests/LibraryDatabaseTests.cpp` exercises deterministic session save/load alongside the local-library persistence suite. Coverage includes four-deck independence, mixer/control round-trip, NaN rejection without replacing the previous valid session, future-schema rejection, checksum-corruption detection, oversized-path rejection, missing-primary backup recovery and corrupt-primary backup recovery.
 
-`tests/LibraryDatabaseTests.cpp` exercises deterministic session save/load alongside the local-library persistence suite. Coverage includes four-deck independence, mixer/control round-trip, NaN rejection without replacing the previous valid session, future-schema rejection, checksum-corruption detection, oversized-path rejection, missing-primary backup recovery and corrupt-primary backup recovery. The header also passes a strict standalone C++20 compile with warnings promoted to errors in the development checkpoint.
+The native session workflow is additionally gated by BrokeDJ's Windows no-audio GUI construction/resize smoke because `RecordingMainComponent` constructs the Library/Session workflow. The exact PR head must also pass Linux ASan/UBSan, full Windows CTest, audio diagnostics, silent device probe, staging and downloaded-artifact smoke before merge.
 
 ## Still open for M4
 
-The native application does not yet expose Save Session / Load Session commands and does not yet reconnect restored paths through the library/missing-file workflow. The next finish-first work is to wire session capture/restore into the native UI and connect the existing local library database to the import/search workflow. Missing or moved tracks must fail closed and remain user-resolvable; restored sessions must never modify original music.
+M4 still needs realtime-safe deck eject for truly empty restored slots, moved-file resolution during session restore, playlist/tag editing UI, content-hash indexing, analysis/waveform-cache ownership, richer session state where justified, user-visible library backup/restore and real large-library qualification. Restored sessions must continue to fail closed and never modify original music.
