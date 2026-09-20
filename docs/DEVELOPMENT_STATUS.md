@@ -4,33 +4,38 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch: `main`; PR #47 (`M2: add bounded continuous reviewed-grid Sync lock`) was merged as `a01d3b33f1c93e87c1f88058e3ae3a6daaabdca6`.
-- Integration source head: `d9a424ab3b7ee9dea2f591c529855fff1c0bee9c` from `feat/m2-continuous-sync-lock`.
-- Exact-head Build and test run `35514697364` passed for that integration head: Linux generated-progress + ASan/UBSan/full CTest and Windows x64 configure/build/full CTest/audio diagnostics/native no-audio lifecycle+resize smoke/silent device probe/staging/artifact upload all succeeded.
-- PR #47 is merged; there is no active BrokeDJ development PR at this checkpoint.
+- Default branch baseline: `main` at `fcc52b6ad731c0aafa12ea47468e72214317e9a2`; PR #47 (`M2: add bounded continuous reviewed-grid Sync lock`) is already merged.
+- Active development: PR #48 (`M1: verify staged Windows artifact integrity and launch`) from `feat/m1-staged-artifact-contract`.
+- First package run `35516016674` for PR head `c986192a111b616010fd24f820b2ac45b1778268` completed with Linux sanitizers/package-tool tests and the Windows build/test/staging job green, but the separate downloaded-artifact verification job failed before launch.
+- The failed uploaded artifact was downloaded and reproduced outside the workflow. Its manifest contained staged JUCE dotfiles that `actions/upload-artifact` had omitted by default, so checksum verification correctly reported those manifested files as missing.
+- The same evidence exposed a second source-identity bug: pull-request jobs were packaging GitHub's synthetic merge SHA through `${{ github.sha }}` rather than the actual PR head SHA, despite the package contract claiming exact source identity.
+- Repair head `9edfc7621ee843e1cd80abe03624c8de93700742` makes both build jobs explicitly check out the PR head (falling back to `github.sha` for push/dispatch), uses that same SHA throughout package identity checks, and uploads hidden staged files so the uploaded tree matches the manifest.
+- Exact-head run `35518807500` for `eed9de6c731a08eb1a40534779627064b4edd911` passed Linux generated-progress/package-tool/ASan/UBSan/full CTest, Windows configure/build/full CTest/audio diagnostics/native no-audio GUI resize smoke/silent device probe/staging/upload, and the separate downloaded-artifact checksum plus staged executable smoke job.
+- The downloaded green artifact was independently re-verified after the run: 3,453 manifested files matched, `SOURCE-COMMIT.txt` and the manifest both identify `eed9de6c731a08eb1a40534779627064b4edd911`, and all eight manifested hidden entries were present.
+- This checkpoint-only documentation commit creates a newer PR head, so merge still requires the exact-final-head workflow to remain green. Integration also remains subject to the normal BrokeDJ merge cadence; a green development artifact is not itself a reason to bypass that cadence.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases remains empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
-## Integrated M2 slice: bounded continuous reviewed-grid Sync
+## Active M1 slice: staged artifact integrity and no-build-tree smoke
 
-1. **Continuous owner-side maintenance without realtime callback expansion**
-   - `PerformanceDeckOwner` exposes bounded maintenance for an established reviewed-grid Sync relationship.
-   - Master effective tempo is re-evaluated outside the audio callback; follower rate writes use an epsilon, phase seeks are suppressed inside an 0.08-beat deadband and phase corrections beyond 0.35 beat fail closed.
-   - Reviewed Beat Loop, Reverse or Slip ownership blocks maintenance rather than allowing transport workflows to fight each other.
+1. **Deterministic package/source integrity contract**
+   - `scripts/package_contract.py` creates a schema-versioned `PACKAGE-MANIFEST.json` and sorted `SHA256SUMS.txt` over the staged Windows development payload.
+   - The contract requires the executable, source archive, source-commit witness, repository/JUCE notices and retained CI evidence; it rejects missing/extra/tampered files, path traversal, duplicate entries and staged symbolic links.
+   - Manifest content omits timestamps, machine names and local paths so the contract itself does not publish private workstation data.
 
-2. **Native PL/EN follower lock workflow**
-   - SYNC is a real toggle after bounded initial alignment, serviced at 5 Hz from the message thread while master/follower playback is active.
-   - Native Jog/Scratch temporarily suspends maintenance while the platter is touched; Beat Loop or Reverse/Slip releases the relevant lock.
-   - Master replacement/clear releases followers and follower clip replacement clears only that follower. Optional key-lock research is notified only for accepted rate/phase maintenance changes.
+2. **Exact source and upload identity**
+   - Pull-request build jobs explicitly check out `github.event.pull_request.head.sha`; push/workflow-dispatch runs fall back to `github.sha`.
+   - Windows staging writes that same source identity to `BrokeDJ/SOURCE-COMMIT.txt`, archives source from the checked-out `HEAD`, copies validation/audio/GUI/device-probe evidence and then creates/verifies the manifest before upload.
+   - The uploaded artifact includes hidden files because the staged JUCE payload can legally contain dotfiles that are part of the checksum manifest; omission at the transport layer is treated as an integrity failure, not ignored.
 
-3. **Manual transport ownership and variable-tempo regression hardening**
-   - Explicit follower rate/loop/seek, Hot Cue and Beat Jump actions release that follower's lock instead of being silently overwritten by the next maintenance tick.
-   - Incompatible Beat Loop or Reverse/Slip ownership on the MASTER releases all followers immediately; manual master-rate changes intentionally remain trackable through effective-tempo re-evaluation.
-   - Invalid MASTER selection preserves an already-valid master/follower relationship instead of destructively clearing it.
-   - Core regression coverage crosses reviewed variable-tempo boundaries and verifies follower/master clip replacement invalidates stale grid intent without drifting rate/seek controls.
+3. **Downloaded staged-artifact launch gate**
+   - A separate Windows job downloads the uploaded development artifact into a fresh job workspace, verifies hashes/source identity and launches the staged `BrokeDJ.exe` rather than the build-tree executable.
+   - It runs only the no-audio `--smoke-test` and `--device-probe-ci` contracts; it does not open an audio device or emit sound.
+   - Passing this gate proves artifact integrity plus no-build-tree lifecycle/probe launch on the Windows runner, not a consumer clean-machine or physical-hardware qualification.
 
 ## Gates still open
 
+- PR #48 requires an exact-final-head green workflow for this checkpoint commit and must remain unmerged until the normal BrokeDJ integration cadence permits it.
 - M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and real four-output master 1/2 versus cue 3/4 verification.
 - Representative user-owned/licensed music-domain BPM/key/grid evidence remains open.
 - Production key-lock listening/latency, MIDI/controller mappings and concrete controller profiles remain unqualified.
@@ -38,4 +43,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Prioritize representative analysis evidence and the remaining M2 key-lock/controller qualification while preserving the manual M1 hardware gates. Any next substantial implementation slice should start from fresh `main` and use a new feature branch/PR.
+Keep PR #48 scoped to its M1 package contract and integrate it only after an exact-final-head green run at the normal BrokeDJ cadence. Then continue finish-first work on remaining internally closable M2 analysis/key-lock/controller qualification while preserving the manual M1 hardware gates.

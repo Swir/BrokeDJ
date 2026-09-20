@@ -97,6 +97,26 @@ Treat `four_output_candidate=true` / `four_output_candidate=yes` only as a capab
 
 `--device-probe-ci` is stricter: it enumerates backend/output names without constructing per-device descriptors, then emits the same schema with `creates_device_descriptors=false`. Windows CI parses the JSON, checks schema/safety invariants, verifies that the backend count matches the serialized array and rejects any CI report containing descriptor entries. This validates the diagnostic contract only; it is not hardware qualification.
 
-## Packaging
+## Packaging and staged-artifact contract
 
-After a successful build, `cpack --config build/windows/CPackConfig.cmake -C Release` creates a development ZIP. Corresponding source, third-party license material and manual release evidence are required before a public production release. No updater or code-signing credentials are configured. No secret or token is needed for ordinary local builds.
+After the Windows build/tests pass, CI stages `dist/BrokeDJ`, creates `BrokeDJ-source.zip` from the exact workflow commit and writes a privacy-neutral `SOURCE-COMMIT.txt`. The staged payload also keeps the corresponding validation/audio/GUI/device-probe evidence and third-party license material.
+
+`scripts/package_contract.py` then creates two deterministic files at the artifact root:
+
+- `PACKAGE-MANIFEST.json` — schema-versioned source/version identity plus the size and SHA-256 of every staged payload file;
+- `SHA256SUMS.txt` — the same sorted payload hashes in a simple reviewable form.
+
+The manifest intentionally excludes timestamps, machine names and local paths. Creation fails if required runtime/source/license/evidence files are missing, if `SOURCE-COMMIT.txt` does not match the workflow commit, or if a symbolic link enters the payload. Verification rejects missing, extra, resized or hash-mismatched files.
+
+The uploaded development artifact includes the verifier as `VERIFY-PACKAGE.py`. A second Windows job downloads that uploaded artifact into a fresh job workspace, verifies the manifest against the exact workflow commit and launches the **staged** `BrokeDJ.exe` with `--smoke-test` and `--device-probe-ci`. That proves the uploaded staging tree can pass the no-audio lifecycle/probe contracts without relying on the original build directory. It still does **not** certify a consumer clean machine, HiDPI appearance, real device switching, master/cue hardware isolation, controller support, latency, listening quality or live reliability.
+
+For a downloaded development artifact, an optional integrity check is:
+
+```powershell
+python .\VERIFY-PACKAGE.py verify --root . --expected-commit <full-40-character-commit-sha>
+Get-Content .\SHA256SUMS.txt
+```
+
+Python is required only for this optional development-artifact verifier; BrokeDJ itself does not require Python. The manual Windows 11/hardware witness remains documented in [`M1_HARDWARE_WITNESS.md`](M1_HARDWARE_WITNESS.md).
+
+`cpack --config build/windows/CPackConfig.cmake -C Release` can still create a local development ZIP. A public alpha/beta/stable package remains blocked until the stronger release gate is satisfied, including exact-head CI, packaged/manual Windows qualification, real audio/multi-output cue evidence where required, functional regression, applicable controller/soak checks, source/notices/checksums and documented known issues. No updater or code-signing credentials are configured.
