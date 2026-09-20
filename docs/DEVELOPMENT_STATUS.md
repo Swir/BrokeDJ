@@ -4,60 +4,55 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Verified default-branch baseline: `main` at `3bbcfc6785e7b08066cd092018d1190737658500` (`M2: harden native variable-tempo map editing workflow (#38)`). Its post-merge validation was green.
-- Active development branch: `feat/m2-reverse-slip-transport`, PR #39.
-- Implementation checkpoint: `315c105a5aa67e579b3e2e8807c0012eb56a332c`; exact-head GitHub Actions run `35481031512` was started for that implementation head. Any later documentation/checkpoint commit on the PR requires its own exact-head run before merge.
-- Active package: production-core reverse transport plus slip-reverse cursor separation, fail-closed compatibility boundaries and deterministic/realtime regression coverage. Native deck buttons/controller mappings are deliberately not claimed yet.
+- Verified default-branch baseline: `main` at `f153c3e8993516911b45a6db49ce6702b0ce899c` (`M2: add reverse and slip transport core (#39)`). PR #39 was merged only after its exact-head Linux/Windows gate passed.
+- Post-merge `main` workflow: GitHub Actions run `35483076356` was started for `f153c3e8993516911b45a6db49ce6702b0ce899c`; its result must be treated separately from the already-green PR gate.
+- Active development branch: `feat/m2-reverse-slip-native-ui`, PR #40.
+- Code checkpoint before this documentation update: `01b738236e56fec698cabef5de87b82d3197af7f`; PR run `35483624952` was queued for that head. This documentation commit creates a newer PR head and therefore requires its own exact-head checks before any merge.
+- Active package: message/control-thread ownership rules for Reverse/Slip, transactional incompatibility with reviewed beat-loop regions, and safe exit from split-cursor mode before explicit Hot Cue / Beat Jump / Sync transport moves.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - No public BrokeDJ Release exists or is qualified by this checkpoint.
 
-## Newly integrated on main: native variable-tempo map editing
+## Newly integrated on main: reverse and slip transport core
 
-1. **Reviewed multi-segment tempo-map workflow**
-   - The native deck can open the variable-tempo editor, select the segment at the playhead, add/move/remove later boundaries and edit segment BPM through the tested owner model.
-   - Edits remain transactional, track/grid-bound and preserve segment-zero ownership rules.
+1. **Reverse transport**
+   - The production Engine can read the existing bounded resampler backward without changing the dependency stack.
+   - Reverse stops at track start when whole-track loop is off and wraps across the complete immutable track when whole-track loop is on.
+   - Transport changes use the prepared transition system rather than adding callback allocation or I/O.
 
-2. **Recoverable editing and persistence**
-   - Undo/Redo retains at most 16 complete reviewed-grid snapshots and invalidates stale history after track/grid replacement.
-   - Accepted complete maps are persisted asynchronously through `TrackBeatGridOverrideStore`; no persistence work enters the audio callback.
+2. **Slip-reverse clock separation**
+   - Reverse+Slip keeps an uninterrupted hidden transport moving forward while the audible cursor moves backward.
+   - Releasing Reverse rejoins the hidden timeline through the prepared transition.
+   - `Meter::position` and `Meter::audiblePosition` remain separate so the native UI can expose the distinction without inventing state outside the Engine.
 
-3. **Verified integration boundary**
-   - PR #38 merged to `main` as `3bbcfc6785e7b08066cd092018d1190737658500` after exact-head CI.
-   - Hardware M1, representative music-corpus validation and live-performance gates remain open.
+3. **Fail-closed realtime boundaries**
+   - Reviewed beat-loop regions and external/research renderers do not silently combine with Reverse/Slip.
+   - Deterministic quality and realtime-contract coverage exercises reverse direction, slip rejoin and streamed callback stress while preserving the zero-heap measured-window requirement.
 
-## Current development package: reverse and slip transport core
+## Current PR #40: performance ownership hardening
 
-1. **Reverse transport semantics**
-   - `Controls` now has lock-free `reverse` and `slip` flags sampled with the existing block control snapshot.
-   - Ordinary reverse reads the production resampler backward while keeping transport and audible cursors together.
-   - At track start, reverse stops when whole-track loop is off and wraps to the track end when whole-track loop is on.
-   - Clip adoption clears transient reverse/slip state rather than carrying performance modes into a replacement track.
+1. **Owned Reverse/Slip intent**
+   - `PerformanceDeckOwner` now publishes Reverse and Slip intent through the existing lock-free Engine controls and exposes the actual atomics back to UI/controller callers.
+   - Enabling either mode while a reviewed beat-loop region owns transport is rejected transactionally; no conflicting control state is published.
+   - Whole-track LOOP remains compatible because it uses the complete immutable clip boundary rather than a separate reviewed beat region.
 
-2. **Slip-reverse cursor ownership**
-   - While reverse+slip is active, the underlying transport continues forward while the audible cursor moves backward.
-   - Releasing reverse rejoins the uninterrupted hidden timeline through the existing prepared short transition instead of hard-jumping the output.
-   - Meters expose the existing separate `position` and `audiblePosition` clocks so future UI/controller work can show the distinction explicitly.
+2. **Explicit transport jumps exit split-cursor mode**
+   - Hot Cue trigger, Beat Jump and one-shot Sync clear Reverse/Slip before publishing their explicit seek/rate plan.
+   - Clip replacement clears Reverse/Slip immediately at the performance-owner boundary instead of waiting for the callback to observe a new clip.
 
-3. **Fail-closed composition rules**
-   - Beat-derived loop regions reject arming while reverse/slip is active. If reverse/slip is requested after a beat region is already armed, the incompatible transport modes are cleared before rendering that block.
-   - External source renderers, including the opt-in key-lock research path, also clear reverse/slip until a combined transport contract is implemented and tested.
-   - Whole-track loop remains supported because its bounds are the immutable complete clip rather than a separately owned beat-loop region.
-
-4. **Realtime and quality regression coverage**
-   - Core tests cover reverse direction, start-bound stop, whole-track reverse wrap, slip hidden/audible cursor divergence and rejoin, beat-loop incompatibility and replacement reset.
-   - Quality coverage uses a polarity-step fixture to require the slip-release rejoin to begin from the previous audible side and settle onto the hidden transport through the prepared transition.
-   - The existing zero-heap callback stress now cycles reverse-only, slip-only and reverse+slip states on a streamed deck while the second deck keeps beat-loop/control automation stress active.
+3. **Deterministic regression coverage**
+   - `PerformanceDeckOwnerTests` now covers Reverse/Slip activation, beat-loop rejection, whole-track compatibility, Hot Cue / Beat Jump / Sync exits, invalid-deck rejection and clip-reset cleanup.
+   - This is owner/control-boundary evidence only. External key-lock/render-path composition is still deliberately fail-closed in the Engine and not claimed as combined support.
 
 ## Gates still open
 
-- Exact-head Linux ASan/UBSan and Windows x64 CI for the final PR #39 head; do not merge until all required checks for that exact head are green.
-- Native four-deck reverse/slip controls, PL/EN labels/tooltips, keyboard/MIDI mapping and manual resize/HiDPI interaction review.
-- Streamed long-track reverse/slip stress on slow physical storage and reviewed music-domain listening; cache diagnostics are not hardware underrun proof.
+- Exact-head Linux ASan/UBSan and Windows x64 CI for the final PR #40 head; do not merge until all required checks for that exact head are green.
+- Native four-deck REV/SLIP buttons with PL/EN labels/tooltips and visible audible-vs-hidden slip transport state.
+- Reverse-aware long-track read-ahead / slow-storage stress. The current worker prioritizes the requested chunk and immediate neighbours but deeper prefetch is still forward-biased.
+- Keyboard/MIDI mappings, manual resize/HiDPI interaction review and controller qualification.
 - Real Windows 11 clean-machine/audio-interface validation, including device switching and independent four-output cue where supported.
-- Representative legal local-music corpus validation for BPM/key/grid behavior, especially genuinely variable-tempo material.
-- Controller qualification, multi-hour soak and production-release qualification.
-- Production key lock, scratch and broader M2 workflow completion.
+- Reviewed music-domain listening, representative legal BPM/key/grid corpus evidence, multi-hour soak and production-release qualification.
+- Production key lock, scratch and the remaining M2 workflow.
 
 ## Next largest step
 
-First fix any CI regression in PR #39 and keep the final head gated. Once the core reverse/slip semantics are exact-head green, expose them through compact native deck controls with PL/EN text, make the audible-vs-hidden slip state visible without clutter, and add GUI smoke/lifecycle coverage. Do not mark M2 complete until the remaining deck-performance and quality gates are satisfied.
+First fix any exact-head CI regression in PR #40. Once that owner boundary is green, wire compact native REV/SLIP controls on all four deck panels, keep their toggle state synchronized to the Engine fail-closed atomics, show audible versus hidden transport only when Slip actually splits the clocks, and notify the optional key-lock lifecycle so incompatible research rendering remains safely disarmed. In parallel, harden long-track read-ahead for sustained reverse playback rather than assuming forward-only deep prefetch.
