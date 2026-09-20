@@ -33,7 +33,6 @@ public:
         MainComponent::prepareToPlay(samplesPerBlockExpected, sampleRate);
         preparedSampleRate.store(std::isfinite(sampleRate) ? sampleRate : 0.0,
                                  std::memory_order_release);
-        recordButton.setEnabled(std::isfinite(sampleRate) && sampleRate >= 8000.0);
     }
 
     void releaseResources() override {
@@ -44,7 +43,6 @@ public:
             if (!safe) return;
             safe->recordButton.setToggleState(false, juce::dontSendNotification);
             safe->recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
-            safe->recordButton.setEnabled(false);
         });
     }
 
