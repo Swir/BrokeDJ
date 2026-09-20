@@ -6,6 +6,7 @@
 #include "core/TempoSegmentEditor.h"
 #include "Decoder.h"
 #include "PerformanceStateStore.h"
+#include "SessionStore.h"
 #include "TrackAnalysis.h"
 #include "TempoSegmentEditorComponent.h"
 #include "NativeJogScratchControl.h"
@@ -13,6 +14,8 @@
 #include "KeyLockDeckLifecycle.h"
 #endif
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 
@@ -121,6 +124,37 @@ public:
     void setPerformanceState(bool gridAvailable, bool beatLoopIsActive, double beatLoopBeats,
                              const broke::PerformanceDeckOwner::HotCueBank& hotCues,
                              bool trackReady, bool isSyncMaster, bool syncAvailable, bool syncLocked);
+    void applySessionControls(const broke::session::DeckState& state) {
+        const auto finiteOr = [](float value, float fallback) {
+            return std::isfinite(value) ? value : fallback;
+        };
+        knobs[0].setValue(juce::jlimit<double>(broke::minTrimDb, broke::maxTrimDb,
+                                              finiteOr(state.trimDb, 0.0f)),
+                          juce::dontSendNotification);
+        knobs[1].setValue(juce::jlimit<double>(0.0, 1.5, finiteOr(state.channelGain, 0.7f)),
+                          juce::dontSendNotification);
+        const auto safeRate = juce::jlimit(0.8f, 1.2f, finiteOr(state.playbackRate, 1.0f));
+        knobs[2].setValue(static_cast<double>((safeRate - 1.0f) * 100.0f),
+                          juce::dontSendNotification);
+        knobs[3].setValue(juce::jlimit<double>(0.0, 2.0, finiteOr(state.low, 1.0f)),
+                          juce::dontSendNotification);
+        knobs[4].setValue(juce::jlimit<double>(0.0, 2.0, finiteOr(state.mid, 1.0f)),
+                          juce::dontSendNotification);
+        knobs[5].setValue(juce::jlimit<double>(0.0, 2.0, finiteOr(state.high, 1.0f)),
+                          juce::dontSendNotification);
+        knobs[6].setValue(juce::jlimit<double>(0.0, 0.7, finiteOr(state.echo, 0.0f)),
+                          juce::dontSendNotification);
+        knobs[7].setValue(juce::jlimit<double>(0.0, 6.0, finiteOr(state.drive, 0.0f)),
+                          juce::dontSendNotification);
+        cue.setToggleState(state.headphoneCue, juce::dontSendNotification);
+        loop.setToggleState(state.wholeTrackLoop, juce::dontSendNotification);
+        beatLoop.setToggleState(false, juce::dontSendNotification);
+        reverse.setToggleState(false, juce::dontSendNotification);
+        slip.setToggleState(false, juce::dontSendNotification);
+        sync.setToggleState(false, juce::dontSendNotification);
+        syncMaster.setToggleState(false, juce::dontSendNotification);
+        play.setButtonText("PLAY");
+    }
     [[nodiscard]] bool jogScratchActive() const noexcept { return jogScratch.active(); }
     void refresh();
     void paint(juce::Graphics&) override;
@@ -161,6 +195,126 @@ public:
     void loadFileIntoDeck(std::size_t deck, const juce::File& file) {
         if (deck < broke::deckCount) load(deck, file);
     }
+
+    [[nodiscard]] bool sessionSnapshotReady() const noexcept {
+        for (const bool busy : loading)
+            if (busy) return false;
+        return true;
+    }
+
+    [[nodiscard]] broke::session::SessionState captureSessionState() {
+        broke::session::SessionState state;
+        const auto safeFloat = [](float value, float fallback) {
+            return std::isfinite(value) ? value : fallback;
+        };
+        const auto safeDouble = [](double value, double fallback) {
+            return std::isfinite(value) ? value : fallback;
+        };
+
+        state.mixer.crossfader = juce::jlimit(0.0f, 1.0f,
+            safeFloat(engine.crossfader.load(std::memory_order_acquire), 0.5f));
+        state.mixer.master = juce::jlimit(0.0f, 1.0f,
+            safeFloat(engine.master.load(std::memory_order_acquire), 0.5f));
+        state.mixer.headphoneLevel = juce::jlimit(0.0f, 1.0f,
+            safeFloat(engine.headphoneLevel.load(std::memory_order_acquire), 0.5f));
+
+        for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+            auto& output = state.decks[deck];
+            const auto path = deckFiles[deck].getFullPathName();
+            const auto* utf8 = path.toRawUTF8();
+            output.path.assign(utf8, static_cast<std::size_t>(path.getNumBytesAsUTF8()));
+            const auto& control = engine.control(deck);
+            output.positionSeconds = std::max(0.0,
+                safeDouble(engine.meter(deck).position.load(std::memory_order_acquire), 0.0));
+            output.playbackRate = safeFloat(control.rate.load(std::memory_order_acquire), 1.0f);
+            output.trimDb = safeFloat(control.trimDb.load(std::memory_order_acquire), 0.0f);
+            output.channelGain = safeFloat(control.gain.load(std::memory_order_acquire), 0.7f);
+            output.low = safeFloat(control.low.load(std::memory_order_acquire), 1.0f);
+            output.mid = safeFloat(control.mid.load(std::memory_order_acquire), 1.0f);
+            output.high = safeFloat(control.high.load(std::memory_order_acquire), 1.0f);
+            output.echo = safeFloat(control.echo.load(std::memory_order_acquire), 0.0f);
+            output.drive = safeFloat(control.drive.load(std::memory_order_acquire), 0.0f);
+            output.headphoneCue = control.headphone.load(std::memory_order_acquire);
+            output.wholeTrackLoop = control.loop.load(std::memory_order_acquire);
+            output.wasPlaying = control.playing.load(std::memory_order_acquire);
+        }
+        return state;
+    }
+
+    void beginSessionRestore(const broke::session::MixerState& mixerState) {
+        clearSyncFollowers();
+        syncMasterDeck.reset();
+        for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+            auto& control = engine.control(deck);
+            control.playing.store(false, std::memory_order_release);
+            control.headphone.store(false, std::memory_order_release);
+            control.reverse.store(false, std::memory_order_release);
+            control.slip.store(false, std::memory_order_release);
+            control.seek.store(-1.0, std::memory_order_release);
+            syncFollowers[deck] = false;
+        }
+
+        const auto safeUnit = [](float value, float fallback) {
+            return std::isfinite(value) ? juce::jlimit(0.0f, 1.0f, value) : fallback;
+        };
+        const float cross = safeUnit(mixerState.crossfader, 0.5f);
+        const float masterValue = safeUnit(mixerState.master, 0.5f);
+        const float headphoneValue = safeUnit(mixerState.headphoneLevel, 0.5f);
+        engine.crossfader.store(cross, std::memory_order_release);
+        engine.master.store(masterValue, std::memory_order_release);
+        engine.headphoneLevel.store(headphoneValue, std::memory_order_release);
+        crossfader.setValue(cross, juce::dontSendNotification);
+        master.setValue(masterValue, juce::dontSendNotification);
+        headphone.setValue(headphoneValue, juce::dontSendNotification);
+    }
+
+    [[nodiscard]] bool sessionDeckIsLoading(std::size_t deck) const noexcept {
+        return deck < broke::deckCount && loading[deck];
+    }
+
+    [[nodiscard]] bool sessionDeckMatchesFile(std::size_t deck, const juce::File& file) const {
+        return deck < broke::deckCount
+            && deckFiles[deck].getFullPathName() == file.getFullPathName();
+    }
+
+    void applySessionDeckState(std::size_t deck, const broke::session::DeckState& state,
+                               double durationSeconds) {
+        if (deck >= broke::deckCount || !decks[deck]) return;
+        auto& control = engine.control(deck);
+        control.playing.store(false, std::memory_order_release);
+        control.reverse.store(false, std::memory_order_release);
+        control.slip.store(false, std::memory_order_release);
+        control.trimDb.store(juce::jlimit(broke::minTrimDb, broke::maxTrimDb,
+            std::isfinite(state.trimDb) ? state.trimDb : 0.0f), std::memory_order_release);
+        control.gain.store(juce::jlimit(0.0f, 1.5f,
+            std::isfinite(state.channelGain) ? state.channelGain : 0.7f), std::memory_order_release);
+        control.rate.store(juce::jlimit(0.8f, 1.2f,
+            std::isfinite(state.playbackRate) ? state.playbackRate : 1.0f), std::memory_order_release);
+        control.low.store(juce::jlimit(0.0f, 2.0f,
+            std::isfinite(state.low) ? state.low : 1.0f), std::memory_order_release);
+        control.mid.store(juce::jlimit(0.0f, 2.0f,
+            std::isfinite(state.mid) ? state.mid : 1.0f), std::memory_order_release);
+        control.high.store(juce::jlimit(0.0f, 2.0f,
+            std::isfinite(state.high) ? state.high : 1.0f), std::memory_order_release);
+        control.echo.store(juce::jlimit(0.0f, 0.7f,
+            std::isfinite(state.echo) ? state.echo : 0.0f), std::memory_order_release);
+        control.drive.store(juce::jlimit(0.0f, 6.0f,
+            std::isfinite(state.drive) ? state.drive : 0.0f), std::memory_order_release);
+        control.headphone.store(state.headphoneCue, std::memory_order_release);
+        setWholeTrackLoop(deck, state.wholeTrackLoop);
+
+        const double duration = std::isfinite(durationSeconds) && durationSeconds > 0.0
+            ? durationSeconds : 0.0;
+        const double position = std::isfinite(state.positionSeconds) && state.positionSeconds > 0.0
+            ? state.positionSeconds : 0.0;
+        control.seek.store(duration > 0.0 ? juce::jlimit(0.0, 1.0, position / duration) : 0.0,
+                           std::memory_order_release);
+        decks[deck]->applySessionControls(state);
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+        if (keyLockResearchEnabled) keyLockLifecycle.noteTransportControlChanged(deck);
+#endif
+    }
+
 private:
     void timerCallback() override;
     void browse(std::size_t);

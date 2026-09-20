@@ -35,12 +35,29 @@ public:
         importButton.setButtonText(uiText("Import files", "Importuj pliki"));
         loadButton.setButtonText(uiText("Load selected", "Wczytaj wybrany"));
         relocateButton.setButtonText(uiText("Relocate", "Wskaż nowy plik"));
+        saveSessionButton.setButtonText(uiText("Save session", "Zapisz sesję"));
+        loadSessionButton.setButtonText(uiText("Load session", "Wczytaj sesję"));
+        recoverSessionButton.setButtonText(uiText("Recover", "Odzyskaj"));
+
         importButton.onClick = [this] { if (onImportFiles) onImportFiles(); };
         loadButton.onClick = [this] { loadSelected(); };
         relocateButton.onClick = [this] {
             if (const auto* selected = selectedTrack(); selected != nullptr && onRelocateTrack)
                 onRelocateTrack(*selected);
         };
+        saveSessionButton.onClick = [this] { if (onSaveSession) onSaveSession(); };
+        loadSessionButton.onClick = [this] { if (onLoadSession) onLoadSession(); };
+        recoverSessionButton.onClick = [this] { if (onRecoverSession) onRecoverSession(); };
+
+        saveSessionButton.setTooltip(uiText(
+            "Save four deck/mixer controls and local track paths to a versioned BrokeDJ session file.",
+            "Zapisz ustawienia czterech decków/miksera i lokalne ścieżki utworów do wersjonowanego pliku sesji BrokeDJ."));
+        loadSessionButton.setTooltip(uiText(
+            "Load a verified BrokeDJ session. Restored decks stay paused until you press Play.",
+            "Wczytaj zweryfikowaną sesję BrokeDJ. Przywrócone decki pozostają zatrzymane, dopóki nie naciśniesz Play."));
+        recoverSessionButton.setTooltip(uiText(
+            "Explicitly try the verified .bak snapshot when the selected primary session cannot be loaded.",
+            "Jawnie spróbuj zweryfikowanej kopii .bak, gdy wybranej głównej sesji nie można wczytać."));
 
         for (int i = 0; i < 4; ++i)
             targetDeck.addItem(uiText("Deck ", "Deck ") + juce::String::charToString(
@@ -53,9 +70,10 @@ public:
         list.setColour(juce::ListBox::backgroundColourId, background);
         list.setColour(juce::ListBox::outlineColourId, blue.withAlpha(0.22f));
         list.setOutlineThickness(1);
-        for (auto* child : std::array<juce::Component*, 8>{
+        for (auto* child : std::array<juce::Component*, 11>{
                  &heading, &message, &search, &importButton, &loadButton,
-                 &relocateButton, &targetDeck, &list})
+                 &relocateButton, &saveSessionButton, &loadSessionButton,
+                 &recoverSessionButton, &targetDeck, &list})
             addAndMakeVisible(child);
         updateButtons();
     }
@@ -64,6 +82,9 @@ public:
     std::function<void()> onImportFiles;
     std::function<void(const broke::library::TrackRecord&, std::size_t)> onLoadTrack;
     std::function<void(const broke::library::TrackRecord&)> onRelocateTrack;
+    std::function<void()> onSaveSession;
+    std::function<void()> onLoadSession;
+    std::function<void()> onRecoverSession;
 
     void setResults(std::vector<broke::library::TrackRecord> tracks) {
         const auto* before = selectedTrack();
@@ -115,10 +136,16 @@ public:
         search.setBounds(searchRow.reduced(0, 1));
         area.removeFromTop(8);
 
-        auto actions = area.removeFromBottom(38);
-        targetDeck.setBounds(actions.removeFromLeft(110).reduced(2, 3));
-        loadButton.setBounds(actions.removeFromLeft(140).reduced(4, 3));
-        relocateButton.setBounds(actions.removeFromLeft(150).reduced(4, 3));
+        auto sessionActions = area.removeFromBottom(38);
+        recoverSessionButton.setBounds(sessionActions.removeFromRight(108).reduced(4, 3));
+        loadSessionButton.setBounds(sessionActions.removeFromRight(128).reduced(4, 3));
+        saveSessionButton.setBounds(sessionActions.removeFromRight(128).reduced(4, 3));
+        area.removeFromBottom(4);
+
+        auto trackActions = area.removeFromBottom(38);
+        targetDeck.setBounds(trackActions.removeFromLeft(110).reduced(2, 3));
+        loadButton.setBounds(trackActions.removeFromLeft(140).reduced(4, 3));
+        relocateButton.setBounds(trackActions.removeFromLeft(150).reduced(4, 3));
         list.setBounds(area);
     }
 
@@ -187,6 +214,9 @@ private:
         const auto* selected = selectedTrack();
         loadButton.setEnabled(!busy && selected != nullptr && !selected->missing);
         relocateButton.setEnabled(!busy && selected != nullptr);
+        saveSessionButton.setEnabled(!busy);
+        loadSessionButton.setEnabled(!busy);
+        recoverSessionButton.setEnabled(!busy);
     }
 
     inline static const juce::Colour background{0xff080e1a};
@@ -198,6 +228,7 @@ private:
     juce::Label heading, message;
     juce::TextEditor search;
     juce::TextButton importButton, loadButton, relocateButton;
+    juce::TextButton saveSessionButton, loadSessionButton, recoverSessionButton;
     juce::ComboBox targetDeck;
     juce::ListBox list;
     std::vector<broke::library::TrackRecord> rows;
