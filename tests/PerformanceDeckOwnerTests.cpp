@@ -233,6 +233,127 @@ void syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope() {
           "planner reports effective master tempo snapshot for diagnostics");
 }
 
+void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner owner(engine, 0);
+    broke::PerformanceDeckOwner master(engine, 1);
+    using Mode = broke::PerformanceDeckOwner::ReverseSlipMode;
+
+    check(owner.reverseSlipMode() == Mode::forward,
+          "reverse/slip mode starts in forward state");
+    check(owner.setReverseSlipMode(Mode::reverse) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::reverse,
+          "named mode enters reverse-only transport");
+    check(owner.setReverseSlipMode(Mode::slipArmed) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::slipArmed,
+          "named mode can arm slip without audible reverse");
+    check(owner.setReverseSlipMode(Mode::slipReverse) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::slipReverse,
+          "named mode enters slip reverse with both engine flags active");
+    check(owner.setReverseSlipMode(Mode::forward) == broke::PerformanceDeckOwner::Result::applied
+              && owner.reverseSlipMode() == Mode::forward,
+          "named mode returns to ordinary forward transport");
+    check(owner.setReverseSlipMode(static_cast<Mode>(255))
+              == broke::PerformanceDeckOwner::Result::invalidRequest
+              && owner.reverseSlipMode() == Mode::forward,
+          "unknown controller mode fails closed without transport drift");
+
+    check(!owner.reverseEnabled() && !owner.slipEnabled(),
+          "reverse/slip owner starts inactive after forward reset");
+    check(owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "slip intent can be armed before reverse");
+    check(owner.reverseSlipMode() == Mode::slipArmed,
+          "legacy slip setter maps to named slip-armed mode");
+    check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse intent applies through performance owner");
+    check(owner.reverseSlipMode() == Mode::slipReverse
+              && owner.reverseEnabled() && owner.slipEnabled()
+              && engine.control(0).reverse.load() && engine.control(0).slip.load(),
+          "legacy setters converge on named slip-reverse mode");
+
+    check(owner.setWholeTrackLoop(true) == broke::PerformanceDeckOwner::Result::applied,
+          "whole-track loop remains compatible with reverse/slip");
+    check(owner.reverseEnabled() && owner.slipEnabled() && engine.control(0).loop.load()
+              && !engine.loopRegionEnabled(0),
+          "whole-track loop preserves reverse/slip intent without beat region");
+
+    check(owner.setReverseEnabled(false) == broke::PerformanceDeckOwner::Result::applied
+              && owner.setSlipEnabled(false) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip can be disarmed explicitly");
+    check(owner.reverseSlipMode() == Mode::forward,
+          "independent legacy disables converge on named forward mode");
+    check(owner.setWholeTrackLoop(false) == broke::PerformanceDeckOwner::Result::applied,
+          "whole-track loop fixture disables");
+
+    broke::BeatGrid grid;
+    broke::BeatGrid masterGrid;
+    check(grid.reset(0.0, 120.0) && masterGrid.reset(0.0, 128.0),
+          "reverse/slip performance grids initialize");
+    check(owner.setReviewedGrid(grid) == broke::PerformanceDeckOwner::Result::applied
+              && master.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip owners accept reviewed grids");
+    check(owner.armBeatLoopAt(4.0, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip fixture arms reviewed beat loop");
+    check(owner.setReverseSlipMode(Mode::slipReverse)
+              == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "beat-loop ownership rejects complete slip-reverse mode atomically");
+    check(owner.reverseSlipMode() == Mode::forward,
+          "rejected complete mode leaves forward intent unchanged");
+    check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::rendererBusy
+              && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "beat-loop ownership rejects reverse/slip activation");
+    check(!owner.reverseEnabled() && !owner.slipEnabled() && owner.beatLoopActive(),
+          "rejected reverse/slip leaves active beat loop transactionally unchanged");
+
+    owner.disarmLoop();
+    check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::applied
+              && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip can activate after beat loop disarms");
+    check(owner.storeHotCueAt(0, 3.0, 20.0, false)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip fixture stores explicit hot cue");
+    check(owner.triggerHotCue(0, 20.0) == broke::PerformanceDeckOwner::Result::applied,
+          "hot cue jump applies while reverse/slip intent was active");
+    check(!owner.reverseEnabled() && !owner.slipEnabled()
+              && std::abs(engine.control(0).seek.load() - 0.15) < 1.0e-12,
+          "hot cue clears cursor split before publishing seek");
+
+    check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::applied
+              && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip re-arm before Beat Jump");
+    check(owner.jumpBeatsAt(4.25, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "Beat Jump applies after reverse/slip intent");
+    check(!owner.reverseEnabled() && !owner.slipEnabled()
+              && std::abs(engine.control(0).seek.load() - 0.3125) < 1.0e-12,
+          "Beat Jump clears reverse/slip before target seek");
+
+    check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::applied
+              && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip re-arm before Sync");
+    check(owner.syncToAt(master, 4.25, 20.0, 4.0, 20.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "one-shot Sync applies after reverse/slip intent");
+    check(!owner.reverseEnabled() && !owner.slipEnabled()
+              && std::abs(static_cast<double>(engine.control(0).rate.load()) - (128.0 / 120.0)) < 1.0e-6,
+          "Sync clears reverse/slip before publishing rate/phase plan");
+
+    check(owner.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::applied
+              && owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "reverse/slip re-arm before clip reset");
+    owner.resetForClip();
+    check(!owner.reverseEnabled() && !owner.slipEnabled()
+              && owner.reverseSlipMode() == Mode::forward,
+          "clip reset clears transient reverse/slip intent immediately");
+
+    broke::PerformanceDeckOwner invalid(engine, broke::deckCount);
+    check(invalid.setReverseEnabled(true) == broke::PerformanceDeckOwner::Result::invalidDeck
+              && invalid.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::invalidDeck
+              && invalid.setReverseSlipMode(Mode::slipReverse) == broke::PerformanceDeckOwner::Result::invalidDeck,
+          "invalid deck cannot publish reverse/slip intent");
+}
+
 class BusyRenderer final : public broke::DeckSourceRenderer {
 public:
     bool render(const broke::Clip&, double, bool, double,
@@ -282,8 +403,10 @@ void failClosedBoundariesDoNotDriftControls() {
     check(!resetOwner.hasReviewedGrid() && !resetOwner.hotCue(0).set
               && !resetOwner.beatLoopActive() && !resetEngine.loopRegionEnabled(0)
               && !resetEngine.control(0).loop.load()
+              && !resetEngine.control(0).reverse.load()
+              && !resetEngine.control(0).slip.load()
               && resetEngine.control(0).seek.load() < 0.0,
-          "clip replacement clears all source-identity-bound performance state");
+          "clip replacement clears source-identity and transient performance state");
 }
 } // namespace
 
@@ -293,6 +416,7 @@ int main() {
         hotCuesUseReviewedGridAndSafeTransportRules();
         beatJumpAndSyncAreBoundedReviewedGridActions();
         syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope();
+        reverseSlipOwnershipAndTransportJumpsAreFailClosed();
         failClosedBoundariesDoNotDriftControls();
         std::cout << "PerformanceDeckOwnerTests: " << checks << " checks passed\n";
         return EXIT_SUCCESS;

@@ -108,9 +108,15 @@ public:
         const auto totalChunks = (reader->lengthInSamples
             + static_cast<juce::int64>(broke::StreamCache::chunkFrames) - 1)
             / static_cast<juce::int64>(broke::StreamCache::chunkFrames);
+        std::int64_t lastRequestedChunk = -1;
+        std::int64_t prefetchDirection = 1;
         while (!threadShouldExit()) {
             const auto requested = cache->requestedFrame();
             const auto centre = requested / static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+            if (lastRequestedChunk >= 0 && centre != lastRequestedChunk)
+                prefetchDirection = centre < lastRequestedChunk ? -1 : 1;
+            lastRequestedChunk = centre;
+
             bool didWork = false;
             bool readFailed = false;
             bool requestChanged = false;
@@ -133,15 +139,19 @@ public:
             };
 
             // Recovery always loads the requested chunk first, then both immediate
-            // neighbours before deep forward read-ahead. The interpolation engine
-            // can require samples on either side of the cursor, so this ordering
-            // materially reduces avoidable post-seek starvation at chunk edges.
+            // neighbours because interpolation may need source samples on either
+            // side. Deeper read-ahead follows the observed transport direction.
+            // This keeps ordinary forward playback unchanged while allowing a
+            // sustained reverse/slip cursor to build cache behind the playhead.
+            // A one-off backward seek can briefly bias prefetch backward, but the
+            // exact chunk plus both neighbours remain first priority and the next
+            // changed request re-establishes the actual travel direction.
             tryFill(centre);
             if (!threadShouldExit() && !readFailed && stillCurrent()) tryFill(centre - 1);
             if (!threadShouldExit() && !readFailed && stillCurrent()) tryFill(centre + 1);
             for (int offset = 2; offset < readAheadChunks && !threadShouldExit() && !readFailed; ++offset) {
                 if (!stillCurrent()) break;
-                tryFill(centre + offset);
+                tryFill(centre + prefetchDirection * static_cast<std::int64_t>(offset));
             }
 
             if (requestChanged) continue;

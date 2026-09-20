@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 namespace broke {
 
@@ -31,6 +32,17 @@ public:
         cueUnavailable
     };
 
+    // Compact message/controller-thread view of the two Engine transport flags.
+    // The Engine atomics remain authoritative because the realtime path may clear
+    // an incompatible request fail-closed. Keeping the four combinations named
+    // prevents UI/controller code from inventing different transition rules.
+    enum class ReverseSlipMode : std::uint8_t {
+        forward = 0,
+        reverse,
+        slipArmed,
+        slipReverse
+    };
+
     struct HotCue final {
         bool set = false;
         double seconds = 0.0;
@@ -52,6 +64,80 @@ public:
     }
     [[nodiscard]] double beatLoopLength() const noexcept { return activeBeatLoopBeats; }
     [[nodiscard]] const BeatGrid& reviewedGrid() const noexcept { return grid; }
+    [[nodiscard]] bool reverseEnabled() const noexcept {
+        return validDeck() && engine.control(deck).reverse.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool slipEnabled() const noexcept {
+        return validDeck() && engine.control(deck).slip.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] ReverseSlipMode reverseSlipMode() const noexcept {
+        const bool reverse = reverseEnabled();
+        const bool slip = slipEnabled();
+        if (reverse) return slip ? ReverseSlipMode::slipReverse : ReverseSlipMode::reverse;
+        return slip ? ReverseSlipMode::slipArmed : ReverseSlipMode::forward;
+    }
+
+    // Publish a complete controller intent using an ordering that avoids a
+    // misleading reverse-without-slip interval when entering Slip Reverse and
+    // drops audible Reverse before disarming Slip when leaving a split cursor.
+    // This is deliberately message/controller-thread logic; it adds no callback
+    // synchronization, allocation or I/O. The realtime Engine may still clear an
+    // incompatible request fail-closed, so callers must refresh from
+    // reverseSlipMode() rather than assuming a request is latched forever.
+    [[nodiscard]] Result setReverseSlipMode(ReverseSlipMode mode) noexcept {
+        if (!validDeck()) return Result::invalidDeck;
+        if (mode != ReverseSlipMode::forward
+            && (activeBeatLoopBeats > 0.0 || engine.loopRegionEnabled(deck))) {
+            return Result::rendererBusy;
+        }
+
+        auto& control = engine.control(deck);
+        switch (mode) {
+            case ReverseSlipMode::forward:
+                control.reverse.store(false, std::memory_order_release);
+                control.slip.store(false, std::memory_order_release);
+                return Result::applied;
+            case ReverseSlipMode::reverse:
+                control.slip.store(false, std::memory_order_release);
+                control.reverse.store(true, std::memory_order_release);
+                return Result::applied;
+            case ReverseSlipMode::slipArmed:
+                control.reverse.store(false, std::memory_order_release);
+                control.slip.store(true, std::memory_order_release);
+                return Result::applied;
+            case ReverseSlipMode::slipReverse:
+                control.slip.store(true, std::memory_order_release);
+                control.reverse.store(true, std::memory_order_release);
+                return Result::applied;
+        }
+        return Result::invalidRequest;
+    }
+
+    // Reverse and Slip are control intents owned on the message/controller side.
+    // A reviewed beat-loop region has separate cursor ownership, so enabling
+    // either mode while that region is armed fails closed without changing any
+    // transport atomics. Whole-track LOOP is compatible with the Engine's built-
+    // in reverse path and is deliberately preserved. External/research source
+    // renderers remain an Engine-level fail-closed boundary and may clear these
+    // atomics on the next callback; UI must therefore refresh from the atomics
+    // instead of assuming a request remains active forever.
+    [[nodiscard]] Result setReverseEnabled(bool enabled) noexcept {
+        const bool slip = slipEnabled();
+        return setReverseSlipMode(enabled
+            ? (slip ? ReverseSlipMode::slipReverse : ReverseSlipMode::reverse)
+            : (slip ? ReverseSlipMode::slipArmed : ReverseSlipMode::forward));
+    }
+
+    [[nodiscard]] Result setSlipEnabled(bool enabled) noexcept {
+        const bool reverse = reverseEnabled();
+        return setReverseSlipMode(enabled
+            ? (reverse ? ReverseSlipMode::slipReverse : ReverseSlipMode::slipArmed)
+            : (reverse ? ReverseSlipMode::reverse : ReverseSlipMode::forward));
+    }
+
+    void clearReverseSlip() noexcept {
+        static_cast<void>(setReverseSlipMode(ReverseSlipMode::forward));
+    }
 
     // Replacing a reviewed grid invalidates an armed musical loop rather than
     // silently retaining source-time bounds derived from the previous grid.
@@ -116,12 +202,14 @@ public:
         gridReady = false;
     }
 
-    // New immutable clip identity: no stale loop region or cue can carry over.
+    // New immutable clip identity: no stale loop region, cue or transient
+    // reverse/slip performance mode can carry into the replacement clip.
     void resetForClip() noexcept {
         if (validDeck()) {
             engine.clearLoopRegion(deck);
             engine.control(deck).loop.store(false, std::memory_order_release);
             engine.control(deck).seek.store(-1.0, std::memory_order_release);
+            clearReverseSlip();
         }
         activeBeatLoopBeats = 0.0;
         grid = BeatGrid{};
@@ -158,8 +246,9 @@ public:
             return Result::outsideTrack;
 
         // Transactional ordering: do not change LOOP state until Engine accepts
-        // the complete reviewed source-time region. A key-lock/research renderer
-        // or other external owner therefore fails closed without UI state drift.
+        // the complete reviewed source-time region. A key-lock/research renderer,
+        // Reverse/Slip mode or other external owner therefore fails closed without
+        // UI state drift.
         if (!engine.setLoopRegionSeconds(deck, plan.startSeconds, plan.endSeconds))
             return Result::rendererBusy;
 
@@ -256,10 +345,12 @@ public:
         if (!std::isfinite(target) || target < 0.0 || target >= trackDurationSeconds)
             return Result::outsideTrack;
 
-        // Initial fail-safe contract: jumping to a cue exits an active beat loop
-        // instead of letting a stale source-time loop reinterpret the new cursor.
-        // Whole-track LOOP is intentionally preserved.
+        // A cue jump owns the next transport position. Exit a beat loop and any
+        // reverse/slip cursor split before publishing the seek so hidden/audible
+        // clocks cannot reinterpret the explicit cue target. Whole-track LOOP is
+        // intentionally preserved.
         if (activeBeatLoopBeats > 0.0) disarmLoop();
+        clearReverseSlip();
 
         engine.control(deck).seek.store(target / trackDurationSeconds, std::memory_order_release);
         return Result::applied;
@@ -272,8 +363,8 @@ public:
     }
 
     // Preserve the current fractional beat phase while moving by an explicit
-    // musical distance. An active beat-derived loop is exited before the seek;
-    // explicit whole-track LOOP remains unchanged.
+    // musical distance. An active beat-derived loop and reverse/slip cursor split
+    // are exited before the seek; explicit whole-track LOOP remains unchanged.
     [[nodiscard]] Result jumpBeatsAt(double cursorSeconds, double trackDurationSeconds,
                                      double deltaBeats) noexcept {
         if (!validDeck()) return Result::invalidDeck;
@@ -295,6 +386,7 @@ public:
         }
 
         if (activeBeatLoopBeats > 0.0) disarmLoop();
+        clearReverseSlip();
         engine.control(deck).seek.store(targetSeconds / trackDurationSeconds,
                                         std::memory_order_release);
         return Result::applied;
@@ -359,6 +451,7 @@ public:
             return Result::invalidRequest;
 
         if (activeBeatLoopBeats > 0.0) disarmLoop();
+        clearReverseSlip();
         auto& control = engine.control(deck);
         control.rate.store(static_cast<float>(plan.followerRate), std::memory_order_release);
         if (std::abs(plan.phaseErrorBeats) > 1.0e-9) {

@@ -90,6 +90,16 @@ bool waitForRegion(const std::shared_ptr<broke::StreamCache>& cache,
     return cache->diagnostics(1).requestedRegionReady;
 }
 
+bool waitForChunk(const std::shared_ptr<broke::StreamCache>& cache,
+                  std::int64_t chunk, int timeoutMs) {
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + static_cast<double>(timeoutMs);
+    while (juce::Time::getMillisecondCounterHiRes() < deadline) {
+        if (cache->hasChunk(chunk)) return true;
+        juce::Thread::sleep(2);
+    }
+    return cache->hasChunk(chunk);
+}
+
 void exerciseDecode(const juce::File& file, const char* label, bool requireLongSeek) {
     std::atomic<bool> cancelled{false};
     DecodeOptions memoryOptions;
@@ -143,6 +153,35 @@ void runCodecMatrix() {
     TempFile mp3File(".mp3", "BrokeDJ-MP3-fixture");
     writeMp3Fixture(mp3File);
     exerciseDecode(mp3File.file, "MP3", false);
+}
+
+void runReverseDirectionReadAhead() {
+    juce::WavAudioFormat wav;
+    TempFile wavFile(".wav", "BrokeDJ-reverse-read-ahead-fixture");
+    writeGeneratedFixture(wav, wavFile);
+
+    std::atomic<bool> cancelled{false};
+    DecodeOptions options;
+    options.streamingThresholdBytes = 1;
+    auto result = decodeTrack(wavFile.file, cancelled, options);
+    check(result.error.isEmpty() && result.clip && result.clip->streamed(),
+          "reverse read-ahead fixture uses streaming path");
+
+    auto cache = result.clip->stream;
+    constexpr std::int64_t chunk = static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+    const auto forwardTarget = chunk * 22 + 32;
+    check(forwardTarget < result.clip->frames(), "forward direction fixture target is inside track");
+    check(waitForRegion(cache, forwardTarget, 2000),
+          "forward seek establishes a distant read-ahead direction");
+    check(waitForChunk(cache, 24, 2000),
+          "forward direction fills a deeper chunk ahead of the request");
+
+    const auto reverseTarget = chunk * 15 + 32;
+    cache->request(reverseTarget);
+    check(waitForRegion(cache, reverseTarget, 2000),
+          "backward request becomes the active streamed region");
+    check(waitForChunk(cache, 13, 2000),
+          "observed backward transport fills deep read-ahead behind the cursor");
 }
 
 void runSlowReaderPreemption() {
@@ -206,6 +245,7 @@ void runFailureChecks() {
 int main() {
     try {
         runCodecMatrix();
+        runReverseDirectionReadAhead();
         runSlowReaderPreemption();
         runFailureChecks();
         std::cout << "PASS: " << checks << " decoder/codec checks\n";
