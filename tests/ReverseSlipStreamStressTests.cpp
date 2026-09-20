@@ -10,7 +10,6 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
-#include <vector>
 
 namespace {
 int checks = 0;
@@ -47,7 +46,8 @@ void publishChunk(const std::shared_ptr<broke::StreamCache>& cache, std::int64_t
     std::array<float, broke::StreamCache::chunkFrames> right{};
     for (std::size_t i = 0; i < frames; ++i) {
         const double t = static_cast<double>(start + static_cast<std::int64_t>(i)) / sampleRate;
-        const float value = static_cast<float>(0.18 * std::sin(2.0 * 3.14159265358979323846 * 330.0 * t));
+        const float value = static_cast<float>(0.18 * std::sin(
+            2.0 * 3.14159265358979323846 * 330.0 * t));
         left[i] = value;
         right[i] = -value;
     }
@@ -80,7 +80,8 @@ void longTrackReverseSlipKeepsSplitCursorsBounded() {
     broke::Engine engine;
     engine.prepare(sampleRate, blockFrames);
     std::shared_ptr<broke::StreamCache> cache;
-    check(engine.submit(0, makeVirtualLongTrack(cache)), "90-minute stream submits without full-track allocation");
+    check(engine.submit(0, makeVirtualLongTrack(cache)),
+          "90-minute stream submits without full-track allocation");
     publishWindow(cache, 0);
     RenderBlock block;
     process(engine, block); // adopt
@@ -154,19 +155,21 @@ void starvationAndRefillRemainOneEpisodeDuringReverse() {
     }
     const double beforeStarvation = engine.meter(1).audiblePosition.load();
 
-    // Intentionally stop serving the directionally requested region. The fixed
-    // cache will eventually move beyond resident chunks and Engine must collapse
-    // repeated misses into one starvation episode while output remains finite.
+    // Stop serving the requested reverse direction. The fixed cache must run out
+    // deterministically, collapse repeated misses into one starvation episode,
+    // and keep output finite until data returns.
     const auto before = cache->diagnostics();
     for (int i = 0; i < 180; ++i) {
         process(engine, block);
         checkFinite(block, "starved reverse output must remain finite");
     }
     const auto starved = cache->diagnostics();
-    check(starved.readMisses >= before.readMisses,
-          "reverse starvation never loses read-miss history");
-    check(starved.starvationEvents >= before.starvationEvents,
-          "reverse starvation event counter is monotonic");
+    check(starved.readMisses > before.readMisses,
+          "intentional reverse starvation records new read misses");
+    check(starved.starvationEvents == before.starvationEvents + 1,
+          "continuous reverse misses collapse into exactly one new starvation episode");
+    check(starved.starving,
+          "stream remains explicitly starving while reverse data is withheld");
     check(engine.meter(1).audiblePosition.load() < beforeStarvation,
           "reverse transport remains directionally coherent during bounded starvation");
 
@@ -178,10 +181,10 @@ void starvationAndRefillRemainOneEpisodeDuringReverse() {
         checkFinite(block, "reverse refill output must remain finite");
     }
     const auto refilled = cache->diagnostics();
-    check(refilled.refillEvents >= before.refillEvents,
-          "reverse refill event counter is monotonic after data returns");
-    check(!refilled.starving || refilled.requestedRegionReady,
-          "refill either clears starvation or has requested region resident");
+    check(refilled.refillEvents == before.refillEvents + 1,
+          "data return closes exactly one reverse starvation episode");
+    check(!refilled.starving,
+          "reverse refill clears starvation after a complete interpolation frame returns");
 }
 
 void repeatedDirectionChangesKeepRequestInTrack() {
