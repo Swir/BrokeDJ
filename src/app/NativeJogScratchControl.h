@@ -44,6 +44,7 @@ public:
         platter.setValue(0.0, juce::dontSendNotification);
         platter.setNumDecimalPlacesToDisplay(2);
         platter.setDoubleClickReturnValue(true, 0.0);
+        platter.setScrollWheelEnabled(false);
         platter.setTooltip(localText(
             "Hold and drag for bounded platter playback: left = reverse, centre = stopped, right = forward. Release restores the pre-touch transport. Slip and Beat Loop own transport and block scratch fail-closed. This is not hardware-qualified vinyl emulation.",
             "Przytrzymaj i przeciągaj: lewo = wstecz, środek = stop, prawo = do przodu. Puszczenie przywraca transport sprzed dotknięcia. Slip i Beat Loop mają pierwszeństwo i bezpiecznie blokują scratch. To nie jest jeszcze sprzętowo zweryfikowana emulacja winylu."));
@@ -54,7 +55,8 @@ public:
         platter.onDragEnd = [this] { endGesture(); };
 
         host.addAndMakeVisible(*this);
-        host.addComponentListener(this);
+        anchor.addComponentListener(this);
+        layoutFromAnchor();
         startTimerHz(20);
     }
 
@@ -63,7 +65,7 @@ public:
 
     ~NativeJogScratchControl() override {
         stopTimer();
-        host.removeComponentListener(this);
+        anchor.removeComponentListener(this);
         static_cast<void>(controller.cancel());
     }
 
@@ -75,7 +77,7 @@ public:
         gestureActive = false;
         lastVelocity = 0.0;
         platter.setValue(0.0, juce::dontSendNotification);
-        setState(State::ready);
+        refreshIdleState();
     }
 
     void resized() override {
@@ -113,6 +115,18 @@ private:
         }
     }
 
+    void refreshIdleState() {
+        const double duration = engine.meter(deck).duration.load(std::memory_order_acquire);
+        if (!std::isfinite(duration) || duration <= 0.0) {
+            setState(State::unavailable);
+            return;
+        }
+        const bool foreignTransport = performanceOwner.beatLoopActive()
+            || engine.loopRegionEnabled(deck)
+            || performanceOwner.reverseSlipMode() != broke::PerformanceDeckOwner::ReverseSlipMode::forward;
+        setState(foreignTransport ? State::blocked : State::ready);
+    }
+
     void beginGesture() {
         platter.setValue(0.0, juce::dontSendNotification);
         const auto result = controller.begin();
@@ -129,7 +143,11 @@ private:
     }
 
     void applyVelocity() {
-        if (!gestureActive) return;
+        if (!gestureActive) {
+            if (platter.getValue() != 0.0)
+                platter.setValue(0.0, juce::dontSendNotification);
+            return;
+        }
         double velocity = platter.getValue();
         if (std::abs(velocity) > broke::JogScratchController::stopDeadzone
             && std::abs(velocity) < broke::JogScratchController::minAudibleSpeed) {
@@ -149,13 +167,17 @@ private:
     void endGesture() {
         if (!gestureActive) {
             platter.setValue(0.0, juce::dontSendNotification);
+            refreshIdleState();
             return;
         }
         const auto result = controller.end();
         gestureActive = false;
         lastVelocity = 0.0;
         platter.setValue(0.0, juce::dontSendNotification);
-        setState(result == broke::JogScratchController::Result::applied ? State::ready : State::blocked);
+        if (result == broke::JogScratchController::Result::applied)
+            refreshIdleState();
+        else
+            setState(State::blocked);
     }
 
     void abortGesture(State terminalState) noexcept {
@@ -167,7 +189,10 @@ private:
     }
 
     void timerCallback() override {
-        if (!gestureActive) return;
+        if (!gestureActive) {
+            refreshIdleState();
+            return;
+        }
 
         // Clip replacement normally changes the published duration. Fail closed
         // rather than letting a held platter resume transport on a new source.
@@ -182,8 +207,9 @@ private:
             abortGesture(durationChanged ? State::unavailable : State::blocked);
     }
 
-    void componentMovedOrResized(juce::Component& component, bool, bool wasResized) override {
-        if (&component != &host || !wasResized) return;
+    void layoutFromAnchor() {
+        if (adjustingLayout) return;
+        const juce::ScopedValueSetter<bool> guard(adjustingLayout, true);
         auto waveformBounds = anchor.getBounds();
         constexpr int stripHeight = 34;
         constexpr int minimumWaveformHeight = 38;
@@ -197,6 +223,10 @@ private:
         setBounds(strip.reduced(1, 2));
     }
 
+    void componentMovedOrResized(juce::Component& component, bool, bool wasResized) override {
+        if (&component == &anchor && wasResized) layoutFromAnchor();
+    }
+
     juce::Component& host;
     juce::Component& anchor;
     broke::Engine& engine;
@@ -206,6 +236,7 @@ private:
     juce::Label state;
     juce::Slider platter;
     bool gestureActive = false;
+    bool adjustingLayout = false;
     double gestureDuration = 0.0;
     double lastVelocity = 0.0;
 };
