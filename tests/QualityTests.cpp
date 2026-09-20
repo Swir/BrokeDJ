@@ -55,6 +55,19 @@ float peakOf(const std::array<float, 512>& samples) {
 
 void run() {
     {
+        check(std::abs(broke::decibelsToGain(0.0f) - 1.0f) < 1.0e-6f,
+              "zero dB trim resolves to unity gain");
+        check(std::abs(broke::decibelsToGain(6.0f) - 1.9952623f) < 1.0e-5f,
+              "+6 dB trim uses the expected amplitude ratio");
+        check(std::abs(broke::decibelsToGain(-6.0f) - 0.5011872f) < 1.0e-5f,
+              "-6 dB trim uses the expected amplitude ratio");
+        check(std::abs(broke::decibelsToGain(std::numeric_limits<float>::quiet_NaN()) - 1.0f) < 1.0e-6f,
+              "non-finite trim fails safe to unity");
+        check(std::abs(broke::decibelsToGain(100.0f) - broke::decibelsToGain(broke::maxTrimDb)) < 1.0e-6f
+                  && std::abs(broke::decibelsToGain(-100.0f) - broke::decibelsToGain(broke::minTrimDb)) < 1.0e-6f,
+              "trim conversion clamps to the documented safe range");
+    }
+    {
         const auto constant = broke::crossfaderGains(0.5f, broke::CrossfaderCurve::constantPower);
         const auto linear = broke::crossfaderGains(0.5f, broke::CrossfaderCurve::linear);
         const auto cutLeft = broke::crossfaderGains(0.34f, broke::CrossfaderCurve::fastCut);
@@ -195,9 +208,58 @@ void run() {
         f.engine.control(0).high = 0.0f;
         f.engine.control(0).echo = 0.7f;
         f.engine.control(0).drive = 6.0f;
+        f.engine.control(0).trimDb = 12.0f;
         f.render();
         check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float x) { return std::isfinite(x); }),
-            "smoothed EQ and FX automation remains finite");
+            "smoothed trim, EQ and FX automation remains finite");
+    }
+    {
+        Fixture f;
+        check(f.engine.submit(0, constantClip(0.25f)), "gain staging reference clip accepted");
+        f.render();
+        auto& control = f.engine.control(0);
+        control.gain = 1.0f;
+        control.trimDb = 0.0f;
+        control.playing = true;
+        f.render(24);
+        const float unityPre = f.engine.meter(0).preFaderPeak.load();
+        const float unityRms = f.engine.meter(0).rms.load();
+        check(unityPre > 0.20f && unityPre < 0.30f,
+              "pre-fader meter observes the stable unity-trim channel signal");
+        check(unityRms > 0.20f && unityRms <= f.engine.meter(0).peak.load() + 0.001f,
+              "post-fader RMS is finite and bounded by the channel peak for a constant signal");
+
+        control.trimDb = 6.0f;
+        f.render(24);
+        const float boostedPre = f.engine.meter(0).preFaderPeak.load();
+        check(boostedPre > unityPre * 1.85f && boostedPre < unityPre * 2.10f,
+              "+6 dB input trim produces the expected near-2x pre-fader level");
+        check(f.engine.masterRms.load() > unityRms * 1.80f,
+              "master RMS tracks the gain-staging change below protection range");
+
+        control.trimDb = std::numeric_limits<float>::quiet_NaN();
+        f.render(24);
+        const float fallbackPre = f.engine.meter(0).preFaderPeak.load();
+        check(std::abs(fallbackPre - unityPre) < 0.01f,
+              "non-finite runtime trim falls back to unity instead of poisoning audio");
+        check(!f.engine.meter(0).overloaded.load(),
+              "normal gain-staging reference does not report channel overload");
+    }
+    {
+        Fixture f;
+        check(f.engine.submit(0, constantClip(0.40f)), "channel overload fixture accepted");
+        f.render();
+        auto& control = f.engine.control(0);
+        control.gain = 0.20f;
+        control.trimDb = 12.0f;
+        control.playing = true;
+        f.render(24);
+        check(f.engine.meter(0).preFaderPeak.load() > 1.0f,
+              "input trim meter preserves pre-fader overload evidence");
+        check(f.engine.meter(0).overloaded.load(),
+              "channel overload flag is independent from the post-fader master level");
+        check(!f.engine.clipped.load(),
+              "lowering the channel fader can prevent master overload without hiding the channel trim warning");
     }
     {
         Fixture f;
@@ -240,6 +302,11 @@ void run() {
             "private cue remains absent from the master bus when channel gain is down");
         check(peakOf(f.audio[2]) > 0.2f && peakOf(f.audio[3]) > 0.2f,
             "four-channel mode keeps independent stereo cue on outputs 3 and 4");
+
+        f.engine.control(0).trimDb = -12.0f;
+        f.render(24);
+        check(peakOf(f.audio[2]) < 0.25f,
+              "pre-fader cue follows input trim while remaining independent of the channel fader");
 
         f.render(2, 2);
         check(peakOf(f.audio[0]) < 0.001f && peakOf(f.audio[1]) < 0.001f,

@@ -319,6 +319,7 @@ void Engine::prepare(double rate, int maxAudioBlockFrames) {
         s.transitionFrom.fill(0.0f);
         s.cursor = 0.0;
         s.audibleCursor = 0.0;
+        s.trim = 1.0f;
         s.gain = 0.0f;
         s.rate = 1.0f;
         s.cue = 0.0f;
@@ -351,18 +352,22 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
     struct Block {
         const Clip* clip{};
         bool playing{}, loop{}, cue{}, reverse{}, slip{}, externalRendered{};
-        float gain{}, rate{}, low{}, mid{}, high{}, echo{}, drive{};
+        float trim{}, gain{}, rate{}, low{}, mid{}, high{}, echo{}, drive{};
         double externalNextCursor = 0.0;
         double externalAudibleCursor = 0.0;
     };
     std::array<Block, deckCount> blocks{};
+    std::array<float, deckCount> preFaderPeaks{};
     std::array<float, deckCount> peaks{};
+    std::array<double, deckCount> rmsEnergy{};
+    std::array<bool, deckCount> deckOverload{};
     for (std::size_t d = 0; d < deckCount; ++d) {
         auto& state = states[d];
         auto& control = controls[d];
         if (clips[d].adopt()) {
             state.cursor = 0.0;
             state.audibleCursor = 0.0;
+            state.trim = 1.0f;
             state.gain = 0.0f;
             state.rate = 1.0f;
             state.cue = 0.0f;
@@ -393,6 +398,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         b.cue = control.headphone.load(std::memory_order_relaxed);
         b.reverse = control.reverse.load(std::memory_order_relaxed);
         b.slip = control.slip.load(std::memory_order_relaxed);
+        b.trim = decibelsToGain(control.trimDb.load(std::memory_order_relaxed));
         b.gain = bounded(control.gain.load(), 0.0f, 1.5f);
         b.rate = bounded(control.rate.load(), 0.5f, 1.5f, 1.0f);
         b.low = bounded(control.low.load(), 0.0f, 2.0f, 1.0f);
@@ -459,6 +465,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
     const float masterTarget = bounded(master.load(), 0.0f, 1.0f);
     const float headphoneTarget = bounded(headphoneLevel.load(), 0.0f, 1.0f);
     float peak = 0.0f;
+    double masterRmsEnergy = 0.0;
     bool overload = false;
     for (int frame = 0; frame < frames; ++frame) {
         crossSmooth += smoothing * (crossTarget - crossSmooth);
@@ -478,6 +485,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 s.transitionRemaining = transitionSamples;
                 s.wasPlaying = b.playing;
             }
+            s.trim += smoothing * (b.trim - s.trim);
             s.gain += smoothing * (b.gain - s.gain);
             s.rate += smoothing * (b.rate - s.rate);
             s.cue += smoothing * ((b.cue ? 1.0f : 0.0f) - s.cue);
@@ -601,7 +609,9 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 ? 1.0f - static_cast<float>(s.transitionRemaining) / static_cast<float>(transitionSamples)
                 : 1.0f;
             for (std::size_t c = 0; c < 2; ++c) {
-                const float in = bounded(sample[c], -16.0f, 16.0f);
+                // Input trim lives before EQ/FX and therefore also affects the
+                // pre-fader headphone cue. The channel fader remains post-FX.
+                const float in = bounded(sample[c] * s.trim, -16.0f, 16.0f);
                 s.bass[c] += lowCoeff * (in - s.bass[c]);
                 s.treble[c] += highCoeff * (in - s.treble[c]);
                 float x = s.bass[c] * s.low + (s.treble[c] - s.bass[c]) * s.mid + (in - s.treble[c]) * s.high;
@@ -615,9 +625,12 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 if (s.transitionRemaining > 0)
                     x = s.transitionFrom[c] * (1.0f - transitionMix) + x * transitionMix;
                 s.lastProcessed[c] = x;
+                preFaderPeaks[d] = std::max(preFaderPeaks[d], std::abs(x));
+                deckOverload[d] = deckOverload[d] || std::abs(x) > 1.0f;
                 if (s.cue > 0.0001f) cueMix[c] += x * headphoneSmooth * s.cue;
                 x *= s.gain;
                 peaks[d] = std::max(peaks[d], std::abs(x));
+                rmsEnergy[d] += static_cast<double>(x) * static_cast<double>(x);
                 mix[c] += x * ((d % 2 == 0) ? leftFade : rightFade);
             }
             if (s.transitionRemaining > 0) --s.transitionRemaining;
@@ -627,11 +640,13 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             const float x = clean(mix[static_cast<std::size_t>(c)] * masterSmooth);
             overload = overload || std::abs(x) > 0.98f;
             peak = std::max(peak, std::abs(x));
+            masterRmsEnergy += static_cast<double>(x) * static_cast<double>(x);
             if (c < channels && output[c]) output[c][frame] = protectOutput(x);
             if (channels >= 4 && output[c + 2])
                 output[c + 2][frame] = protectOutput(cueMix[static_cast<std::size_t>(c)]);
         }
     }
+    const double stereoSampleCount = static_cast<double>(frames) * 2.0;
     for (std::size_t d = 0; d < deckCount; ++d) {
         const auto* clip = blocks[d].clip;
         const auto frameCount = clip ? clip->frames() : 0;
@@ -650,7 +665,12 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         meters[d].audiblePosition.store(clip
             ? std::clamp(states[d].audibleCursor, 0.0, static_cast<double>(frameCount)) / clip->sampleRate
             : 0.0);
-        meters[d].peak.store(peaks[d]);
+        meters[d].preFaderPeak.store(preFaderPeaks[d], std::memory_order_relaxed);
+        meters[d].peak.store(peaks[d], std::memory_order_relaxed);
+        meters[d].rms.store(stereoSampleCount > 0.0
+            ? static_cast<float>(std::sqrt(rmsEnergy[d] / stereoSampleCount)) : 0.0f,
+            std::memory_order_relaxed);
+        meters[d].overloaded.store(deckOverload[d], std::memory_order_relaxed);
         if (clip && clip->stream) {
             const auto requestedCursor = blocks[d].reverse
                 ? states[d].audibleCursor : states[d].cursor;
@@ -659,7 +679,10 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 static_cast<double>(std::max<std::int64_t>(0, frameCount - 1)))));
         }
     }
-    masterPeak.store(peak);
-    clipped.store(overload);
+    masterPeak.store(peak, std::memory_order_relaxed);
+    masterRms.store(stereoSampleCount > 0.0
+        ? static_cast<float>(std::sqrt(masterRmsEnergy / stereoSampleCount)) : 0.0f,
+        std::memory_order_relaxed);
+    clipped.store(overload, std::memory_order_relaxed);
 }
 } // namespace broke
