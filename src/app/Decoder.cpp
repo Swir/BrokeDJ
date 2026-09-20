@@ -99,7 +99,7 @@ public:
         cache->request(0);
         for (int i = 0; i < primeChunks; ++i) {
             if (cancelled.load()) return false;
-            if (!fillChunk(i, false)) return false;
+            if (fillChunk(i, false, -1) == FillResult::failed) return false;
         }
         return true;
     }
@@ -125,10 +125,18 @@ public:
                 return cache->requestedFrame() / static_cast<std::int64_t>(broke::StreamCache::chunkFrames)
                     != centre;
             };
-            const auto tryFill = [this, totalChunks, &didWork, &readFailed](std::int64_t chunk) {
+            const auto tryFill = [this, totalChunks, centre, &didWork, &readFailed](std::int64_t chunk) {
                 if (chunk < 0 || chunk >= totalChunks || cache->hasChunk(chunk)) return;
-                if (fillChunk(chunk, true)) didWork = true;
-                else readFailed = !threadShouldExit();
+                switch (fillChunk(chunk, true, centre)) {
+                    case FillResult::filled:
+                        didWork = true;
+                        break;
+                    case FillResult::failed:
+                        readFailed = !threadShouldExit();
+                        break;
+                    case FillResult::noWork:
+                        break;
+                }
             };
             const auto stillCurrent = [&] {
                 if (requestedChunkChanged()) {
@@ -161,24 +169,49 @@ public:
     }
 
 private:
-    bool fillChunk(std::int64_t chunk, bool throttled) {
+    enum class FillResult {
+        noWork,
+        filled,
+        failed
+    };
+
+    FillResult fillChunk(std::int64_t chunk, bool throttled,
+                         std::int64_t expectedRequestedChunk) {
         const auto start = chunk * static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
-        if (start < 0 || start >= reader->lengthInSamples) return true;
+        if (start < 0 || start >= reader->lengthInSamples) return FillResult::noWork;
+
+        const auto requestStillCurrent = [this, expectedRequestedChunk] {
+            if (expectedRequestedChunk < 0) return true;
+            const auto current = cache->requestedFrame()
+                / static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+            return current == expectedRequestedChunk;
+        };
+        if (!requestStillCurrent()) return FillResult::noWork;
+
         if (throttled && readAheadDelayMs > 0) {
             int remaining = readAheadDelayMs;
             while (remaining > 0 && !threadShouldExit()) {
+                if (!requestStillCurrent()) return FillResult::noWork;
                 const int slice = std::min(remaining, 2);
                 juce::Thread::sleep(slice);
                 remaining -= slice;
             }
-            if (threadShouldExit()) return false;
+            if (threadShouldExit()) return FillResult::failed;
+            if (!requestStillCurrent()) return FillResult::noWork;
         }
+
+        // The request check immediately before reader->read prevents a seek or
+        // rapid reverse-direction change from starting a decoder read for a
+        // region that is already stale. Once reader->read begins it is allowed
+        // to complete and publish valid decoded data; interrupting third-party
+        // codec internals is deliberately outside this worker's contract.
+        if (!requestStillCurrent()) return FillResult::noWork;
         const int count = static_cast<int>(std::min<juce::int64>(
             static_cast<juce::int64>(broke::StreamCache::chunkFrames),
             reader->lengthInSamples - start));
         scratch.clear();
         float* destinations[] {scratch.getWritePointer(0), scratch.getWritePointer(1)};
-        if (!reader->read(destinations, 2, start, count)) return false;
+        if (!reader->read(destinations, 2, start, count)) return FillResult::failed;
         for (int i = 0; i < count; ++i) {
             if (!std::isfinite(destinations[0][i])) destinations[0][i] = 0.0f;
             if (!std::isfinite(destinations[1][i])) destinations[1][i] = 0.0f;
@@ -187,7 +220,7 @@ private:
             std::copy_n(scratch.getReadPointer(0), count, scratch.getWritePointer(1));
         cache->publishChunk(chunk, scratch.getReadPointer(0), scratch.getReadPointer(1),
                             static_cast<std::size_t>(count));
-        return true;
+        return FillResult::filled;
     }
 
     std::unique_ptr<juce::AudioFormatReader> reader;

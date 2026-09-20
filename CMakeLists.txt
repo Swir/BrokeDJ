@@ -253,6 +253,11 @@ if(BROKEDJ_BUILD_APP)
         add_test(NAME decoder COMMAND brokedj_decoder_tests)
         set_tests_properties(decoder PROPERTIES TIMEOUT 60)
 
+        add_executable(brokedj_decoder_transport_stress_tests tests/DecoderTransportStressTests.cpp)
+        target_link_libraries(brokedj_decoder_transport_stress_tests PRIVATE brokedj_decoder)
+        add_test(NAME decoder_transport_stress COMMAND brokedj_decoder_transport_stress_tests)
+        set_tests_properties(decoder_transport_stress PROPERTIES TIMEOUT 60)
+
         add_executable(brokedj_track_analysis_tests tests/TrackAnalysisTests.cpp)
         target_link_libraries(brokedj_track_analysis_tests PRIVATE brokedj_decoder)
         add_test(NAME track_analysis COMMAND brokedj_track_analysis_tests)
