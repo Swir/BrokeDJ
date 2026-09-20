@@ -6,8 +6,9 @@ This file is the durable engineering checkpoint for the current repository state
 
 - Default branch baseline: `main` at `e21219a6f11e5bc6faf0746edeba52c132bc120f`; PR #51 (`M3: add dropout-aware master set recording`) is merged.
 - PR #51 exact-head workflow run `35528118945` completed successfully before merge across the required Linux/Windows development gate.
-- Active development: `feat/m3-mic-duck-limiter`; the functional core/app head before this documentation checkpoint is `1e9847963c2ca7eae49b3657a70b4259c5088e6c`.
-- The active slice adds opt-in microphone input/ducking and a linked-stereo sample-peak master limiter before the set-recording tap. It still requires exact-final-head Linux/Windows/package CI before merge.
+- Active development: `feat/m3-mic-duck-limiter`; the latest functional fix head before this documentation checkpoint is `9aa9f4a7c0fb1502bcc7c4472e81c84930f78a5d`.
+- Exact-head run `35531783158` caught a Windows regression in the new limiter test: sustained overload could enter the release branch and briefly exceed the configured sample-peak ceiling. Linux sanitizers were green, the Windows build succeeded, but `set_recorder` correctly failed the gate. The limiter release is now clamped to the current sample's safe requested gain so it cannot release above the ceiling requirement.
+- The active slice adds opt-in microphone input/ducking and a linked-stereo sample-peak master limiter before the set-recording tap. It still requires a new exact-final-head Linux/Windows/package CI run before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). This slice does not close M3 by itself.
 - GitHub Releases remains empty; no public BrokeDJ Release is qualified by this checkpoint.
 
@@ -22,15 +23,16 @@ This file is the durable engineering checkpoint for the current repository state
    - A JUCE-independent `MasterPathProcessor` applies linked-stereo, zero-attack sample-peak protection at a -1 dBFS ceiling with a 120 ms release.
    - The limiter is explicitly not a transparent mastering, look-ahead or true-peak limiter. It exposes input/output peak and maximum gain-reduction evidence instead of hiding intervention.
    - Limiter bypass is immediate and removes residual attenuation from a prior reduction event.
+   - Release smoothing is bounded by the instantaneous safe gain, preventing the attack/release oscillation exposed by the Windows sustained-overload fixture.
 
 3. **Realtime and deterministic evidence**
    - The post-mix processor performs only bounded arithmetic and lock-free atomic control/metric access in the callback; input scratch is allocated during `prepareToPlay()`.
-   - `set_recorder` tests now cover below-ceiling transparency, linked-stereo ceiling behavior, ducking response and non-finite input sanitation in addition to the existing WAV/dropout/recovery fixtures.
+   - `set_recorder` tests cover below-ceiling transparency, sustained linked-stereo ceiling behavior, ducking response and non-finite input sanitation in addition to the existing WAV/dropout/recovery fixtures.
    - Set recording captures the post-limiter master 1/2 path, while filesystem/WAV encoding remains on the existing background writer.
 
 ## Gates still open
 
-- The active M3 slice must remain unmerged until its exact-final-head workflow is fully green on Linux and Windows, including packaged-app smoke.
+- The active M3 slice must remain unmerged until its new exact-final-head workflow is fully green on Linux and Windows, including packaged-app smoke.
 - M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical four-output master 1/2 versus cue 3/4 verification.
 - Representative user-owned/licensed music-domain BPM/key/grid evidence remains open.
 - Production key-lock listening/latency, MIDI/controller mappings and concrete controller profiles remain unqualified.
@@ -39,4 +41,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Finish the active microphone/ducking/limiter slice and merge only after exact-final-head Linux/Windows/package CI is green. Then continue the finish-first path toward a usable mixer baseline with the remaining routing/booth and EQ acceptance work, rather than expanding into optional future systems. Keep physical Windows/audio-interface evidence explicit and separate from automated software validation.
+Require a fully green exact-final-head Linux/Windows/package run for the active microphone/ducking/limiter slice and repair any further regression before merge. Then continue the finish-first path toward a usable mixer baseline with the remaining routing/booth and EQ acceptance work, rather than expanding into optional future systems. Keep physical Windows/audio-interface evidence explicit and separate from automated software validation.
