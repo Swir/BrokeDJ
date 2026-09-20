@@ -73,6 +73,16 @@ if(BUILD_TESTING)
     target_link_libraries(brokedj_tempo_segment_editor_model_tests PRIVATE brokedj_core Threads::Threads)
     add_test(NAME tempo_segment_editor_model COMMAND brokedj_tempo_segment_editor_model_tests)
     set_tests_properties(tempo_segment_editor_model PROPERTIES TIMEOUT 30)
+
+    add_executable(brokedj_jog_scratch_controller_tests tests/JogScratchControllerTests.cpp)
+    target_link_libraries(brokedj_jog_scratch_controller_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME jog_scratch_controller COMMAND brokedj_jog_scratch_controller_tests)
+    set_tests_properties(jog_scratch_controller PROPERTIES TIMEOUT 30)
+
+    add_executable(brokedj_reverse_slip_stream_stress_tests tests/ReverseSlipStreamStressTests.cpp)
+    target_link_libraries(brokedj_reverse_slip_stream_stress_tests PRIVATE brokedj_core Threads::Threads)
+    add_test(NAME reverse_slip_stream_stress COMMAND brokedj_reverse_slip_stream_stress_tests)
+    set_tests_properties(reverse_slip_stream_stress PROPERTIES TIMEOUT 30)
 endif()
 
 if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
@@ -191,8 +201,7 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_executable(brokedj_engine_keylock_source_realtime_tests
             tests/EngineKeyLockSourceRealtimeTests.cpp)
         target_link_libraries(brokedj_engine_keylock_source_realtime_tests PRIVATE brokedj_timestretch)
-        add_test(NAME engine_keylock_source_realtime
-            COMMAND brokedj_engine_keylock_source_realtime_tests)
+        add_test(NAME engine_keylock_source_realtime COMMAND brokedj_engine_keylock_source_realtime_tests)
         set_tests_properties(engine_keylock_source_realtime PROPERTIES TIMEOUT 90)
 
         add_executable(brokedj_keylock_deck_lifecycle_tests
