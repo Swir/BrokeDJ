@@ -233,6 +233,74 @@ void syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope() {
           "planner reports effective master tempo snapshot for diagnostics");
 }
 
+
+void continuousSyncMaintenanceUsesDeadbandAndFailsClosedOnTransportOwnership() {
+    broke::Engine engine;
+    broke::PerformanceDeckOwner follower(engine, 0);
+    broke::PerformanceDeckOwner master(engine, 1);
+    broke::BeatGrid followerGrid;
+    broke::BeatGrid masterGrid;
+    check(followerGrid.reset(0.0, 120.0), "continuous-sync follower grid initializes");
+    check(masterGrid.reset(0.0, 128.0), "continuous-sync master grid initializes");
+    check(follower.setReviewedGrid(followerGrid) == broke::PerformanceDeckOwner::Result::applied
+              && master.setReviewedGrid(masterGrid) == broke::PerformanceDeckOwner::Result::applied,
+          "continuous-sync owners accept reviewed grids");
+
+    engine.control(0).rate.store(1.0f);
+    engine.control(0).seek.store(-1.0);
+    auto outcome = follower.maintainSyncToAt(master, 4.25, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::applied
+              && outcome.rateChanged && !outcome.phaseCorrected,
+          "continuous sync updates tempo while phase stays inside deadband");
+    check(std::abs(outcome.phaseErrorBeats - (1.0 / 30.0)) < 1.0e-9
+              && std::abs(static_cast<double>(engine.control(0).rate.load()) - (128.0 / 120.0)) < 1.0e-6,
+          "deadband maintenance reports phase error and publishes reviewed tempo ratio");
+    check(engine.control(0).seek.load() < 0.0,
+          "phase deadband does not create a seek mailbox command");
+
+    engine.control(0).seek.store(-1.0);
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::applied
+              && !outcome.rateChanged && outcome.phaseCorrected,
+          "continuous sync corrects material phase drift without rate churn");
+    check(outcome.normalizedSeek > 0.0
+              && std::abs(engine.control(0).seek.load() - outcome.normalizedSeek) < 1.0e-12,
+          "bounded phase correction publishes exactly the reported normalized target");
+
+    engine.control(0).seek.store(0.222);
+    outcome = follower.maintainSyncToAt(master, 4.0, 20.0, 3.984375, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "continuous sync rejects phase error outside correction envelope");
+    check(std::abs(engine.control(0).seek.load() - 0.222) < 1.0e-12,
+          "oversized phase error fails closed without overwriting transport");
+
+    check(follower.armBeatLoopAt(4.0, 20.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "continuous-sync ownership fixture arms follower beat loop");
+    const double preservedRate = static_cast<double>(engine.control(0).rate.load());
+    const double preservedSeek = engine.control(0).seek.load();
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "beat-loop ownership suspends continuous sync fail closed");
+    check(std::abs(static_cast<double>(engine.control(0).rate.load()) - preservedRate) < 1.0e-6
+              && std::abs(engine.control(0).seek.load() - preservedSeek) < 1.0e-12,
+          "transport-owner conflict leaves rate and seek unchanged");
+    follower.disarmLoop();
+
+    check(master.setReverseSlipMode(broke::PerformanceDeckOwner::ReverseSlipMode::slipReverse)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "continuous-sync master can enter explicit slip-reverse fixture");
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::rendererBusy,
+          "master split transport suspends continuous sync rather than following hidden cursor");
+    master.clearReverseSlip();
+
+    outcome = follower.maintainSyncToAt(master, 4.15, 20.0, 4.0, 20.0,
+                                        0.20, 0.10, 0.05, 0.0005);
+    check(outcome.result == broke::PerformanceDeckOwner::Result::invalidRequest,
+          "continuous sync rejects correction envelope narrower than its deadband");
+}
+
 void reverseSlipOwnershipAndTransportJumpsAreFailClosed() {
     broke::Engine engine;
     broke::PerformanceDeckOwner owner(engine, 0);
@@ -416,6 +484,7 @@ int main() {
         hotCuesUseReviewedGridAndSafeTransportRules();
         beatJumpAndSyncAreBoundedReviewedGridActions();
         syncUsesMasterEffectiveTempoAndFailsClosedAtEnvelope();
+        continuousSyncMaintenanceUsesDeadbandAndFailsClosedOnTransportOwnership();
         reverseSlipOwnershipAndTransportJumpsAreFailClosed();
         failClosedBoundariesDoNotDriftControls();
         std::cout << "PerformanceDeckOwnerTests: " << checks << " checks passed\n";
