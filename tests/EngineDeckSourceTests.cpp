@@ -129,7 +129,23 @@ void run() {
     check(std::abs(engine.meter(0).position.load() - engine.meter(0).audiblePosition.load()) < 1.0e-6,
           "production fallback publishes audible position equal to transport");
 
-    check(engine.setDeckSourceRenderer(0, nullptr), "deck source can be removed while audio is stopped");
+    // The optional source owns the deck while installed, so production beat
+    // loops are deliberately unavailable. Removing it must restore the built-in
+    // loop owner rather than leaving a null slot that also disables Reverse.
+    check(!engine.setLoopRegionSeconds(0, 0.10, 0.20),
+          "external source keeps built-in beat-loop owner fail-closed");
+    check(engine.setDeckSourceRenderer(0, nullptr),
+          "deck source can be removed while audio is stopped");
+    check(engine.setLoopRegionSeconds(0, 0.10, 0.20),
+          "removing external source restores built-in beat-loop owner");
+    engine.clearLoopRegion(0);
+
+    engine.control(0).reverse = true;
+    engine.process(outputs.data(), 4, frames);
+    check(engine.control(0).reverse.load(),
+          "removing external source restores production Reverse ownership");
+    engine.control(0).reverse = false;
+    engine.control(0).playing = false;
 
     bool threw = false;
     try { engine.prepare(48000.0, broke::defaultMaxAudioBlockFrames + 1); }

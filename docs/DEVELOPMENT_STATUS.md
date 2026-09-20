@@ -4,56 +4,57 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch: `main` at `55299b6c97ea72edc5ee97a2baf124e7cbeef3ff` (`Merge PR #43: harden jog/scratch ownership lifecycle`). PR #43 was merged only after exact-head run `35493724750` completed successfully for `fb5eb49f338c1b33bab38428e301bdbc9b125896`.
-- Active development branch: `feat/m2-native-jog-strip`.
-- Active pull request: #44 (`M2: native jog + delayed reverse/slip streaming hardening`).
-- Native jog checkpoint `84e6c87c04bfdcf13e23edf15701c6d51c044c2f` passed exact-head run `35496555186` across Linux sanitizer/progress/CTest and Windows x64 build/test/audio-diagnostics/native GUI-smoke/device-probe/staging.
-- The corrected compressed-stream checkpoint `9235807877028378903aa2aea2d829e74e129475` passed exact-head run `35499686372`: Linux ASan/UBSan + generated-progress + full configured CTest and Windows x64 configure/build/full CTest/audio diagnostics/native no-audio GUI smoke/silent device probe/staging/artifact upload all succeeded.
-- Native jog UI lifecycle hardening is checkpointed at `2352317f683c77f2e59737def51c52088e982246`; the status update following it requires a fresh exact-final-head gate before merge.
+- Default branch: `main` at `ad7345445f779163fc8ae542969a0086d09f01c1` (`M2: native jog + delayed reverse/slip streaming hardening`). PR #44 was merged only after exact-head run `35500293369` completed successfully for `47dcccd182d5a349cf36309c9220dc16e9b354c2`.
+- Active development branch: `feat/m2-keylock-transition-hardening`.
+- Active pull request: #45 (`M2: harden key-lock transport and device transitions`).
+- Previous exact-head checkpoint `dbdc7619bfc726601d4be57d0986895aeef2c670` passed Build and test run `35502264874` across the configured Linux and Windows gates.
+- Latest implementation/test checkpoint before this status update: `d7dbf48669ecf03249dda534b20335a282545f70` (`M2: harden key-lock control validity and owner disarm`). This newer checkpoint requires a fresh exact-final-head gate before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases is empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
-## Newly integrated on main: hardened bounded jog/scratch owner
+## Newly integrated on main: native jog and delayed streaming hardening
 
-1. **Production-transport platter ownership**
-   - `JogScratchController` reuses the production playback-rate plus Reverse transport rather than adding a second audio renderer.
-   - Signed speed is bounded to the Engine's qualified 0.5x..1.5x range; deadzone input holds the platter stationary and relative moves use the audible cursor plus the existing seek mailbox.
+1. **Native bounded JOG/SCRATCH on every deck**
+   - The compact spring-to-centre control reuses the hardened production transport owner, keeps PL/EN state feedback and fails closed around Slip/Beat Loop ownership.
+   - Resize/lifecycle recovery avoids cumulative waveform shrink and accidental mouse-wheel edits.
 
-2. **Ownership changes fail closed**
-   - Slip and reviewed Beat Loop ownership are revalidated throughout an active gesture, not only at acquisition.
-   - A foreign owner arriving mid-gesture cannot make scratch relocate the seek mailbox or silently resume stale playback on release.
+2. **Last-request-wins delayed read-ahead**
+   - The background reader rechecks the requested chunk during controlled delay and before another decoder read, allowing a seek/reverse direction change to abandon stale delayed work without interrupting an in-progress third-party decoder call.
 
-3. **Lifecycle abort**
-   - Explicit `cancel()` and destructor cleanup stop abandoned gestures without leaking transient Reverse/playing state into controller/device teardown.
-   - PR #43 exact-head Linux sanitizer/progress/CTest and Windows x64 build/test/GUI-smoke/device-probe/staging run `35493724750` passed before merge.
+3. **Real decoder stress gate**
+   - Generated FLAC/OGG forced-streaming Reverse/Slip tests cover split cursors, finite output, starvation/refill closure and backward prefetch.
+   - PR #44 exact-head run `35500293369` passed the required Linux sanitizer/progress/CTest and Windows x64 build/test/audio-diagnostics/native GUI-smoke/device-probe/staging gates before merge.
 
-## Current PR #44: native jog plus slow-reader transport hardening
+## Current PR #45: key-lock transition and control-validity hardening
 
-1. **Usable and self-recovering native jog on every deck**
-   - Each `DeckPanel` mounts a compact spring-to-centre JOG/SCRATCH strip backed by the hardened `JogScratchController`.
-   - The strip now follows waveform resize events directly and uses a recursion guard while carving its reserved height, avoiding cumulative shrink/order dependence when the deck is repeatedly resized.
-   - Mouse-wheel edits are disabled for the spring control; inactive value changes snap back to centre, and idle state is refreshed from the authoritative track/Beat Loop/Reverse/Slip ownership so temporary BLOCKED/NO TRACK states recover without requiring another failed gesture.
-   - The control keeps PL/EN ready/active/blocked/no-track feedback and does not claim hardware-qualified vinyl feel.
+1. **Authoritative transport snapshot validation**
+   - `KeyLockDeckLifecycle::service()` compares current loop/rate controls with the last successfully staged key-lock snapshot.
+   - A controller or device path that changes those Engine controls without calling the UI notification hook is detected off-callback, disarmed fail-closed and marked dirty for a later paused restage instead of remaining permanently stale.
+   - Snapshot comparison tolerates the native float-control to double-service round trip, so a stable 1.10x rate does not create repeated stage/generation churn.
 
-2. **Last-request-wins inside delayed read-ahead waits**
-   - The background `StreamingTrack` re-checks the authoritative requested chunk during the bounded artificial/slow-reader delay and immediately before starting a decoder read.
-   - A seek or rapid Reverse direction change can therefore abandon stale delayed prefetch before another codec read starts. Decoder work stays off the audio callback; a codec read already in progress is allowed to finish safely rather than attempting unsafe third-party decoder interruption.
+2. **Sticky invalid-pitch fail-closed barrier**
+   - An out-of-range or non-finite pitch request now latches the optional key-lock path invalid instead of leaving the timer free to silently re-arm the last valid pitch while paused.
+   - A later valid pitch request explicitly clears the barrier. Re-applying the same previous valid value is sufficient, so recovery does not require fabricating a different pitch value solely to trigger restaging.
+   - Deterministic lifecycle coverage checks both playing and paused invalid-control service passes, proves the owner remains disarmed, then verifies explicit valid recovery and restaging.
 
-3. **Real decoder Reverse/Slip stress**
-   - The app-adapter CTest generates original six-second FLAC and OGG fixtures, forces streaming through the production JUCE decoder, injects controlled read-ahead delay, drives Engine Slip Reverse faster than the worker can refill and verifies finite output, split hidden/audible cursors, starvation/refill closure and backward directional prefetch.
-   - A separate delayed-FLAC case exercises in-flight stale-prefetch abandonment.
-   - The first Windows execution was intentionally treated as a gate rather than evidence to ignore: it caught that the initial stress burst could cross hidden-timeline EOF before refill verification. The corrected fixture keeps the stress inside the source and prepares centre/previous/next chunks before asserting recovery, without weakening production starvation behavior.
-   - Corrected exact-head run `35499686372` is green on both Linux and Windows; the newer UI-lifecycle checkpoint must independently repeat the final gate.
+3. **Idempotent owner disarm and production-owner restoration**
+   - `EngineKeyLockDeckOwner::disarm()` now advances its publication generation only when an active optional source actually transitions to fallback. Repeated disabled/timer polling no longer manufactures generation churn.
+   - Lifecycle tests disable the owner, call the disabled service path repeatedly and require the generation to remain stable after the first real transition.
+   - Removing an optional/research deck source with `setDeckSourceRenderer(deck, nullptr)` still restores Engine's built-in loop-region renderer, preserving production Beat Loop and Reverse/Slip ownership after research teardown.
+
+4. **Realtime boundary remains conservative**
+   - All new validation is on the serialized non-audio owner path. No decoder work, file/network I/O, blocking mutex, allocation or unbounded work was added to `Engine::process()`.
+   - Production playback remains the immediate fallback whenever the optional path is invalid, dirty, unavailable or deliberately disarmed.
 
 ## Validation evidence and gates still open
 
-- The current final head of PR #44 requires exact-head Linux ASan/UBSan + generated-progress + full CTest and Windows x64 configure/build/full CTest/audio diagnostics/native GUI smoke/silent device probe/staging before merge.
+- PR #45 now requires a fresh exact-final-head Linux ASan/UBSan + generated-progress + full configured CTest and Windows x64 configure/build/full CTest/audio diagnostics/native GUI smoke/silent device probe/staging after checkpoint `d7dbf48669ecf03249dda534b20335a282545f70` and this status update.
 - Real Windows 11 clean-machine/manual resize/HiDPI/device-switching validation remains open.
 - Independent master 1/2 and cue 3/4 still require a real four-output interface and listening verification.
 - Physical slow-storage, multi-minute real-world compressed files and hardware underrun behavior remain open; controlled delayed decoder fixtures are not physical-storage qualification.
 - Native MIDI/controller mappings and concrete controller profiles remain unqualified; the current native jog input is mouse/native-GUI only.
-- Reviewed music-domain BPM/key/grid evidence, production key lock, wider scratch behavior, multi-hour soak and public-release qualification remain open.
+- Reviewed music-domain BPM/key/grid evidence, production key-lock listening/latency, wider scratch behavior, multi-hour soak and public-release qualification remain open.
 
 ## Next largest step
 
-Fix any exact-final-head PR #44 regression first and keep the branch open until the normal BrokeDJ integration window is appropriate. Once this native-jog/read-ahead package is integrated, prioritize the next M2 blocker that can be advanced without pretending hardware evidence: production key-lock lifecycle hardening and deterministic race/device-transition coverage, while reviewed listening and physical M1 gates remain explicit manual requirements.
+Run the complete exact-head CI gate for the final PR #45 head and fix any regression before integration. If green, keep key lock explicitly experimental until reviewed listening/latency evidence exists; continue with deterministic multi-deck control/device transition coverage and the remaining M2 performance-deck gaps rather than treating source CI as hardware qualification.
