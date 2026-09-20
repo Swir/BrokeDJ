@@ -32,7 +32,7 @@ public:
           controller(targetEngine, performanceOwner, deckIndex) {
         state.setJustificationType(juce::Justification::centredLeft);
         state.setColour(juce::Label::textColourId, juce::Colour{0xffdcecff});
-        state.setFont(juce::Font(juce::FontOptions(10.5f).withStyle("Bold")));
+        state.setFont(juce::Font(juce::FontOptions(10.5f)));
         setState(State::ready);
         addAndMakeVisible(state);
 
