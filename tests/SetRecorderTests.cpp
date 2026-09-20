@@ -103,11 +103,13 @@ void testLateDestinationIsNeverOverwritten() {
     SetRecorder recorder(4096);
     require(recorder.start(requested, rate), "collision fixture failed to start");
     recorder.capture(left.data(), right.data(), frames);
-    require(requested.replaceWithText("external-owner\n"), "could not create late destination collision");
+    // Keep the collision marker free of line endings so this assertion proves
+    // overwrite protection rather than platform-specific text normalization.
+    require(requested.replaceWithText("external-owner"), "could not create late destination collision");
     recorder.stop();
     const auto state = recorder.snapshot();
     require(!state.finalized, "late destination collision was incorrectly finalized");
-    require(requested.loadFileAsString() == "external-owner\n", "late destination was overwritten");
+    require(requested.loadFileAsString() == "external-owner", "late destination was overwritten");
     require(state.recoveryFile.existsAsFile(), "collision did not retain recovery recording");
     require(state.error.containsIgnoreCase("not overwritten"), "collision did not expose overwrite protection error");
     require(dir.deleteRecursively(), "could not remove collision recording fixture");
