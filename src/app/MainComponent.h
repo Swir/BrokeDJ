@@ -250,6 +250,20 @@ public:
             && deckFiles[deck].getFullPathName() == file.getFullPathName();
     }
 
+    // Session restore arms this marker only after the async decoder has
+    // published the expected source. Engine::process() adopts a pending clip
+    // before it consumes Controls::seek, so observing the marker consumed proves
+    // the audio thread has passed the adoption point for that publication.
+    void armSessionDeckAdoptionMarker(std::size_t deck) noexcept {
+        if (deck < broke::deckCount)
+            engine.control(deck).seek.store(0.0, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool sessionDeckAdoptionMarkerConsumed(std::size_t deck) noexcept {
+        return deck < broke::deckCount
+            && engine.control(deck).seek.load(std::memory_order_acquire) < 0.0;
+    }
+
     [[nodiscard]] double sessionDeckDuration(std::size_t deck) const noexcept {
         if (deck >= broke::deckCount) return 0.0;
         const double duration = engine.meter(deck).duration.load(std::memory_order_acquire);
