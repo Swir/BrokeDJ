@@ -9,6 +9,7 @@
 #include "TrackAnalysis.h"
 #include "TempoSegmentEditorComponent.h"
 #include "NativeJogScratchControl.h"
+#include "LibraryPanel.h"
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
 #include "KeyLockDeckLifecycle.h"
 #endif
@@ -184,6 +185,14 @@ private:
     void persistHotCues(std::size_t deck, const juce::File& file, std::uint64_t generation,
                         broke::PerformanceDeckOwner::HotCueBank snapshot);
     void showAudioSettings();
+    void showLibrary();
+    void queueLibrarySearch(const juce::String& query);
+    void importLibraryFiles();
+    void loadLibraryTrack(const broke::library::TrackRecord&, std::size_t deck);
+    void relocateLibraryTrack(const broke::library::TrackRecord&);
+    void queueLibraryUpsert(const juce::File&, double durationSeconds, const juce::String& title,
+                            std::optional<double> bpm = std::nullopt,
+                            std::string musicalKey = {});
     void statusMessage(const juce::String&);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     void serviceKeyLockDeck(std::size_t deck, bool playing);
@@ -215,12 +224,18 @@ private:
     // One worker serializes analysis and local state I/O, bounding CPU and keeping all cache/
     // persistence work off the audio callback.
     juce::ThreadPool analyzers{1};
+    juce::ThreadPool libraryWorkers{1};
+    broke::library::LibraryDatabase libraryDb;
+    std::atomic<std::uint64_t> libraryQueryGeneration{0};
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::FileChooser> libraryChooser;
     juce::Component::SafePointer<juce::DialogWindow> audioSettings;
+    juce::Component::SafePointer<juce::DialogWindow> libraryDialog;
+    juce::Component::SafePointer<LibraryPanel> libraryPanel;
     juce::Component::SafePointer<juce::DialogWindow> tempoSegmentDialog;
     std::optional<std::size_t> tempoSegmentDialogDeck;
     juce::Label title, subtitle, status, crossLabel, masterLabel, cueLabel, meterLabel;
-    juce::TextButton settings;
+    juce::TextButton settings, libraryButton;
     juce::HyperlinkButton author;
     CrossfaderSlider crossfader{engine}, master{engine, false}, headphone{engine, false};
     std::atomic<bool> audioReady{false};
