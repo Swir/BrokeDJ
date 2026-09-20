@@ -7,7 +7,8 @@ This file is the durable engineering checkpoint for the current repository state
 - Default branch: `main` at `ad7345445f779163fc8ae542969a0086d09f01c1` (`M2: native jog + delayed reverse/slip streaming hardening`). PR #44 was merged only after exact-head run `35500293369` completed successfully for `47dcccd182d5a349cf36309c9220dc16e9b354c2`.
 - Active development branch: `feat/m2-keylock-transition-hardening`.
 - Active pull request: #45 (`M2: harden key-lock transport and device transitions`).
-- Latest implementation/test checkpoint before this status update: `91e7f03be55810bfa3dfd804c3cf658580bbe2ea`. Earlier run `35501787451` covered the initial key-lock transition code; later commits deliberately supersede it and require a fresh exact-final-head gate before merge.
+- Previous exact-head checkpoint `dbdc7619bfc726601d4be57d0986895aeef2c670` passed Build and test run `35502264874` across the configured Linux and Windows gates.
+- Latest implementation/test checkpoint before this status update: `d7dbf48669ecf03249dda534b20335a282545f70` (`M2: harden key-lock control validity and owner disarm`). This newer checkpoint requires a fresh exact-final-head gate before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases is empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
@@ -24,26 +25,30 @@ This file is the durable engineering checkpoint for the current repository state
    - Generated FLAC/OGG forced-streaming Reverse/Slip tests cover split cursors, finite output, starvation/refill closure and backward prefetch.
    - PR #44 exact-head run `35500293369` passed the required Linux sanitizer/progress/CTest and Windows x64 build/test/audio-diagnostics/native GUI-smoke/device-probe/staging gates before merge.
 
-## Current PR #45: key-lock transition hardening
+## Current PR #45: key-lock transition and control-validity hardening
 
 1. **Authoritative transport snapshot validation**
    - `KeyLockDeckLifecycle::service()` compares current loop/rate controls with the last successfully staged key-lock snapshot.
    - A controller or device path that changes those Engine controls without calling the UI notification hook is detected off-callback, disarmed fail-closed and marked dirty for a later paused restage instead of remaining permanently stale.
    - Snapshot comparison tolerates the native float-control to double-service round trip, so a stable 1.10x rate does not create repeated stage/generation churn.
 
-2. **Production source-owner restoration after research teardown**
-   - Removing an optional/research deck source with `setDeckSourceRenderer(deck, nullptr)` now restores Engine's built-in loop-region renderer instead of leaving the source slot null.
-   - This closes a device-transition regression where a failed key-lock reconfiguration could otherwise leave production Beat Loop unavailable and make the callback reject Reverse/Slip because the deck no longer appeared to have its built-in owner.
-   - `EngineDeckSourceTests` proves external ownership blocks the built-in beat loop while installed, and that removal restores both Beat Loop arming and production Reverse ownership.
+2. **Sticky invalid-pitch fail-closed barrier**
+   - An out-of-range or non-finite pitch request now latches the optional key-lock path invalid instead of leaving the timer free to silently re-arm the last valid pitch while paused.
+   - A later valid pitch request explicitly clears the barrier. Re-applying the same previous valid value is sufficient, so recovery does not require fabricating a different pitch value solely to trigger restaging.
+   - Deterministic lifecycle coverage checks both playing and paused invalid-control service passes, proves the owner remains disarmed, then verifies explicit valid recovery and restaging.
 
-3. **Clip/device recovery and realtime boundary**
-   - Deterministic lifecycle coverage exercises unnotified live rate and loop changes, stable float/double rate round trips, live clip replacement, failed device configuration and later valid device re-prepare.
-   - The optional renderer remains fallback-first while playing; staging occurs only on the serialized non-audio owner path while paused.
-   - This package adds no I/O, decoding, allocation, blocking mutex or unbounded work to `Engine::process()`; the production owner restoration is a stopped-audio pointer selection only.
+3. **Idempotent owner disarm and production-owner restoration**
+   - `EngineKeyLockDeckOwner::disarm()` now advances its publication generation only when an active optional source actually transitions to fallback. Repeated disabled/timer polling no longer manufactures generation churn.
+   - Lifecycle tests disable the owner, call the disabled service path repeatedly and require the generation to remain stable after the first real transition.
+   - Removing an optional/research deck source with `setDeckSourceRenderer(deck, nullptr)` still restores Engine's built-in loop-region renderer, preserving production Beat Loop and Reverse/Slip ownership after research teardown.
+
+4. **Realtime boundary remains conservative**
+   - All new validation is on the serialized non-audio owner path. No decoder work, file/network I/O, blocking mutex, allocation or unbounded work was added to `Engine::process()`.
+   - Production playback remains the immediate fallback whenever the optional path is invalid, dirty, unavailable or deliberately disarmed.
 
 ## Validation evidence and gates still open
 
-- PR #45 requires exact-final-head Linux ASan/UBSan + generated-progress + full configured CTest and Windows x64 configure/build/full CTest/audio diagnostics/native GUI smoke/silent device probe/staging before merge.
+- PR #45 now requires a fresh exact-final-head Linux ASan/UBSan + generated-progress + full configured CTest and Windows x64 configure/build/full CTest/audio diagnostics/native GUI smoke/silent device probe/staging after checkpoint `d7dbf48669ecf03249dda534b20335a282545f70` and this status update.
 - Real Windows 11 clean-machine/manual resize/HiDPI/device-switching validation remains open.
 - Independent master 1/2 and cue 3/4 still require a real four-output interface and listening verification.
 - Physical slow-storage, multi-minute real-world compressed files and hardware underrun behavior remain open; controlled delayed decoder fixtures are not physical-storage qualification.
@@ -52,4 +57,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Run the complete exact-head CI gate for PR #45 and fix any regression before integration. If green, keep production key lock explicitly experimental until reviewed listening/latency evidence exists. The next code package should then target deterministic device/control races and the next M2 performance-deck gaps rather than treating source CI as hardware qualification.
+Run the complete exact-head CI gate for the final PR #45 head and fix any regression before integration. If green, keep key lock explicitly experimental until reviewed listening/latency evidence exists; continue with deterministic multi-deck control/device transition coverage and the remaining M2 performance-deck gaps rather than treating source CI as hardware qualification.
