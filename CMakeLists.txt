@@ -214,6 +214,55 @@ endif()
 
 if(BROKEDJ_BUILD_APP)
     include(FetchContent)
+
+    # SQLite 3.53.4 official amalgamation, released 2026-07-24.
+    # Source: https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+    # Hash is the official SHA3-256 published by sqlite.org/download.html.
+    FetchContent_Declare(sqlite_amalgamation
+        URL https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+        URL_HASH SHA3_256=628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(sqlite_amalgamation)
+
+    set(BROKEDJ_SQLITE_SOURCE_DIR "${sqlite_amalgamation_SOURCE_DIR}")
+    if(EXISTS "${sqlite_amalgamation_SOURCE_DIR}/sqlite-amalgamation-3530400/sqlite3.c")
+        set(BROKEDJ_SQLITE_SOURCE_DIR
+            "${sqlite_amalgamation_SOURCE_DIR}/sqlite-amalgamation-3530400")
+    endif()
+    if(NOT EXISTS "${BROKEDJ_SQLITE_SOURCE_DIR}/sqlite3.c")
+        message(FATAL_ERROR "Pinned SQLite amalgamation did not contain sqlite3.c")
+    endif()
+
+    add_library(brokedj_sqlite STATIC
+        ${BROKEDJ_SQLITE_SOURCE_DIR}/sqlite3.c)
+    target_include_directories(brokedj_sqlite SYSTEM PUBLIC
+        ${BROKEDJ_SQLITE_SOURCE_DIR})
+    target_compile_definitions(brokedj_sqlite PRIVATE
+        SQLITE_THREADSAFE=1
+        SQLITE_DEFAULT_FOREIGN_KEYS=1
+        SQLITE_OMIT_LOAD_EXTENSION=1)
+    # Do not apply BrokeDJ's warning policy to vendored third-party C.
+    if(MSVC)
+        target_compile_options(brokedj_sqlite PRIVATE /w)
+    else()
+        target_compile_options(brokedj_sqlite PRIVATE -w)
+    endif()
+
+    add_library(brokedj_library STATIC
+        src/app/LibraryDatabase.cpp)
+    target_include_directories(brokedj_library PUBLIC src)
+    target_link_libraries(brokedj_library PUBLIC brokedj_sqlite)
+    if(MSVC)
+        target_compile_options(brokedj_library PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(brokedj_library PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    endif()
+    if(BROKEDJ_SANITIZE AND NOT MSVC)
+        target_compile_options(brokedj_library PUBLIC
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(brokedj_library PUBLIC -fsanitize=address,undefined)
+    endif()
+
     # JUCE 9.0.2, released 2026-09-07. Immutable upstream commit, not a floating branch.
     FetchContent_Declare(JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
@@ -274,6 +323,11 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_set_recorder_tests PRIVATE juce::juce_audio_formats)
         add_test(NAME set_recorder COMMAND brokedj_set_recorder_tests)
         set_tests_properties(set_recorder PROPERTIES TIMEOUT 30)
+
+        add_executable(brokedj_library_database_tests tests/LibraryDatabaseTests.cpp)
+        target_link_libraries(brokedj_library_database_tests PRIVATE brokedj_library)
+        add_test(NAME library_database COMMAND brokedj_library_database_tests)
+        set_tests_properties(library_database PROPERTIES TIMEOUT 60)
     endif()
 
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"
@@ -293,7 +347,7 @@ if(BROKEDJ_BUILD_APP)
     if(MSVC)
         target_compile_options(BrokeDJ PRIVATE /utf-8)
     endif()
-    target_link_libraries(BrokeDJ PRIVATE brokedj_decoder juce::juce_audio_utils
+    target_link_libraries(BrokeDJ PRIVATE brokedj_decoder brokedj_library juce::juce_audio_utils
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
     install(TARGETS BrokeDJ RUNTIME DESTINATION . BUNDLE DESTINATION .)
     install(FILES LICENSE README.md THIRD_PARTY_NOTICES.md DESTINATION .)
