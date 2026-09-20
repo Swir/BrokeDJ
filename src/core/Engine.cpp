@@ -321,6 +321,8 @@ void Engine::prepare(double rate, int maxAudioBlockFrames) {
         s.echo = s.drive = 0.0f;
         s.transitionRemaining = 0;
         s.wasPlaying = false;
+        s.wasReverse = false;
+        s.wasSlip = false;
         s.streamReady = true;
     }
 }
@@ -341,7 +343,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         if (output[c] != nullptr) std::fill_n(output[c], frames, 0.0f);
     struct Block {
         const Clip* clip{};
-        bool playing{}, loop{}, cue{}, externalRendered{};
+        bool playing{}, loop{}, cue{}, reverse{}, slip{}, externalRendered{};
         float gain{}, rate{}, low{}, mid{}, high{}, echo{}, drive{};
         double externalNextCursor = 0.0;
         double externalAudibleCursor = 0.0;
@@ -363,9 +365,13 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             state.transitionFrom.fill(0.0f);
             state.transitionRemaining = 0;
             state.wasPlaying = false;
+            state.wasReverse = false;
+            state.wasSlip = false;
             for (auto& channel : state.delay) std::fill(channel.begin(), channel.end(), 0.0f);
             state.delayIndex = 0;
             control.playing.store(false, std::memory_order_relaxed);
+            control.reverse.store(false, std::memory_order_relaxed);
+            control.slip.store(false, std::memory_order_relaxed);
             if (const auto* adopted = clips[d].current(); adopted) {
                 state.streamReady = !adopted->stream;
                 if (adopted->stream) adopted->stream->request(0);
@@ -378,6 +384,8 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         b.playing = control.playing.load(std::memory_order_relaxed);
         b.loop = control.loop.load(std::memory_order_relaxed);
         b.cue = control.headphone.load(std::memory_order_relaxed);
+        b.reverse = control.reverse.load(std::memory_order_relaxed);
+        b.slip = control.slip.load(std::memory_order_relaxed);
         b.gain = bounded(control.gain.load(), 0.0f, 1.5f);
         b.rate = bounded(control.rate.load(), 0.5f, 1.5f, 1.0f);
         b.low = bounded(control.low.load(), 0.0f, 2.0f, 1.0f);
@@ -385,6 +393,20 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         b.high = bounded(control.high.load(), 0.0f, 2.0f, 1.0f);
         b.echo = bounded(control.echo.load(), 0.0f, 0.7f);
         b.drive = bounded(control.drive.load(), 0.0f, 6.0f);
+
+        // Reverse/slip is a production built-in transport mode. Beat-region
+        // looping and external/research source renderers have independent
+        // transport contracts, so combinations fail closed rather than silently
+        // mixing incompatible cursor ownership.
+        if ((b.reverse || b.slip)
+            && (loopRegionRenderers[d].regionEnabled()
+                || sourceRenderers[d] != &loopRegionRenderers[d])) {
+            b.reverse = false;
+            b.slip = false;
+            control.reverse.store(false, std::memory_order_relaxed);
+            control.slip.store(false, std::memory_order_relaxed);
+        }
+
         const auto seek = control.seek.exchange(-1.0, std::memory_order_relaxed);
         if (b.clip && std::isfinite(seek) && seek >= 0.0) {
             state.transitionFrom = state.lastProcessed;
@@ -392,14 +414,17 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             state.cursor = std::clamp(seek, 0.0, 1.0) * static_cast<double>(b.clip->frames() - 1);
             state.audibleCursor = state.cursor;
             if (b.clip->stream)
-                b.clip->stream->request(static_cast<std::int64_t>(state.cursor));
+                b.clip->stream->request(static_cast<std::int64_t>(state.audibleCursor));
         } else if (b.clip && b.clip->stream) {
-            b.clip->stream->request(static_cast<std::int64_t>(state.cursor));
+            const auto requestFrame = static_cast<std::int64_t>(std::clamp(
+                state.audibleCursor, 0.0,
+                static_cast<double>(std::max<std::int64_t>(0, b.clip->frames() - 1))));
+            b.clip->stream->request(requestFrame);
         }
 
         if (b.clip && b.playing && frames <= maxBlockFrames && sourceRenderers[d] != nullptr) {
             double nextTransport = state.cursor;
-            double nextAudible = state.cursor;
+            double nextAudible = state.audibleCursor;
             auto& scratch = sourceScratch[d];
             const bool rendered = sourceRenderers[d]->render(
                 *b.clip, state.cursor, b.loop, static_cast<double>(b.rate),
@@ -409,6 +434,17 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 b.externalNextCursor = nextTransport;
                 b.externalAudibleCursor = nextAudible;
             }
+        }
+
+        if (!b.externalRendered && (b.reverse != state.wasReverse || b.slip != state.wasSlip)) {
+            state.transitionFrom = state.lastProcessed;
+            state.transitionRemaining = transitionSamples;
+            if (state.wasReverse && state.wasSlip && b.reverse && !b.slip)
+                state.cursor = state.audibleCursor;
+            if (!b.reverse || !state.wasReverse)
+                state.audibleCursor = state.cursor;
+            state.wasReverse = b.reverse;
+            state.wasSlip = b.slip;
         }
     }
     const float crossTarget = bounded(crossfader.load(), 0.0f, 1.0f, 0.5f);
@@ -448,12 +484,12 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 } else {
                     const auto lengthFrames = b.clip->frames();
                     const auto length = static_cast<double>(lengthFrames);
-                    if (s.cursor >= length) {
+
+                    if (b.reverse && b.slip && s.cursor >= length) {
                         if (b.loop) {
                             s.transitionFrom = s.lastProcessed;
                             s.transitionRemaining = transitionSamples;
                             s.cursor = std::fmod(s.cursor, length);
-                            if (b.clip->stream) b.clip->stream->request(static_cast<std::int64_t>(s.cursor));
                         } else {
                             b.playing = false;
                             controls[d].playing.store(false, std::memory_order_relaxed);
@@ -464,17 +500,71 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                             }
                         }
                     }
+
+                    if (b.reverse && s.audibleCursor < 0.0) {
+                        if (b.loop) {
+                            s.transitionFrom = s.lastProcessed;
+                            s.transitionRemaining = transitionSamples;
+                            double wrapped = std::fmod(s.audibleCursor, length);
+                            if (wrapped < 0.0) wrapped += length;
+                            s.audibleCursor = wrapped;
+                            if (!b.slip) s.cursor = s.audibleCursor;
+                            if (b.clip->stream)
+                                b.clip->stream->request(static_cast<std::int64_t>(s.audibleCursor));
+                        } else if (b.slip) {
+                            // Audible reverse reached track start while the slip
+                            // timeline continued. Rejoin the hidden transport
+                            // with the prepared transition instead of pinning at 0.
+                            b.reverse = false;
+                            controls[d].reverse.store(false, std::memory_order_relaxed);
+                            s.wasReverse = false;
+                            s.transitionFrom = s.lastProcessed;
+                            s.transitionRemaining = transitionSamples;
+                            s.audibleCursor = s.cursor;
+                        } else {
+                            b.playing = false;
+                            controls[d].playing.store(false, std::memory_order_relaxed);
+                            s.cursor = 0.0;
+                            s.audibleCursor = 0.0;
+                            if (s.wasPlaying) {
+                                s.transitionFrom = s.lastProcessed;
+                                s.transitionRemaining = transitionSamples;
+                                s.wasPlaying = false;
+                            }
+                        }
+                    }
+
+                    if (!b.reverse && s.cursor >= length) {
+                        if (b.loop) {
+                            s.transitionFrom = s.lastProcessed;
+                            s.transitionRemaining = transitionSamples;
+                            s.cursor = std::fmod(s.cursor, length);
+                            s.audibleCursor = s.cursor;
+                            if (b.clip->stream)
+                                b.clip->stream->request(static_cast<std::int64_t>(s.cursor));
+                        } else {
+                            b.playing = false;
+                            controls[d].playing.store(false, std::memory_order_relaxed);
+                            if (s.wasPlaying) {
+                                s.transitionFrom = s.lastProcessed;
+                                s.transitionRemaining = transitionSamples;
+                                s.wasPlaying = false;
+                            }
+                        }
+                    }
+
                     if (b.playing) {
                         const double step = b.clip->sampleRate / sampleRate * static_cast<double>(s.rate);
-                        const auto* kernel = resamplerKernel(step, s.cursor);
-                        const auto left = resample(*b.clip, 0, s.cursor, b.loop, kernel);
-                        const auto right = resample(*b.clip, 1, s.cursor, b.loop, kernel);
+                        const double readCursor = b.reverse ? s.audibleCursor : s.cursor;
+                        const auto* kernel = resamplerKernel(step, readCursor);
+                        const auto left = resample(*b.clip, 0, readCursor, b.loop, kernel);
+                        const auto right = resample(*b.clip, 1, readCursor, b.loop, kernel);
                         sample[0] = left.value;
                         sample[1] = right.value;
                         streamFrameReady = left.ready && right.ready;
                         if (b.clip->stream) {
                             const auto streamFrame = static_cast<std::int64_t>(std::clamp(
-                                s.cursor, 0.0,
+                                readCursor, 0.0,
                                 static_cast<double>(std::max<std::int64_t>(0, lengthFrames - 1))));
                             if (!streamFrameReady) b.clip->stream->noteStarvation(streamFrame);
                             else if (!s.streamReady) b.clip->stream->noteRefill();
@@ -484,7 +574,15 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                                 s.streamReady = streamFrameReady;
                             }
                         }
-                        s.cursor += step;
+
+                        if (b.reverse) {
+                            s.audibleCursor -= step;
+                            if (b.slip) s.cursor += step;
+                            else s.cursor = s.audibleCursor;
+                        } else {
+                            s.cursor += step;
+                            s.audibleCursor = s.cursor;
+                        }
                     }
                 }
             }
@@ -531,20 +629,24 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             states[d].audibleCursor = blocks[d].externalAudibleCursor;
             if (!blocks[d].loop && states[d].cursor >= static_cast<double>(frameCount))
                 controls[d].playing.store(false, std::memory_order_relaxed);
-        } else {
+        } else if (!blocks[d].reverse) {
             states[d].audibleCursor = states[d].cursor;
         }
         meters[d].duration.store(clip ? static_cast<double>(frameCount) / clip->sampleRate : 0.0);
         meters[d].position.store(clip
-            ? std::min(states[d].cursor, static_cast<double>(frameCount)) / clip->sampleRate
+            ? std::clamp(states[d].cursor, 0.0, static_cast<double>(frameCount)) / clip->sampleRate
             : 0.0);
         meters[d].audiblePosition.store(clip
-            ? std::min(states[d].audibleCursor, static_cast<double>(frameCount)) / clip->sampleRate
+            ? std::clamp(states[d].audibleCursor, 0.0, static_cast<double>(frameCount)) / clip->sampleRate
             : 0.0);
         meters[d].peak.store(peaks[d]);
-        if (clip && clip->stream)
-            clip->stream->request(static_cast<std::int64_t>(
-                std::min(states[d].cursor, static_cast<double>(frameCount - 1))));
+        if (clip && clip->stream) {
+            const auto requestedCursor = blocks[d].reverse
+                ? states[d].audibleCursor : states[d].cursor;
+            clip->stream->request(static_cast<std::int64_t>(std::clamp(
+                requestedCursor, 0.0,
+                static_cast<double>(std::max<std::int64_t>(0, frameCount - 1)))));
+        }
     }
     masterPeak.store(peak);
     clipped.store(overload);

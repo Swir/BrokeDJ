@@ -94,6 +94,27 @@ void run() {
     }
     {
         Fixture f;
+        check(f.engine.submit(0, stepClip()), "slip transition clip accepted");
+        f.render();
+        f.engine.control(0).seek = 0.51;
+        f.render();
+        f.engine.control(0).slip = true;
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).playing = true;
+        f.render(4);
+        const float beforeRejoin = f.audio[0][511];
+        check(beforeRejoin > 0.05f, "slip reverse reaches earlier positive side of step fixture");
+        check(f.engine.meter(0).position.load() > f.engine.meter(0).audiblePosition.load(),
+              "slip transition fixture has independent hidden/audible cursors");
+        f.engine.control(0).reverse = false;
+        f.render();
+        check(f.audio[0][0] > 0.0f, "slip release transition begins from previous audible side");
+        check(f.audio[0][400] < -0.05f, "slip release reaches uninterrupted hidden transport after crossfade");
+        check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float x) { return std::isfinite(x); }),
+              "slip/reverse transition output remains finite");
+    }
+    {
+        Fixture f;
         check(f.engine.submit(0, constantClip(0.4f)), "cue smoothing clip accepted");
         f.render();
         f.engine.control(0).playing = true;
