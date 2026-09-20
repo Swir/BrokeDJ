@@ -57,6 +57,10 @@ int main() {
     CHECK(lifecycle.service(0, 0.0, false, 1.0, false)
         == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
     CHECK(lifecycle.armed(0));
+    const auto stableGeneration = lifecycle.generation(0);
+    CHECK(lifecycle.service(0, 0.0, false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::idle);
+    CHECK(lifecycle.generation(0) == stableGeneration);
 
     engine.control(0).playing.store(true);
     process(engine);
@@ -96,6 +100,17 @@ int main() {
     CHECK(lifecycle.service(0, engine.meter(0).position.load(), false, 1.10, false)
         == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
     CHECK(lifecycle.armed(0));
+
+    // The native timer reads the float Engine control and passes it back as a
+    // double. That harmless representation round-trip must not cause repeated
+    // restaging or generation churn.
+    const auto tolerantGeneration = lifecycle.generation(0);
+    const double rateFromEngineFloat = static_cast<double>(engine.control(0).rate.load());
+    CHECK(lifecycle.service(0, engine.meter(0).position.load(), false,
+                            rateFromEngineFloat, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::idle);
+    CHECK(lifecycle.armed(0));
+    CHECK(lifecycle.generation(0) == tolerantGeneration);
 
     // The same self-healing boundary covers loop ownership. A loop change that
     // bypasses the explicit notification path cannot leave key lock permanently
@@ -163,6 +178,7 @@ int main() {
     engine.control(0).playing.store(false);
     process(engine);
     CHECK(lifecycle.setPitchSemitones(0, 0.0f));
+    engine.control(0).rate.store(1.0f);
     CHECK(lifecycle.service(0, engine.meter(0).position.load(), true, 1.0, false)
         == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
 

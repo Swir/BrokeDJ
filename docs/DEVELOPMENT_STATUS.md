@@ -6,7 +6,8 @@ This file is the durable engineering checkpoint for the current repository state
 
 - Default branch: `main` at `ad7345445f779163fc8ae542969a0086d09f01c1` (`M2: native jog + delayed reverse/slip streaming hardening`). PR #44 was merged only after exact-head run `35500293369` completed successfully for `47dcccd182d5a349cf36309c9220dc16e9b354c2`.
 - Active development branch: `feat/m2-keylock-transition-hardening`.
-- Active pull request: pending creation for the key-lock transition package in this checkpoint.
+- Active pull request: #45 (`M2: harden key-lock transport and device transitions`).
+- Functional key-lock code/test checkpoint: `a1869cc652db8b59d5e1cbd362110a641d31d6b5`; run `35501787451` was started for that head. This documentation/test-coherence follow-up requires a fresh exact-final-head gate before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases is empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
@@ -23,11 +24,12 @@ This file is the durable engineering checkpoint for the current repository state
    - Generated FLAC/OGG forced-streaming Reverse/Slip tests cover split cursors, finite output, starvation/refill closure and backward prefetch.
    - PR #44 exact-head run `35500293369` passed the required Linux sanitizer/progress/CTest and Windows x64 build/test/audio-diagnostics/native GUI-smoke/device-probe/staging gates before merge.
 
-## Current development: key-lock transition hardening
+## Current PR #45: key-lock transition hardening
 
 1. **Authoritative transport snapshot validation**
    - `KeyLockDeckLifecycle::service()` now compares the current loop/rate controls with the last successfully staged key-lock snapshot.
    - A controller or device path that changes those Engine controls without calling the UI notification hook is detected off-callback, disarmed fail-closed and marked dirty for a later paused restage instead of remaining permanently stale.
+   - Snapshot comparison tolerates the native float-control to double-service round trip, so a stable 1.10x rate does not create repeated stage/generation churn.
 
 2. **Clip and device-transition recovery tests**
    - Deterministic lifecycle coverage now exercises unnotified live rate and loop changes, live clip replacement, failed device configuration and a later valid device re-prepare.
@@ -38,7 +40,7 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Validation evidence and gates still open
 
-- The active key-lock transition branch requires exact-head Linux ASan/UBSan + generated-progress + full configured CTest and Windows x64 configure/build/full CTest/audio diagnostics/native GUI smoke/silent device probe/staging before any merge.
+- PR #45 requires exact-final-head Linux ASan/UBSan + generated-progress + full configured CTest and Windows x64 configure/build/full CTest/audio diagnostics/native GUI smoke/silent device probe/staging before merge.
 - Real Windows 11 clean-machine/manual resize/HiDPI/device-switching validation remains open.
 - Independent master 1/2 and cue 3/4 still require a real four-output interface and listening verification.
 - Physical slow-storage, multi-minute real-world compressed files and hardware underrun behavior remain open; controlled delayed decoder fixtures are not physical-storage qualification.
@@ -47,4 +49,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Run the complete exact-head CI gate for the key-lock transition package and fix any regression before integration. If green, keep production key lock explicitly experimental until reviewed listening/latency evidence exists, then continue with deterministic device/control races and the next M2 performance-deck gaps rather than treating source CI as hardware qualification.
+Run the complete exact-head CI gate for PR #45 and fix any regression before integration. If green, keep production key lock explicitly experimental until reviewed listening/latency evidence exists, then continue with deterministic device/control races and the next M2 performance-deck gaps rather than treating source CI as hardware qualification.
