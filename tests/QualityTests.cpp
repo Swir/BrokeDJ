@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 
@@ -53,6 +54,61 @@ float peakOf(const std::array<float, 512>& samples) {
 }
 
 void run() {
+    {
+        const auto constant = broke::crossfaderGains(0.5f, broke::CrossfaderCurve::constantPower);
+        const auto linear = broke::crossfaderGains(0.5f, broke::CrossfaderCurve::linear);
+        const auto cutLeft = broke::crossfaderGains(0.34f, broke::CrossfaderCurve::fastCut);
+        const auto cutRight = broke::crossfaderGains(0.66f, broke::CrossfaderCurve::fastCut);
+        check(std::abs(constant.left - 0.70710678f) < 1.0e-5f
+                  && std::abs(constant.right - 0.70710678f) < 1.0e-5f,
+              "constant-power crossfader keeps equal-power centre gains");
+        check(std::abs(linear.left - 0.5f) < 1.0e-6f
+                  && std::abs(linear.right - 0.5f) < 1.0e-6f,
+              "linear crossfader uses half-gain centre");
+        check(cutLeft.left > 0.999f && cutLeft.right < 0.001f
+                  && cutRight.left < 0.001f && cutRight.right > 0.999f,
+              "fast-cut crossfader narrows the blend region without endpoint leakage");
+        const auto sanitized = broke::crossfaderCurveFromRaw(255);
+        check(sanitized == broke::CrossfaderCurve::constantPower,
+              "unknown crossfader curve fails safe to constant power");
+        const auto nonFinite = broke::crossfaderGains(
+            std::numeric_limits<float>::quiet_NaN(), broke::CrossfaderCurve::linear);
+        check(std::isfinite(nonFinite.left) && std::isfinite(nonFinite.right)
+                  && std::abs(nonFinite.left - 0.5f) < 1.0e-6f,
+              "non-finite crossfader position resolves to a finite centre state");
+    }
+    {
+        Fixture f;
+        check(f.engine.submit(0, constantClip(0.35f)), "crossfader curve clip accepted");
+        f.render();
+        f.engine.control(0).gain = 1.0f;
+        f.engine.control(0).playing = true;
+        f.engine.crossfader = 0.5f;
+        f.engine.crossfaderCurve = static_cast<std::uint8_t>(broke::CrossfaderCurve::constantPower);
+        f.render(24);
+        const float constantPeak = peakOf(f.audio[0]);
+        check(constantPeak > 0.20f && constantPeak < 0.30f,
+              "constant-power centre reaches expected left-deck level");
+
+        const float beforeModeChange = f.audio[0][511];
+        f.engine.crossfaderCurve = static_cast<std::uint8_t>(broke::CrossfaderCurve::linear);
+        f.render();
+        check(std::abs(f.audio[0][0] - beforeModeChange) < 0.02f,
+              "live crossfader-curve change is gain-smoothed instead of discontinuous");
+        f.render(24);
+        const float linearPeak = peakOf(f.audio[0]);
+        check(linearPeak < constantPeak * 0.80f,
+              "linear centre is measurably lower than constant-power centre");
+
+        f.engine.crossfader = 0.40f;
+        f.engine.crossfaderCurve = static_cast<std::uint8_t>(broke::CrossfaderCurve::fastCut);
+        f.render(24);
+        const float fastCutPeak = peakOf(f.audio[0]);
+        check(fastCutPeak > linearPeak * 1.45f,
+              "fast-cut curve materially favors the active side inside its narrow blend zone");
+        check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float x) { return std::isfinite(x); }),
+              "crossfader curve automation remains finite");
+    }
     {
         Fixture f;
         check(f.engine.submit(0, constantClip(1.0f)), "constant clip accepted");

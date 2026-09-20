@@ -11,6 +11,7 @@ namespace broke {
 static_assert(std::atomic<float>::is_always_lock_free);
 static_assert(std::atomic<double>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
+static_assert(std::atomic<std::uint8_t>::is_always_lock_free);
 static_assert(std::atomic<std::size_t>::is_always_lock_free);
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
@@ -300,8 +301,12 @@ void Engine::prepare(double rate, int maxAudioBlockFrames) {
     smoothing = static_cast<float>(1.0 - std::exp(-1.0 / (rate * 0.005)));
     transitionSamples = std::max(1, static_cast<int>(std::lround(rate * 0.005)));
     masterSmooth = 0.0f;
-    crossSmooth = 0.5f;
+    crossSmooth = bounded(crossfader.load(std::memory_order_relaxed), 0.0f, 1.0f, 0.5f);
     headphoneSmooth = 0.5f;
+    const auto initialCrossGains = crossfaderGains(
+        crossSmooth,
+        crossfaderCurveFromRaw(crossfaderCurve.load(std::memory_order_relaxed)));
+    crossGainSmooth = {initialCrossGains.left, initialCrossGains.right};
     for (auto& scratch : sourceScratch)
         for (auto& channel : scratch)
             channel.assign(static_cast<std::size_t>(maxBlockFrames), 0.0f);
@@ -450,6 +455,7 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         }
     }
     const float crossTarget = bounded(crossfader.load(), 0.0f, 1.0f, 0.5f);
+    const auto crossCurve = crossfaderCurveFromRaw(crossfaderCurve.load(std::memory_order_relaxed));
     const float masterTarget = bounded(master.load(), 0.0f, 1.0f);
     const float headphoneTarget = bounded(headphoneLevel.load(), 0.0f, 1.0f);
     float peak = 0.0f;
@@ -458,8 +464,11 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
         crossSmooth += smoothing * (crossTarget - crossSmooth);
         masterSmooth += smoothing * (masterTarget - masterSmooth);
         headphoneSmooth += smoothing * (headphoneTarget - headphoneSmooth);
-        const float leftFade = std::cos(crossSmooth * std::numbers::pi_v<float> * 0.5f);
-        const float rightFade = std::sin(crossSmooth * std::numbers::pi_v<float> * 0.5f);
+        const auto crossGainTarget = crossfaderGains(crossSmooth, crossCurve);
+        crossGainSmooth[0] += smoothing * (crossGainTarget.left - crossGainSmooth[0]);
+        crossGainSmooth[1] += smoothing * (crossGainTarget.right - crossGainSmooth[1]);
+        const float leftFade = crossGainSmooth[0];
+        const float rightFade = crossGainSmooth[1];
         std::array<float, 2> mix{}, cueMix{};
         for (std::size_t d = 0; d < deckCount; ++d) {
             auto& s = states[d];
