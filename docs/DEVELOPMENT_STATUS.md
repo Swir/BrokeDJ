@@ -8,7 +8,7 @@ This file is the durable engineering checkpoint for the current repository state
 - Active development branch: `feat/m2-continuous-sync-lock`.
 - Active pull request: #47 (`M2: add bounded continuous reviewed-grid Sync lock`).
 - Previous exact-head `0b14405c3ac73c9664064b466e95170a703115e5` passed Build and test run `35513887685` across Linux sanitizers/progress/full CTest and Windows x64 build/full CTest/audio diagnostics/native resize smoke/silent device probe/staging.
-- Current work extends the same PR with explicit manual-transport Sync ownership rules plus variable-tempo/clip-replacement regression coverage; a fresh exact-head PR run is required before merge.
+- Sync ownership hardening was applied as `8c53cff959e696dff865405166f2d58a2bd015bb`; its bot-authored pull-request event produced run `35514640842` with `action_required` and no jobs, so this owner-authored checkpoint intentionally starts a fresh exact-head required run before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases remains empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
@@ -28,7 +28,7 @@ This file is the durable engineering checkpoint for the current repository state
    - Explicit follower rate/loop/seek, Hot Cue and Beat Jump actions release that follower's lock instead of being silently overwritten by the next maintenance tick.
    - Incompatible Beat Loop or Reverse/Slip ownership on the MASTER releases all followers immediately; manual master-rate changes intentionally remain trackable through effective-tempo re-evaluation.
    - Invalid MASTER selection preserves the already-valid master/follower relationship instead of destructively clearing it.
-   - Core regression coverage now crosses reviewed variable-tempo boundaries and verifies follower/master clip replacement invalidates stale grid intent without drifting rate/seek controls.
+   - Core regression coverage crosses reviewed variable-tempo boundaries and verifies follower/master clip replacement invalidates stale grid intent without drifting rate/seek controls.
 
 ## Gates still open
 
@@ -40,4 +40,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Run the full exact-head Linux sanitizer + Windows x64 gate for this hardened Sync slice. If green, integrate the coherent PR; then prioritize representative analysis evidence and the remaining M2 key-lock/controller qualification without weakening the manual M1 hardware gates.
+Run the fresh exact-head Linux sanitizer + Windows x64 gate for this hardened Sync slice. If green, integrate the coherent PR; then prioritize representative analysis evidence and the remaining M2 key-lock/controller qualification without weakening the manual M1 hardware gates.
