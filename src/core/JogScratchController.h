@@ -42,6 +42,17 @@ public:
                          std::size_t deckIndex) noexcept
         : engine(targetEngine), owner(targetOwner), deck(deckIndex) {}
 
+    JogScratchController(const JogScratchController&) = delete;
+    JogScratchController& operator=(const JogScratchController&) = delete;
+
+    // A controller disappearing while it owns the platter must never leak a
+    // transient Reverse/playing state into shutdown, device teardown or the
+    // next controller instance. Forced teardown deliberately stops instead of
+    // restoring the prior playing flag.
+    ~JogScratchController() {
+        static_cast<void>(cancel());
+    }
+
     [[nodiscard]] bool active() const noexcept { return gestureActive; }
 
     // Acquire transient platter ownership. Existing Reverse/Slip or reviewed
@@ -51,7 +62,7 @@ public:
         if (gestureActive) return Result::busy;
         const double duration = engine.meter(deck).duration.load(std::memory_order_acquire);
         if (!std::isfinite(duration) || duration <= 0.0) return Result::trackUnavailable;
-        if (owner.beatLoopActive() || engine.loopRegionEnabled(deck)
+        if (conflictingOwnership()
             || owner.reverseSlipMode() != PerformanceDeckOwner::ReverseSlipMode::forward) {
             return Result::busy;
         }
@@ -73,11 +84,15 @@ public:
 
     // Signed speed: positive = forward, negative = reverse. Magnitude is a
     // source/playback speed ratio and is bounded to Engine's qualified range.
-    // Values inside the deadzone hold the platter stopped.
+    // Values inside the deadzone hold the platter stopped. Ownership is
+    // revalidated on every controller update so a Beat Loop or Slip action that
+    // arrives after begin() cannot silently turn an ordinary scratch gesture
+    // into a different transport mode.
     [[nodiscard]] Result setVelocity(double signedSpeed) noexcept {
         if (!gestureActive) return Result::notActive;
         if (!std::isfinite(signedSpeed) || std::abs(signedSpeed) > maxAudibleSpeed)
             return Result::invalidRequest;
+        if (conflictingOwnership()) return Result::busy;
 
         auto& control = engine.control(deck);
         if (std::abs(signedSpeed) <= stopDeadzone) {
@@ -104,6 +119,7 @@ public:
     [[nodiscard]] Result moveBySeconds(double deltaSeconds) noexcept {
         if (!gestureActive) return Result::notActive;
         if (!std::isfinite(deltaSeconds)) return Result::invalidRequest;
+        if (conflictingOwnership()) return Result::busy;
         const double duration = engine.meter(deck).duration.load(std::memory_order_acquire);
         const double audible = engine.meter(deck).audiblePosition.load(std::memory_order_acquire);
         if (!std::isfinite(duration) || duration <= 0.0 || !std::isfinite(audible))
@@ -115,21 +131,43 @@ public:
         return Result::applied;
     }
 
-    // Release platter ownership and restore the pre-gesture play/rate snapshot.
-    // Reverse is cleared before playback resumes so the user cannot inherit a
-    // transient scratch direction after lifting the platter.
+    // Normal platter release restores the pre-gesture play/rate snapshot. If a
+    // different transport owner appeared during the gesture, do not resume the
+    // old playing state underneath it: clear only scratch Reverse, preserve a
+    // foreign Slip/loop state, restore rate, stop and report busy.
     [[nodiscard]] Result end() noexcept {
+        if (!gestureActive) return Result::notActive;
+        const bool conflict = conflictingOwnership();
+        const auto reverseResult = owner.setReverseEnabled(false);
+        if (reverseResult != PerformanceDeckOwner::Result::applied) return Result::busy;
+        auto& control = engine.control(deck);
+        control.rate.store(savedRate, std::memory_order_release);
+        control.playing.store(conflict ? false : savedPlaying, std::memory_order_release);
+        gestureActive = false;
+        return conflict ? Result::busy : Result::applied;
+    }
+
+    // Forced abort for clip replacement, controller disconnect, dialog/device
+    // teardown or shutdown. It never resumes transport, but it does restore the
+    // user's pre-gesture rate. setReverseEnabled(false) intentionally preserves
+    // a Slip state that may have been asserted by another message/controller
+    // owner after the scratch began.
+    [[nodiscard]] Result cancel() noexcept {
         if (!gestureActive) return Result::notActive;
         const auto reverseResult = owner.setReverseEnabled(false);
         if (reverseResult != PerformanceDeckOwner::Result::applied) return Result::busy;
         auto& control = engine.control(deck);
         control.rate.store(savedRate, std::memory_order_release);
-        control.playing.store(savedPlaying, std::memory_order_release);
+        control.playing.store(false, std::memory_order_release);
         gestureActive = false;
         return Result::applied;
     }
 
 private:
+    [[nodiscard]] bool conflictingOwnership() const noexcept {
+        return owner.beatLoopActive() || engine.loopRegionEnabled(deck) || owner.slipEnabled();
+    }
+
     Engine& engine;
     PerformanceDeckOwner& owner;
     std::size_t deck = 0;
