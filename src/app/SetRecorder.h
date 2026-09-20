@@ -77,6 +77,7 @@ public:
         writtenFrames.store(0, std::memory_order_relaxed);
         droppedFrames.store(0, std::memory_order_relaxed);
         dropoutEvents.store(0, std::memory_order_relaxed);
+        activeCaptures.store(0, std::memory_order_relaxed);
         finalized.store(false, std::memory_order_relaxed);
         writerFailed.store(false, std::memory_order_relaxed);
         {
@@ -101,24 +102,51 @@ public:
         return true;
     }
 
-    // May be called while audio continues. Publishing is disabled first, so the
-    // realtime side never waits for disk finalization. The FIFO object itself has
-    // stable lifetime for the whole MainComponent lifetime.
+    // May be called while audio continues. Publishing is disabled first, then we
+    // wait only for a capture that was already inside the bounded callback handoff.
+    // Disk finalization remains on the writer thread; the FIFO/storage lifetime is
+    // stable for the whole component lifetime.
     void stop() {
         accepting.store(false, std::memory_order_release);
+
+        constexpr int captureDrainTimeoutMs = 2000;
+        int waitedMs = 0;
+        while (activeCaptures.load(std::memory_order_acquire) != 0
+               && waitedMs < captureDrainTimeoutMs) {
+            juce::Thread::sleep(1);
+            ++waitedMs;
+        }
+        if (activeCaptures.load(std::memory_order_acquire) != 0) {
+            writerFailed.store(true, std::memory_order_release);
+            setError("Recording callback did not quiesce within the shutdown bound; the .part recovery file was retained.");
+        }
+
         signalThreadShouldExit();
         notify();
-        if (isThreadRunning() && !stopThread(10000))
-            setError("Recording writer did not stop cleanly within the shutdown bound.");
+        if (isThreadRunning() && !stopThread(10000)) {
+            writerFailed.store(true, std::memory_order_release);
+            setError("Recording writer did not stop cleanly within the shutdown bound; the .part recovery file was retained.");
+        }
     }
 
     // Realtime entry point. No I/O, mutex, allocation, condition-variable notify
     // or unbounded retry. The writer polls the FIFO from its background thread.
     // A full FIFO drops the unavailable tail and records explicit evidence.
     void capture(const float* masterLeft, const float* masterRight, int frames) noexcept {
-        if (!accepting.load(std::memory_order_acquire) || frames <= 0) return;
+        if (frames <= 0) return;
+
+        // Increment before observing `accepting`. This closes the stop/capture race:
+        // stop() disables new work, then waits for any callback that had already
+        // published itself here before allowing the writer to finalize.
+        activeCaptures.fetch_add(1, std::memory_order_acq_rel);
+        if (!accepting.load(std::memory_order_acquire)) {
+            activeCaptures.fetch_sub(1, std::memory_order_release);
+            return;
+        }
+
         if (masterLeft == nullptr || masterRight == nullptr) {
             noteDrop(static_cast<std::uint64_t>(frames));
+            activeCaptures.fetch_sub(1, std::memory_order_release);
             return;
         }
 
@@ -135,6 +163,7 @@ public:
         }
         fifo.finishedWrite(accepted);
         if (accepted < frames) noteDrop(static_cast<std::uint64_t>(frames - accepted));
+        activeCaptures.fetch_sub(1, std::memory_order_release);
     }
 
     [[nodiscard]] bool isRecording() const noexcept {
@@ -230,7 +259,12 @@ private:
         }
 
         if (!writerFailed.load(std::memory_order_acquire) && recovery.existsAsFile()) {
-            if (recovery.moveFileTo(finalTarget)) {
+            // Never replace a file that appeared after recording started. A
+            // concurrent creator wins; BrokeDJ keeps the complete recovery file.
+            if (finalTarget.exists()) {
+                writerFailed.store(true, std::memory_order_release);
+                setError("Recording destination appeared during capture; it was not overwritten and the .part recovery file was retained.");
+            } else if (recovery.moveFileTo(finalTarget)) {
                 finalized.store(true, std::memory_order_release);
             } else {
                 setError("Recording data was written, but final rename failed; the .part recovery file was retained.");
@@ -244,6 +278,7 @@ private:
     std::atomic<bool> accepting{false};
     std::atomic<bool> writerFailed{false};
     std::atomic<bool> finalized{false};
+    std::atomic<int> activeCaptures{0};
     std::atomic<std::uint64_t> writtenFrames{0};
     std::atomic<std::uint64_t> droppedFrames{0};
     std::atomic<std::uint64_t> dropoutEvents{0};
