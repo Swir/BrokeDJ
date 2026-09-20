@@ -13,10 +13,11 @@
 #include <vector>
 
 // Native post-mix wrapper: records the already-rendered master outputs 1/2,
-// optionally mixes a selected microphone input with bounded ducking, and applies
-// a linked-stereo sample-peak safety limiter before the recording tap.
+// optionally mixes a selected microphone input with bounded ducking, applies
+// a linked-stereo sample-peak safety limiter, and can mirror the protected
+// master to a dedicated booth pair on logical outputs 5/6.
 // MainComponent keeps ownership of playback/device logic; all disk I/O remains
-// inside SetRecorder's background writer.
+// inside SetRecorder's background writer. Private cue stays on outputs 3/4.
 class RecordingMainComponent final : public MainComponent {
 public:
     explicit RecordingMainComponent(bool openAudio = true, bool enableKeyLockResearch = false)
@@ -60,10 +61,45 @@ public:
         };
         addAndMakeVisible(micButton);
 
+        boothButton.setButtonText("BOOTH");
+        boothButton.setClickingTogglesState(true);
+        boothButton.setTooltip(text(
+            "Send the protected master to dedicated logical outputs 5/6. Requires six active output channels; cue remains private on 3/4.",
+            "Wyślij zabezpieczony master na osobne wyjścia logiczne 5/6. Wymaga sześciu aktywnych wyjść; odsłuch pozostaje prywatny na 3/4."));
+        boothButton.onClick = [this] {
+            const bool requested = boothButton.getToggleState();
+            if (requested && !boothOutputAvailable.load(std::memory_order_acquire)) {
+                boothButton.setToggleState(false, juce::dontSendNotification);
+                masterPath.setBoothEnabled(false);
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon,
+                    text("Booth outputs unavailable", "Wyjścia booth niedostępne"),
+                    text("Open MIC I/O and enable six output channels. Master uses 1/2, private cue uses 3/4 and Booth uses 5/6.",
+                         "Otwórz MIC I/O i włącz sześć kanałów wyjściowych. Master używa 1/2, prywatny odsłuch 3/4, a Booth 5/6."));
+                return;
+            }
+            masterPath.setBoothEnabled(requested);
+        };
+        addAndMakeVisible(boothButton);
+
+        boothLevel.setSliderStyle(juce::Slider::LinearHorizontal);
+        boothLevel.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 22);
+        boothLevel.setRange(-60.0, 0.0, 0.1);
+        boothLevel.setValue(-6.0, juce::dontSendNotification);
+        boothLevel.setDoubleClickReturnValue(true, -6.0);
+        boothLevel.setTextValueSuffix(" dB");
+        boothLevel.setTooltip(text(
+            "Independent Booth attenuation after the master limiter. Range -60..0 dB; it cannot boost above the protected master.",
+            "Niezależne tłumienie Booth po limiterze master. Zakres -60..0 dB; nie może podbić sygnału ponad zabezpieczony master."));
+        boothLevel.onValueChange = [this] {
+            masterPath.setBoothGainDb(static_cast<float>(boothLevel.getValue()));
+        };
+        addAndMakeVisible(boothLevel);
+
         micIoButton.setButtonText("MIC I/O");
         micIoButton.setTooltip(text(
-            "Select optional input channels and 2–4 output channels. The default launch still requests output only; microphone capture is opt-in.",
-            "Wybierz opcjonalne kanały wejściowe oraz 2–4 kanały wyjściowe. Domyślnie program uruchamia tylko wyjście; mikrofon jest opcjonalny."));
+            "Select optional input channels and 2–6 output channels. Master uses 1/2, private cue 3/4 and optional Booth 5/6. The default launch still requests output only.",
+            "Wybierz opcjonalne kanały wejściowe oraz 2–6 kanałów wyjściowych. Master używa 1/2, prywatny odsłuch 3/4, a opcjonalny Booth 5/6. Domyślnie program uruchamia tylko wyjście."));
         micIoButton.onClick = [this] { showMicIoSettings(); };
         addAndMakeVisible(micIoButton);
 
@@ -71,6 +107,8 @@ public:
         masterPath.setDuckDepthDb(12.0f);
         masterPath.setLimiterCeilingDb(-1.0f);
         masterPath.setLimiterEnabled(true);
+        masterPath.setBoothGainDb(-6.0f);
+        masterPath.setBoothEnabled(false);
     }
 
     ~RecordingMainComponent() override {
@@ -87,21 +125,43 @@ public:
         microphoneScratch.assign(static_cast<std::size_t>(std::max(1, samplesPerBlockExpected)), 0.0f);
 
         bool hasInput = false;
-        if (auto* device = deviceManager.getCurrentAudioDevice())
+        bool hasBooth = false;
+        if (auto* device = deviceManager.getCurrentAudioDevice()) {
             hasInput = device->getActiveInputChannels().countNumberOfSetBits() > 0;
+            hasBooth = device->getActiveOutputChannels().countNumberOfSetBits() >= 6;
+        }
         microphoneInputAvailable.store(hasInput, std::memory_order_release);
+        boothOutputAvailable.store(hasBooth, std::memory_order_release);
+
+        if (!hasInput && masterPath.isMicrophoneEnabled()) {
+            masterPath.setMicrophoneEnabled(false);
+            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
+                if (safe) safe->micButton.setToggleState(false, juce::dontSendNotification);
+            });
+        }
+        if (!hasBooth && masterPath.isBoothEnabled()) {
+            masterPath.setBoothEnabled(false);
+            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
+                if (safe) safe->boothButton.setToggleState(false, juce::dontSendNotification);
+            });
+        }
     }
 
     void releaseResources() override {
         recorder.stop();
         preparedSampleRate.store(0.0, std::memory_order_release);
         microphoneInputAvailable.store(false, std::memory_order_release);
+        boothOutputAvailable.store(false, std::memory_order_release);
+        masterPath.setMicrophoneEnabled(false);
+        masterPath.setBoothEnabled(false);
         masterPath.resetRealtimeState();
         MainComponent::releaseResources();
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
             if (!safe) return;
             safe->recordButton.setToggleState(false, juce::dontSendNotification);
             safe->recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
+            safe->micButton.setToggleState(false, juce::dontSendNotification);
+            safe->boothButton.setToggleState(false, juce::dontSendNotification);
         });
     }
 
@@ -119,11 +179,23 @@ public:
         MainComponent::getNextAudioBlock(info);
         if (info.buffer == nullptr || info.numSamples <= 0) return;
 
+        // Engine owns master 1/2 and private cue 3/4. Dedicated channels above
+        // those buses are cleared before optional Booth generation so stale
+        // device/input samples can never leak to outputs 5/6 or beyond.
+        for (int channel = 4; channel < info.buffer->getNumChannels(); ++channel)
+            info.buffer->clear(channel, info.startSample, info.numSamples);
+
         if (info.buffer->getNumChannels() >= 2) {
             auto* left = info.buffer->getWritePointer(0, info.startSample);
             auto* right = info.buffer->getWritePointer(1, info.startSample);
+            float* boothLeft = nullptr;
+            float* boothRight = nullptr;
+            if (info.buffer->getNumChannels() >= 6) {
+                boothLeft = info.buffer->getWritePointer(4, info.startSample);
+                boothRight = info.buffer->getWritePointer(5, info.startSample);
+            }
             masterPath.process(copyMic ? microphoneScratch.data() : nullptr,
-                               left, right, info.numSamples);
+                               left, right, info.numSamples, boothLeft, boothRight);
         }
 
         if (!recorder.isRecording()) return;
@@ -154,6 +226,14 @@ public:
         micButton.setBounds(right - micWidth, 20, micWidth, 34);
         right -= micWidth + gap;
 
+        constexpr int boothWidth = 62;
+        boothButton.setBounds(right - boothWidth, 20, boothWidth, 34);
+        right -= boothWidth + gap;
+
+        constexpr int boothLevelWidth = 130;
+        boothLevel.setBounds(right - boothLevelWidth, 20, boothLevelWidth, 34);
+        right -= boothLevelWidth + gap;
+
         constexpr int ioWidth = 64;
         micIoButton.setBounds(right - ioWidth, 20, ioWidth, 34);
     }
@@ -175,7 +255,7 @@ private:
         options.useNativeTitleBar = true;
         options.resizable = true;
         options.content.setOwned(new juce::AudioDeviceSelectorComponent(
-            deviceManager, 0, 2, 2, 4, false, false, true, false));
+            deviceManager, 0, 2, 2, 6, false, false, true, false));
         options.content->setSize(620, 500);
         options.componentToCentreAround = this;
         micSettings = options.launchAsync();
@@ -272,6 +352,8 @@ private:
                << text(" | max output: ", " | max wyjście: ") << dbfs(masterState.maxOutputPeak);
         if (masterState.microphoneEnabled)
             detail << text(" | microphone ducking active", " | ducking mikrofonu aktywny");
+        if (masterState.boothEnabled)
+            detail << text(" | booth max: ", " | booth max: ") << dbfs(masterState.maxBoothPeak);
         recordButton.setTooltip(detail);
 
         const auto icon = state.finalized && state.dropoutEvents == 0
@@ -289,12 +371,15 @@ private:
     juce::TextButton recordButton;
     juce::TextButton limiterButton;
     juce::TextButton micButton;
+    juce::TextButton boothButton;
+    juce::Slider boothLevel;
     juce::TextButton micIoButton;
     std::unique_ptr<juce::FileChooser> recordChooser;
     juce::Component::SafePointer<juce::DialogWindow> micSettings;
     std::vector<float> microphoneScratch;
     std::atomic<double> preparedSampleRate{0.0};
     std::atomic<bool> microphoneInputAvailable{false};
+    std::atomic<bool> boothOutputAvailable{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordingMainComponent)
 };

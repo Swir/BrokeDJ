@@ -5,40 +5,44 @@ This file is the durable engineering checkpoint for the current repository state
 ## Current checkpoint
 
 - Default branch baseline: `main` at `e21219a6f11e5bc6faf0746edeba52c132bc120f`; PR #51 (`M3: add dropout-aware master set recording`) is merged.
-- PR #51 exact-head workflow run `35528118945` completed successfully before merge across the required Linux/Windows development gate.
-- Active development: `feat/m3-mic-duck-limiter`; the latest functional fix head before this documentation checkpoint is `9aa9f4a7c0fb1502bcc7c4472e81c84930f78a5d`.
-- Exact-head run `35531783158` caught a Windows regression in the new limiter test: sustained overload could enter the release branch and briefly exceed the configured sample-peak ceiling. Linux sanitizers were green, the Windows build succeeded, but `set_recorder` correctly failed the gate. The limiter release is now clamped to the current sample's safe requested gain so it cannot release above the ceiling requirement.
-- The active slice adds opt-in microphone input/ducking and a linked-stereo sample-peak master limiter before the set-recording tap. It still requires a new exact-final-head Linux/Windows/package CI run before merge.
-- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). This slice does not close M3 by itself.
+- Active development remains PR #52 on `feat/m3-mic-duck-limiter`; do not create a competing M3 branch while this package is open.
+- Parent checkpoint `0ee858bf8acdf35a43f1d09590283e135ca311ce` passed exact-head workflow run `35532349004` across the required Linux/Windows/package development gate.
+- The current branch package extends that green microphone/ducking/limiter slice with fail-closed dedicated Booth routing on logical outputs 5/6, independent attenuation and deterministic routing tests. This newer checkpoint requires its own exact-head CI before merge.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M3 remains open.
 - GitHub Releases remains empty; no public BrokeDJ Release is qualified by this checkpoint.
 
-## Active M3 slice: microphone ducking and measured master protection
+## Active M3 slice: usable master, microphone, booth and recording path
 
 1. **Opt-in microphone workflow**
    - BrokeDJ still launches output-only by default. `MIC I/O` lets the user explicitly enable an input channel through JUCE's native device selector.
    - `MIC` fails closed when no active input is available. When enabled, the first active input is mixed into master 1/2 at 0 dB and drives up to 12 dB of music ducking.
-   - Cue outputs 3/4 remain outside the microphone/master recording path.
+   - Device re-prepare without an input disables the microphone path instead of leaving a stale armed state.
 
-2. **Explicit master sample-peak limiter**
+2. **Measured master protection and recording**
    - A JUCE-independent `MasterPathProcessor` applies linked-stereo, zero-attack sample-peak protection at a -1 dBFS ceiling with a 120 ms release.
    - The limiter is explicitly not a transparent mastering, look-ahead or true-peak limiter. It exposes input/output peak and maximum gain-reduction evidence instead of hiding intervention.
-   - Limiter bypass is immediate and removes residual attenuation from a prior reduction event.
-   - Release smoothing is bounded by the instantaneous safe gain, preventing the attack/release oscillation exposed by the Windows sustained-overload fixture.
+   - Set recording captures only the post-limiter master 1/2 path; filesystem/WAV encoding remains on the existing background writer and private cue is never folded into the recording.
 
-3. **Realtime and deterministic evidence**
-   - The post-mix processor performs only bounded arithmetic and lock-free atomic control/metric access in the callback; input scratch is allocated during `prepareToPlay()`.
-   - `set_recorder` tests cover below-ceiling transparency, sustained linked-stereo ceiling behavior, ducking response and non-finite input sanitation in addition to the existing WAV/dropout/recovery fixtures.
-   - Set recording captures the post-limiter master 1/2 path, while filesystem/WAV encoding remains on the existing background writer.
+3. **Dedicated Booth route without cue leakage**
+   - The device selector now permits up to six output channels. Master remains logical outputs 1/2, private cue remains 3/4 and optional Booth uses 5/6 only when six outputs are active.
+   - Booth copies the protected master after the limiter and has an independent smoothed attenuation-only level from -60 to 0 dB; it cannot boost above the protected master.
+   - Channels above the Engine-owned master/cue buses are explicitly cleared before Booth generation so stale input/device samples cannot leak to the dedicated route.
+   - If six outputs disappear on device re-prepare, Booth disables fail-closed. Set recording still captures master 1/2 only, never cue or Booth.
+
+4. **Deterministic and realtime evidence**
+   - The post-mix processor performs bounded arithmetic and lock-free atomic control/metric access in the callback; microphone scratch is allocated during `prepareToPlay()`.
+   - `set_recorder` tests cover below-ceiling transparency, sustained linked-stereo ceiling behavior, ducking, non-finite sanitation, protected-master Booth copying, independent Booth level and explicit clearing when Booth is disabled.
+   - The core Booth processor was also compiled locally as a standalone C++20 header fixture with strict GCC warnings before publication; native JUCE/MSVC behavior remains gated by exact-head CI.
 
 ## Gates still open
 
-- The active M3 slice must remain unmerged until its new exact-final-head workflow is fully green on Linux and Windows, including packaged-app smoke.
-- M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical four-output master 1/2 versus cue 3/4 verification.
+- The newest PR #52 checkpoint must remain unmerged until its exact-head workflow is fully green on Linux and Windows, including packaged-app smoke.
+- M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical four-output master 1/2 versus cue 3/4 verification; six-output Booth also needs physical interface validation before support claims.
 - Representative user-owned/licensed music-domain BPM/key/grid evidence remains open.
 - Production key-lock listening/latency, MIDI/controller mappings and concrete controller profiles remain unqualified.
-- M3 still needs configurable booth/routing and qualified EQ behavior. The new microphone and limiter paths also need real interface/listening/long-session qualification before stronger reliability or sound-quality claims.
+- M3 still needs qualified EQ behavior and physical microphone/limiter/Booth/listening/long-session evidence. Automated routing tests do not certify a particular interface.
 - Physical storage/underrun behavior, multi-hour soak and public alpha/beta Release qualification remain open.
 
 ## Next largest step
 
-Require a fully green exact-final-head Linux/Windows/package run for the active microphone/ducking/limiter slice and repair any further regression before merge. Then continue the finish-first path toward a usable mixer baseline with the remaining routing/booth and EQ acceptance work, rather than expanding into optional future systems. Keep physical Windows/audio-interface evidence explicit and separate from automated software validation.
+Require a fully green exact-head Linux/Windows/package run for the current PR #52 checkpoint and repair any regression before merge. Then continue the FINISH FIRST path with the remaining internally closable M3 EQ acceptance/routing evidence instead of expanding into optional future systems. Keep physical Windows/audio-interface evidence explicit and separate from automated software validation.

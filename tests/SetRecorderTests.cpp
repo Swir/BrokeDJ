@@ -146,6 +146,60 @@ void testMasterPathSanitizesNonFiniteInput() {
             "master-path metrics became non-finite after invalid input");
 }
 
+void testBoothRoutingUsesProtectedMasterAndIndependentLevel() {
+    constexpr int frames = 2048;
+    broke::MasterPathProcessor processor;
+    processor.prepare(48000.0);
+    processor.setLimiterEnabled(true);
+    processor.setLimiterCeilingDb(-1.0f);
+    processor.setBoothEnabled(true);
+    processor.setBoothGainDb(-6.0f);
+
+    std::vector<float> left(frames, 1.50f), right(frames, 0.75f);
+    std::vector<float> boothLeft(frames, 9.0f), boothRight(frames, 9.0f);
+    processor.process(nullptr, left.data(), right.data(), frames,
+                      boothLeft.data(), boothRight.data());
+
+    const float boothGain = std::pow(10.0f, -6.0f / 20.0f);
+    const float ceiling = std::pow(10.0f, -1.0f / 20.0f);
+    for (int i = 0; i < frames; ++i) {
+        const auto index = static_cast<std::size_t>(i);
+        require(std::abs(left[index]) <= ceiling + 1.0e-5f,
+                "booth fixture master exceeded limiter ceiling");
+        require(std::abs(boothLeft[index] - left[index] * boothGain) < 2.0e-5f,
+                "booth left is not a post-limiter copy at the configured level");
+        require(std::abs(boothRight[index] - right[index] * boothGain) < 2.0e-5f,
+                "booth right is not a post-limiter copy at the configured level");
+    }
+    const auto state = processor.snapshot();
+    require(state.boothEnabled, "booth routing state did not remain enabled");
+    require(std::abs(state.boothGain - boothGain) < 1.0e-5f,
+            "booth gain state does not match the configured attenuation");
+    require(state.maxBoothPeak > 0.44f && state.maxBoothPeak < 0.45f,
+            "booth peak evidence does not match the protected -6 dB route");
+}
+
+void testBoothDisabledClearsDedicatedOutputs() {
+    constexpr int frames = 256;
+    broke::MasterPathProcessor processor;
+    processor.prepare(48000.0);
+    processor.setLimiterEnabled(false);
+    processor.setBoothEnabled(false);
+
+    std::vector<float> left(frames, 0.25f), right(frames, -0.25f);
+    std::vector<float> boothLeft(frames, 0.75f), boothRight(frames, -0.75f);
+    processor.process(nullptr, left.data(), right.data(), frames,
+                      boothLeft.data(), boothRight.data());
+
+    require(std::all_of(boothLeft.begin(), boothLeft.end(), [](float value) { return value == 0.0f; })
+                && std::all_of(boothRight.begin(), boothRight.end(), [](float value) { return value == 0.0f; }),
+            "disabled booth route leaked stale samples to dedicated outputs");
+    require(std::abs(left.back() - 0.25f) < 1.0e-6f && std::abs(right.back() + 0.25f) < 1.0e-6f,
+            "disabling booth unexpectedly changed the master path");
+    require(processor.snapshot().maxBoothPeak == 0.0f,
+            "disabled booth route reported false output peak evidence");
+}
+
 void testCleanFinalize() {
     constexpr double rate = 48000.0;
     constexpr int frames = 2048;
@@ -235,6 +289,8 @@ int main() {
     testMasterLimiterBoundsAndLinksStereo();
     testMicrophoneDuckingMixesWithoutBlockingMaster();
     testMasterPathSanitizesNonFiniteInput();
+    testBoothRoutingUsesProtectedMasterAndIndependentLevel();
+    testBoothDisabledClearsDedicatedOutputs();
     testCleanFinalize();
     testOverflowIsMeasuredNotBlocking();
     testLateDestinationIsNeverOverwritten();
