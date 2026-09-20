@@ -29,6 +29,9 @@ namespace broke {
 // snapshot. This catches controller/device paths that change Engine controls
 // without first notifying the UI adapter, preventing a stale key-lock snapshot
 // from remaining armed indefinitely after Engine has already rejected it.
+// Invalid pitch requests are latched fail-closed until a later valid pitch
+// request explicitly clears the validation barrier; the previous valid pitch
+// value is never silently re-armed by the timer after an invalid control write.
 // This intentionally favors reliable audio over seamless live key-lock
 // automation until that harder handoff is separately qualified.
 class KeyLockDeckLifecycle final {
@@ -103,11 +106,18 @@ public:
         if (deck >= deckCount) return false;
         auto& state = states[deck];
         if (!std::isfinite(semitones) || semitones < -24.0f || semitones > 24.0f) {
+            state.pitchValid = false;
             owners[deck].disarm();
             state.dirty = state.enabled && state.clip != nullptr;
             state.hasStagedTransport = false;
             return false;
         }
+
+        // A valid request is also the explicit recovery action after an invalid
+        // request. Do this before the equality fast-path so re-applying the last
+        // valid pitch can clear the fail-closed latch without manufacturing a
+        // different pitch value merely to force restaging.
+        state.pitchValid = true;
         if (std::abs(state.pitchSemitones - semitones) <= 1.0e-6f) return true;
         state.pitchSemitones = semitones;
         owners[deck].disarm();
@@ -174,6 +184,12 @@ public:
             owner.disarm();
             state.hasStagedTransport = false;
             return ServiceStatus::noClip;
+        }
+        if (!state.pitchValid) {
+            owner.disarm();
+            state.dirty = true;
+            state.hasStagedTransport = false;
+            return ServiceStatus::invalidControl;
         }
         if (!std::isfinite(playbackRate) || playbackRate < 0.5 || playbackRate > 1.5
             || !std::isfinite(positionSeconds) || positionSeconds < 0.0) {
@@ -276,6 +292,7 @@ private:
         bool hasExplicitCursor = false;
         bool stagedLoop = false;
         bool hasStagedTransport = false;
+        bool pitchValid = true;
     };
 
     Engine& engine;

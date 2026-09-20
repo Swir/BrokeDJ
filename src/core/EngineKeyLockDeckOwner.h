@@ -121,13 +121,16 @@ public:
         return StageStatus::staged;
     }
 
-    // Safe fail-closed publication: no source is selected after this store.
+    // Safe fail-closed publication: no source is selected after this exchange.
     // Existing in-flight readers finish against their retained slot while later
-    // callbacks immediately fall back to Engine's built-in converter.
+    // callbacks immediately fall back to Engine's built-in converter. Repeated
+    // disarm requests are idempotent for the publication generation: timer/UI
+    // polling cannot manufacture snapshot churn while the owner is already off.
     void disarm() noexcept {
-        activeSlot.store(-1, std::memory_order_release);
+        const int previous = activeSlot.exchange(-1, std::memory_order_acq_rel);
         lastAccepted.store(false, std::memory_order_relaxed);
-        publishedGeneration.fetch_add(1, std::memory_order_relaxed);
+        if (previous >= 0)
+            publishedGeneration.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Audio must already be stopped. This is the only operation that mutates

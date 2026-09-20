@@ -62,6 +62,23 @@ int main() {
         == broke::KeyLockDeckLifecycle::ServiceStatus::idle);
     CHECK(lifecycle.generation(0) == stableGeneration);
 
+    // Disable polling is allowed to call service repeatedly. Once the owner has
+    // actually transitioned to fallback, those repeated calls must be idempotent
+    // instead of manufacturing generation churn every timer tick.
+    CHECK(lifecycle.setEnabled(0, false));
+    const auto disabledGeneration = lifecycle.generation(0);
+    CHECK(disabledGeneration == stableGeneration + 1);
+    CHECK(lifecycle.service(0, 0.0, false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::disabled);
+    CHECK(lifecycle.generation(0) == disabledGeneration);
+    CHECK(lifecycle.service(0, 0.0, false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::disabled);
+    CHECK(lifecycle.generation(0) == disabledGeneration);
+    CHECK(lifecycle.setEnabled(0, true));
+    CHECK(lifecycle.service(0, 0.0, false, 1.0, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+    CHECK(lifecycle.armed(0));
+
     engine.control(0).playing.store(true);
     process(engine);
     CHECK(lifecycle.lastRenderAccepted(0));
@@ -170,13 +187,27 @@ int main() {
     process(engine);
     CHECK(lifecycle.lastRenderAccepted(0));
 
-    // Invalid pitch is fail-closed and requires a later valid restage.
+    // Invalid pitch is a sticky fail-closed state. The timer may not silently
+    // re-arm the last valid pitch after rejecting a bad request; a later valid
+    // pitch request is required, and re-applying the same prior valid value is
+    // sufficient to clear the validation barrier deterministically.
     CHECK(!lifecycle.setPitchSemitones(0, 30.0f));
     CHECK(!lifecycle.armed(0));
     CHECK(lifecycle.dirty(0));
+    CHECK(lifecycle.service(0, engine.meter(0).position.load(), true, 1.10, true)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::invalidControl);
+    CHECK(!lifecycle.armed(0));
 
     engine.control(0).playing.store(false);
     process(engine);
+    CHECK(lifecycle.service(0, engine.meter(0).position.load(), true, 1.10, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::invalidControl);
+    CHECK(!lifecycle.armed(0));
+    CHECK(lifecycle.setPitchSemitones(0, 3.0f));
+    CHECK(lifecycle.service(0, engine.meter(0).position.load(), true, 1.10, false)
+        == broke::KeyLockDeckLifecycle::ServiceStatus::staged);
+    CHECK(lifecycle.armed(0));
+
     CHECK(lifecycle.setPitchSemitones(0, 0.0f));
     engine.control(0).rate.store(1.0f);
     CHECK(lifecycle.service(0, engine.meter(0).position.load(), true, 1.0, false)
