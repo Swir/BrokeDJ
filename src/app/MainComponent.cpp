@@ -9,6 +9,11 @@ juce::String clockText(double seconds) {
     const int whole = static_cast<int>(std::max(0.0, seconds));
     return juce::String(whole / 60) + ":" + juce::String(whole % 60).paddedLeft('0', 2);
 }
+juce::String dbfsText(float linear) {
+    return std::isfinite(linear) && linear > 0.000001f
+        ? juce::String(20.0f * std::log10(linear), 1) + " dBFS"
+        : juce::String("— dBFS");
+}
 void configureLabel(juce::Label& label, const juce::String& value, float size = 13.0f) {
     label.setText(value, juce::dontSendNotification);
     label.setColour(juce::Label::textColourId, pale);
@@ -214,28 +219,43 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
         addAndMakeVisible(pad);
     }
 
-    const std::array<juce::String, 7> names {text("Gain", "Głośność"), text("Rate %", "Tempo %"), "LOW", "MID", "HIGH", "ECHO", "DRIVE"};
+    const std::array<juce::String, 8> names {
+        "TRIM dB", text("Fader", "Fader"), text("Rate %", "Tempo %"),
+        "LOW", "MID", "HIGH", "ECHO", "DRIVE"
+    };
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         auto& knob = knobs[i];
         knob.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         knob.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 64, 18);
-        knob.setRange(i == 1 ? -20.0 : 0.0, i == 0 ? 1.5 : (i == 1 ? 20.0 : (i == 5 ? 0.7 : (i == 6 ? 6.0 : 2.0))), 0.01);
-        const double initial = i == 0 ? 0.7 : (i >= 2 && i <= 4 ? 1.0 : 0.0);
+        double minimum = 0.0, maximum = 2.0, initial = 0.0;
+        switch (i) {
+            case 0: minimum = broke::minTrimDb; maximum = broke::maxTrimDb; initial = 0.0; break;
+            case 1: minimum = 0.0; maximum = 1.5; initial = 0.7; break;
+            case 2: minimum = -20.0; maximum = 20.0; initial = 0.0; break;
+            case 3:
+            case 4:
+            case 5: minimum = 0.0; maximum = 2.0; initial = 1.0; break;
+            case 6: minimum = 0.0; maximum = 0.7; initial = 0.0; break;
+            case 7: minimum = 0.0; maximum = 6.0; initial = 0.0; break;
+            default: break;
+        }
+        knob.setRange(minimum, maximum, 0.01);
         knob.setValue(initial); knob.setDoubleClickReturnValue(true, initial);
         knob.onValueChange = [this, i] {
             const auto value = static_cast<float>(knobs[i].getValue());
             auto& c = engine.control(index);
             switch (i) {
-                case 0: c.gain = value; break;
-                case 1: c.rate = 1.0f + value / 100.0f; break;
-                case 2: c.low = value; break;
-                case 3: c.mid = value; break;
-                case 4: c.high = value; break;
-                case 5: c.echo = value; break;
-                case 6: c.drive = value; break;
+                case 0: c.trimDb = value; break;
+                case 1: c.gain = value; break;
+                case 2: c.rate = 1.0f + value / 100.0f; break;
+                case 3: c.low = value; break;
+                case 4: c.mid = value; break;
+                case 5: c.high = value; break;
+                case 6: c.echo = value; break;
+                case 7: c.drive = value; break;
                 default: break;
             }
-            if (i == 1 && onKeyLockControlChanged) onKeyLockControlChanged();
+            if (i == 2 && onKeyLockControlChanged) onKeyLockControlChanged();
         };
         configureLabel(knobNames[i], names[i], 11);
         knobNames[i].setJustificationType(juce::Justification::centred);
@@ -284,8 +304,12 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     tempoMap.setTooltip(text(
         "Open the reviewed variable-tempo map editor. Add/move/remove later boundaries and edit segment BPM without doing file I/O in the audio callback.",
         "Otwórz edytor zweryfikowanej mapy zmiennego tempa. Dodawaj/przesuwaj/usuwaj późniejsze granice i zmieniaj BPM segmentów bez I/O w callbacku audio."));
-    knobs[1].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Sync can update this control without feeding a second rate command back into the Engine.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Sync może zaktualizować tę kontrolkę bez wysyłania drugiej komendy tempa do silnika."));
-    knobs[5].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
+    knobs[0].setTooltip(text("Input trim before EQ, FX and headphone cue. Keep the deck peak below 0 dBFS before using the channel fader.",
+                             "Trim wejściowy przed EQ, efektami i odsłuchem. Utrzymuj szczyt decku poniżej 0 dBFS przed użyciem fadera kanału."));
+    knobs[1].setTooltip(text("Post-FX channel fader. Headphone cue stays pre-fader but follows input trim and EQ/FX.",
+                             "Fader kanału po efektach. Odsłuch pozostaje pre-fader, ale reaguje na trim wejściowy oraz EQ/efekty."));
+    knobs[2].setTooltip(text("Playback rate changes pitch unless the opt-in research key-lock path is active. Sync can update this control without feeding a second rate command back into the Engine.", "Zmiana tempa zmienia tonację, chyba że aktywna jest testowa ścieżka key lock. Sync może zaktualizować tę kontrolkę bez wysyłania drugiej komendy tempa do silnika."));
+    knobs[6].setTooltip(text("Fixed 250 ms echo; not beat-synchronized yet.", "Echo 250 ms; jeszcze bez synchronizacji do BPM."));
     loop.setTooltip(text("Loops the whole track. Beat-length looping is a separate reviewed-grid control.", "Zapętla cały utwór. Pętla beatowa ma osobną kontrolkę opartą o zweryfikowaną siatkę."));
     beatLoop.setTooltip(text("Arm/disarm a reviewed-grid musical loop at the current transport position.", "Włącz/wyłącz muzyczną pętlę z siatki rytmu w bieżącej pozycji."));
     beatLoopLength.setTooltip(text("Beat-loop length: 1, 2, 4, 8 or 16 beats.", "Długość pętli: 1, 2, 4, 8 lub 16 beatów."));
@@ -439,16 +463,31 @@ void DeckPanel::refresh() {
         time.setText(clockText(position) + " / " + clockText(duration), juce::dontSendNotification);
         time.setTooltip({});
     }
+    const auto preFaderPeak = meter.preFaderPeak.load(std::memory_order_relaxed);
+    heading.setText("DECK " + deckLetter(index) + (index % 2 == 0 ? "  /  LEFT" : "  /  RIGHT")
+                    + "  |  PK " + dbfsText(preFaderPeak)
+                    + (meter.overloaded.load(std::memory_order_relaxed) ? "  OVR" : ""),
+                    juce::dontSendNotification);
+    heading.setColour(juce::Label::textColourId,
+                      meter.overloaded.load(std::memory_order_relaxed) ? blue.brighter(0.45f) : pale);
     const double waveformPosition = splitCursor ? audiblePosition : position;
     waveform.progress = duration > 0 ? static_cast<float>(waveformPosition / duration) : 0;
     waveform.setDuration(duration);
     waveform.repaint();
     play.setButtonText(engine.control(index).playing.load() ? "PAUSE" : "PLAY");
-    const double rate = static_cast<double>(engine.control(index).rate.load(std::memory_order_relaxed));
+
+    const auto& control = engine.control(index);
+    const double trimDb = static_cast<double>(control.trimDb.load(std::memory_order_relaxed));
+    if (std::isfinite(trimDb) && std::abs(knobs[0].getValue() - trimDb) > 0.005)
+        knobs[0].setValue(juce::jlimit<double>(broke::minTrimDb, broke::maxTrimDb, trimDb), juce::dontSendNotification);
+    const double channelFader = static_cast<double>(control.gain.load(std::memory_order_relaxed));
+    if (std::isfinite(channelFader) && std::abs(knobs[1].getValue() - channelFader) > 0.005)
+        knobs[1].setValue(juce::jlimit(0.0, 1.5, channelFader), juce::dontSendNotification);
+    const double rate = static_cast<double>(control.rate.load(std::memory_order_relaxed));
     if (std::isfinite(rate)) {
         const double percent = juce::jlimit(-20.0, 20.0, (rate - 1.0) * 100.0);
-        if (std::abs(knobs[1].getValue() - percent) > 0.005)
-            knobs[1].setValue(percent, juce::dontSendNotification);
+        if (std::abs(knobs[2].getValue() - percent) > 0.005)
+            knobs[2].setValue(percent, juce::dontSendNotification);
     }
 }
 void DeckPanel::paint(juce::Graphics& g) {
@@ -485,7 +524,7 @@ void DeckPanel::resized() {
     gridZeroLabel.setBounds(zeroArea.removeFromTop(14)); gridZero.setBounds(zeroArea);
     gridBpmLabel.setBounds(gridArea.removeFromTop(14)); gridBpm.setBounds(gridArea);
     area.removeFromTop(4);
-    const int knobWidth = area.getWidth() / 7;
+    const int knobWidth = area.getWidth() / static_cast<int>(knobs.size());
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         auto slot = area.removeFromLeft(knobWidth); knobNames[i].setBounds(slot.removeFromTop(18)); knobs[i].setBounds(slot);
     }
@@ -701,10 +740,11 @@ void MainComponent::timerCallback() {
                                           trackReady, isMaster, syncAvailable, syncFollowers[i]);
         }
     }
-    const auto peak = engine.masterPeak.load();
-    auto meter = peak > 0.000001f ? juce::String(20.0f * std::log10(peak), 1) + " dBFS" : juce::String("— dBFS");
+    const auto peak = engine.masterPeak.load(std::memory_order_relaxed);
+    const auto rms = engine.masterRms.load(std::memory_order_relaxed);
+    auto meter = "PK " + dbfsText(peak) + "  /  RMS " + dbfsText(rms);
     if (!audioReady.load()) meter = text("No audio device / unsupported rate", "Brak urządzenia audio / nieobsługiwana częstotliwość");
-    if (engine.clipped.load()) meter += text("  /  CLIPPING — LOWER GAIN", "  /  PRZESTER — ZMNIEJSZ GŁOŚNOŚĆ");
+    if (engine.clipped.load(std::memory_order_relaxed)) meter += text("  /  CLIPPING — LOWER GAIN", "  /  PRZESTER — ZMNIEJSZ GŁOŚNOŚĆ");
     meterLabel.setText("MASTER: " + meter, juce::dontSendNotification);
 }
 void MainComponent::statusMessage(const juce::String& message) {
