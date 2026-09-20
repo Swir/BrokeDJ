@@ -109,6 +109,12 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     beatLoop.setEnabled(false); beatLoopLength.setEnabled(false);
     jumpBack.setButtonText(text("JUMP -", "SKOK -"));
     jumpForward.setButtonText(text("JUMP +", "SKOK +"));
+    reverse.setButtonText("REV");
+    slip.setButtonText("SLIP");
+    reverse.setClickingTogglesState(true);
+    slip.setClickingTogglesState(true);
+    reverse.setEnabled(false);
+    slip.setEnabled(false);
     syncMaster.setButtonText("MASTER");
     sync.setButtonText("SYNC");
     syncMaster.setClickingTogglesState(true);
@@ -159,6 +165,22 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
         if (onBeatJumpRequested)
             onBeatJumpRequested(beatLoopBeatsForId(jumpLength.getSelectedId()));
     };
+    const auto requestReverseSlip = [this] {
+        const bool reverseRequested = reverse.getToggleState();
+        const bool slipRequested = slip.getToggleState();
+        const auto mode = reverseRequested
+            ? (slipRequested ? broke::PerformanceDeckOwner::ReverseSlipMode::slipReverse
+                             : broke::PerformanceDeckOwner::ReverseSlipMode::reverse)
+            : (slipRequested ? broke::PerformanceDeckOwner::ReverseSlipMode::slipArmed
+                             : broke::PerformanceDeckOwner::ReverseSlipMode::forward);
+        const bool accepted = onReverseSlipModeRequested && onReverseSlipModeRequested(mode);
+        if (!accepted) {
+            reverse.setToggleState(engine.control(index).reverse.load(std::memory_order_acquire), juce::dontSendNotification);
+            slip.setToggleState(engine.control(index).slip.load(std::memory_order_acquire), juce::dontSendNotification);
+        }
+    };
+    reverse.onClick = requestReverseSlip;
+    slip.onClick = requestReverseSlip;
     syncMaster.onClick = [this] {
         if (onSyncMasterRequested) onSyncMasterRequested(syncMaster.getToggleState());
     };
@@ -171,6 +193,7 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     for (juce::Component* child : std::array<juce::Component*, 10>{&heading, &track, &time, &rhythm, &waveform, &load, &play, &rewind, &loop, &cue}) addAndMakeVisible(child);
     addAndMakeVisible(beatLoop); addAndMakeVisible(beatLoopLength);
     addAndMakeVisible(jumpBack); addAndMakeVisible(jumpLength); addAndMakeVisible(jumpForward);
+    addAndMakeVisible(reverse); addAndMakeVisible(slip);
     addAndMakeVisible(syncMaster); addAndMakeVisible(sync);
 
     for (std::size_t i = 0; i < hotCuePads.size(); ++i) {
@@ -264,6 +287,10 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     jumpBack.setTooltip(text("Jump backward by the selected number of beats while preserving fractional beat phase. Requires a reviewed grid.", "Skocz wstecz o wybraną liczbę beatów z zachowaniem fazy. Wymaga zweryfikowanej siatki."));
     jumpForward.setTooltip(text("Jump forward by the selected number of beats while preserving fractional beat phase. Requires a reviewed grid.", "Skocz do przodu o wybraną liczbę beatów z zachowaniem fazy. Wymaga zweryfikowanej siatki."));
     jumpLength.setTooltip(text("Beat Jump distance: 1, 2, 4, 8 or 16 beats.", "Dystans Beat Jump: 1, 2, 4, 8 lub 16 beatów."));
+    reverse.setTooltip(text("Reverse audible playback. Whole-track LOOP remains compatible; reviewed Beat Loop and incompatible external renderers reject Reverse fail-closed.",
+                            "Odwróć słyszalne odtwarzanie. LOOP całego utworu pozostaje zgodny; Pętla Beat i niezgodne renderery bezpiecznie odrzucają Reverse."));
+    slip.setTooltip(text("Arm Slip. With REV active, the audible cursor moves backward while the hidden transport keeps moving forward; releasing REV rejoins the hidden timeline.",
+                         "Uzbrój Slip. Przy aktywnym REV słyszalny kursor cofa się, a ukryty transport idzie dalej do przodu; wyłączenie REV wraca do ukrytej osi czasu."));
     syncMaster.setTooltip(text("Select this deck as the explicit Sync master. Only one reviewed-grid deck is master at a time.", "Ustaw ten deck jako jawny master Sync. Jednocześnie masterem może być tylko jeden deck ze zweryfikowaną siatką."));
     sync.setTooltip(text("One-shot reviewed-grid Sync to the selected master: bounded tempo match plus limited phase correction. This is not continuous phase lock.", "Jednorazowy Sync do wybranego mastera: ograniczone dopasowanie tempa i fazy na zweryfikowanej siatce. To nie jest ciągła blokada fazy."));
     cue.setTooltip(text("Cue uses outputs 3/4 only. Enable four outputs in Audio settings.", "Odsłuch używa tylko wyjść 3/4. Włącz cztery wyjścia w ustawieniach audio."));
@@ -314,6 +341,8 @@ void DeckPanel::setPerformanceState(bool gridAvailable, bool beatLoopIsActive, d
     jumpBack.setEnabled(gridAvailable && trackReady);
     jumpForward.setEnabled(gridAvailable && trackReady);
     jumpLength.setEnabled(gridAvailable && trackReady);
+    reverse.setEnabled(trackReady && !beatLoopIsActive);
+    slip.setEnabled(trackReady && !beatLoopIsActive);
     syncMaster.setEnabled(gridAvailable && trackReady);
     syncMaster.setToggleState(isSyncMaster, juce::dontSendNotification);
     sync.setEnabled(syncAvailable);
@@ -382,9 +411,29 @@ void DeckPanel::refreshRhythmDisplay() {
 }
 void DeckPanel::refresh() {
     const auto& meter = engine.meter(index);
-    const auto duration = meter.duration.load(), position = meter.position.load();
-    time.setText(clockText(position) + " / " + clockText(duration), juce::dontSendNotification);
-    waveform.progress = duration > 0 ? static_cast<float>(position / duration) : 0;
+    const auto duration = meter.duration.load(std::memory_order_acquire);
+    const auto position = meter.position.load(std::memory_order_acquire);
+    const auto audiblePosition = meter.audiblePosition.load(std::memory_order_acquire);
+    const bool reverseActive = engine.control(index).reverse.load(std::memory_order_acquire);
+    const bool slipActive = engine.control(index).slip.load(std::memory_order_acquire);
+    const bool splitCursor = reverseActive && slipActive
+        && std::isfinite(position) && std::isfinite(audiblePosition)
+        && std::abs(position - audiblePosition) > 0.02;
+
+    reverse.setToggleState(reverseActive, juce::dontSendNotification);
+    slip.setToggleState(slipActive, juce::dontSendNotification);
+    if (splitCursor) {
+        time.setText(text("AUD ", "SŁYSZ ") + clockText(audiblePosition)
+                     + text("  /  HIDDEN ", "  /  UKRYTY ") + clockText(position),
+                     juce::dontSendNotification);
+        time.setTooltip(text("Slip split transport: AUD is the source position currently heard; HIDDEN is the uninterrupted transport position that playback rejoins when Reverse is released.",
+                             "Transport Slip jest rozdzielony: SŁYSZ to aktualnie słyszana pozycja źródła; UKRYTY to nieprzerwana pozycja transportu, do której odtwarzanie wróci po wyłączeniu Reverse."));
+    } else {
+        time.setText(clockText(position) + " / " + clockText(duration), juce::dontSendNotification);
+        time.setTooltip({});
+    }
+    const double waveformPosition = splitCursor ? audiblePosition : position;
+    waveform.progress = duration > 0 ? static_cast<float>(waveformPosition / duration) : 0;
     waveform.setDuration(duration);
     waveform.repaint();
     play.setButtonText(engine.control(index).playing.load() ? "PAUSE" : "PLAY");
@@ -401,7 +450,7 @@ void DeckPanel::paint(juce::Graphics& g) {
 }
 void DeckPanel::resized() {
     auto area = getLocalBounds().reduced(14);
-    auto top = area.removeFromTop(24); time.setBounds(top.removeFromRight(160)); heading.setBounds(top);
+    auto top = area.removeFromTop(24); time.setBounds(top.removeFromRight(250)); heading.setBounds(top);
     track.setBounds(area.removeFromTop(24));
     rhythm.setBounds(area.removeFromTop(18)); area.removeFromTop(4);
     waveform.setBounds(area.removeFromTop(std::max(42, area.getHeight() - 278)));
@@ -416,7 +465,7 @@ void DeckPanel::resized() {
     for (auto& pad : hotCuePads) pad.setBounds(hotCueArea.removeFromLeft(hotCueWidth).reduced(2, 0));
     area.removeFromTop(4);
     auto performanceArea = area.removeFromTop(28);
-    std::array<juce::Component*, 5> performanceControls {&jumpBack, &jumpLength, &jumpForward, &syncMaster, &sync};
+    std::array<juce::Component*, 7> performanceControls {&jumpBack, &jumpLength, &jumpForward, &reverse, &slip, &syncMaster, &sync};
     const int performanceWidth = performanceArea.getWidth() / static_cast<int>(performanceControls.size());
     for (auto* component : performanceControls)
         component->setBounds(performanceArea.removeFromLeft(performanceWidth).reduced(2, 0));
@@ -493,6 +542,9 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
         };
         decks[i]->onBeatJumpRequested = [this, i](double beats) {
             static_cast<void>(jumpBeats(i, beats));
+        };
+        decks[i]->onReverseSlipModeRequested = [this, i](broke::PerformanceDeckOwner::ReverseSlipMode mode) {
+            return setReverseSlipMode(i, mode);
         };
         decks[i]->onSyncMasterRequested = [this, i](bool enabled) { setSyncMaster(i, enabled); };
         decks[i]->onSyncRequested = [this, i] { static_cast<void>(syncDeck(i)); };
@@ -892,6 +944,46 @@ bool MainComponent::setBeatLoop(std::size_t deck, double beats, bool enabled) {
         statusMessage(text("Beat loop is unavailable while another deck renderer owns this path.", "Pętla beatowa jest niedostępna, gdy ten deck używa innego renderera."));
     else
         statusMessage(text("Beat loop request was rejected safely.", "Żądanie pętli beatowej zostało bezpiecznie odrzucone."));
+    return false;
+}
+bool MainComponent::setReverseSlipMode(std::size_t deck, broke::PerformanceDeckOwner::ReverseSlipMode mode) {
+    if (deck >= broke::deckCount || !performanceDecks[deck]) return false;
+    const auto duration = engine.meter(deck).duration.load(std::memory_order_acquire);
+    if (!std::isfinite(duration) || duration <= 0.0) {
+        statusMessage(text("Reverse / Slip needs a loaded playable track.",
+                           "Reverse / Slip wymaga wczytanego odtwarzalnego utworu."));
+        return false;
+    }
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+    if (keyLockResearchEnabled && mode != broke::PerformanceDeckOwner::ReverseSlipMode::forward)
+        keyLockLifecycle.noteTransportControlChanged(deck);
+#endif
+    const auto result = performanceDecks[deck]->setReverseSlipMode(mode);
+    if (result == broke::PerformanceDeckOwner::Result::applied) {
+        switch (mode) {
+            case broke::PerformanceDeckOwner::ReverseSlipMode::forward:
+                statusMessage(text("Reverse / Slip disabled.", "Reverse / Slip wyłączone."));
+                break;
+            case broke::PerformanceDeckOwner::ReverseSlipMode::reverse:
+                statusMessage(text("Reverse enabled.", "Reverse włączony."));
+                break;
+            case broke::PerformanceDeckOwner::ReverseSlipMode::slipArmed:
+                statusMessage(text("Slip armed; Reverse can now use a split transport.",
+                                   "Slip uzbrojony; Reverse może teraz użyć rozdzielonego transportu."));
+                break;
+            case broke::PerformanceDeckOwner::ReverseSlipMode::slipReverse:
+                statusMessage(text("Slip Reverse enabled; hidden transport continues forward.",
+                                   "Slip Reverse włączony; ukryty transport idzie dalej do przodu."));
+                break;
+        }
+        return true;
+    }
+    if (result == broke::PerformanceDeckOwner::Result::rendererBusy)
+        statusMessage(text("Reverse / Slip is unavailable while Beat Loop owns this deck transport.",
+                           "Reverse / Slip jest niedostępne, gdy Pętla Beat steruje transportem decku."));
+    else
+        statusMessage(text("Reverse / Slip request was rejected safely.",
+                           "Żądanie Reverse / Slip zostało bezpiecznie odrzucone."));
     return false;
 }
 void MainComponent::handleHotCue(std::size_t deck, std::size_t slot, bool clear) {
