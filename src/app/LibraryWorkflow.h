@@ -48,6 +48,8 @@ public:
         lifetime.reset();
         chooser.reset();
         sessionChooser.reset();
+        sessionSourceChooser.reset();
+        maintenanceChooser.reset();
         if (dialog) delete dialog.getComponent();
         searchWorkers.removeAllJobs(true, -1);
         writeWorkers.removeAllJobs(true, -1);
@@ -63,7 +65,9 @@ private:
     struct PendingSessionDeck final {
         bool active = false;
         bool adoptionMarkerArmed = false;
+        bool awaitingRelocation = false;
         juce::File file;
+        juce::File originalFile;
         broke::session::DeckState state;
         int ticks = 0;
     };
@@ -93,14 +97,22 @@ private:
     }
 
     void showCommandMenu() {
+        const bool maintenance = databaseMaintenance.load(std::memory_order_acquire);
         juce::PopupMenu menu;
         menu.addItem(1, uiText("Open local library", "Otwórz lokalną bibliotekę"),
-                     databaseAvailable && !restoreInProgress);
+                     databaseAvailable && !restoreInProgress && !maintenance);
         menu.addSeparator();
-        menu.addItem(2, uiText("Save session…", "Zapisz sesję…"), !restoreInProgress && !sessionChooser);
-        menu.addItem(3, uiText("Load session…", "Wczytaj sesję…"), !restoreInProgress && !sessionChooser);
+        menu.addItem(2, uiText("Save session…", "Zapisz sesję…"),
+                     !restoreInProgress && !sessionChooser && !maintenance);
+        menu.addItem(3, uiText("Load session…", "Wczytaj sesję…"),
+                     !restoreInProgress && !sessionChooser && !maintenance);
         menu.addItem(4, uiText("Recover verified session backup…", "Odzyskaj zweryfikowaną kopię sesji…"),
-                     !restoreInProgress && !sessionChooser);
+                     !restoreInProgress && !sessionChooser && !maintenance);
+        menu.addSeparator();
+        menu.addItem(5, uiText("Backup local library…", "Kopia biblioteki lokalnej…"),
+                     databaseAvailable && !restoreInProgress && !maintenanceChooser && !maintenance);
+        menu.addItem(6, uiText("Restore library backup…", "Przywróć kopię biblioteki…"),
+                     databaseAvailable && !restoreInProgress && !maintenanceChooser && !maintenance);
         const auto weak = std::weak_ptr<int>(lifetime);
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&button),
                            [this, weak](int result) {
@@ -110,13 +122,16 @@ private:
                 case 2: saveSession(); break;
                 case 3: loadSession(false); break;
                 case 4: loadSession(true); break;
+                case 5: backupLibrary(); break;
+                case 6: restoreLibraryBackup(); break;
                 default: break;
             }
         });
     }
 
     void show() {
-        if (!databaseAvailable || !database.isOpen()) return;
+        if (!databaseAvailable || !database.isOpen()
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
         if (dialog) {
             dialog->toFront(true);
             return;
@@ -152,7 +167,8 @@ private:
     }
 
     void queueSearch(const juce::String& query) {
-        if (!database.isOpen() || cancelled.load(std::memory_order_acquire)) return;
+        if (!database.isOpen() || cancelled.load(std::memory_order_acquire)
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
         const auto generation = queryGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         if (panel) panel->setBusy(true);
 
@@ -162,7 +178,8 @@ private:
         const auto queryUtf8 = query.toStdString();
         const auto weak = std::weak_ptr<int>(lifetime);
         searchWorkers.addJob([this, weak, generation, queryUtf8] {
-            if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
+            if (weak.expired() || cancelled.load(std::memory_order_acquire)
+                || databaseMaintenance.load(std::memory_order_acquire)) return;
             std::string error;
             auto results = database.search(queryUtf8, 500, &error);
             const bool ok = error.empty();
@@ -183,7 +200,8 @@ private:
     }
 
     void importFiles() {
-        if (chooser || !database.isOpen()) return;
+        if (chooser || !database.isOpen()
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
         chooser = std::make_unique<juce::FileChooser>(
             uiText("Import local music", "Importuj lokalną muzykę"), juce::File{},
             "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
@@ -202,7 +220,7 @@ private:
                 if (panel) panel->setBusy(true);
 
                 writeWorkers.addJob([this, weak, files = std::move(files)] {
-                    if (weak.expired()) return;
+                    if (weak.expired() || databaseMaintenance.load(std::memory_order_acquire)) return;
                     int imported = 0;
                     for (const auto& file : files) {
                         if (cancelled.load(std::memory_order_acquire)) return;
@@ -229,13 +247,14 @@ private:
     }
 
     void loadTrack(const broke::library::TrackRecord& track, std::size_t deck) {
-        if (deck >= broke::deckCount) return;
+        if (deck >= broke::deckCount || databaseMaintenance.load(std::memory_order_acquire)) return;
         const juce::File file(juce::String::fromUTF8(track.path.c_str()));
         if (!file.existsAsFile()) {
             const auto trackId = track.id;
             const auto weak = std::weak_ptr<int>(lifetime);
             writeWorkers.addJob([this, weak, trackId] {
-                if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
+                if (weak.expired() || cancelled.load(std::memory_order_acquire)
+                    || databaseMaintenance.load(std::memory_order_acquire)) return;
                 static_cast<void>(database.markMissing(trackId, true, nullptr));
                 juce::MessageManager::callAsync([this, weak] {
                     if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
@@ -252,7 +271,8 @@ private:
     }
 
     void relocateTrack(const broke::library::TrackRecord& track) {
-        if (chooser || !database.isOpen()) return;
+        if (chooser || !database.isOpen()
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
         chooser = std::make_unique<juce::FileChooser>(
             uiText("Relocate library track", "Wskaż nowy plik utworu"), juce::File{},
             "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
@@ -267,7 +287,8 @@ private:
                 if (!file.existsAsFile()) return;
                 if (panel) panel->setBusy(true);
                 writeWorkers.addJob([this, weak, file, trackId] {
-                    if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
+                    if (weak.expired() || cancelled.load(std::memory_order_acquire)
+                        || databaseMaintenance.load(std::memory_order_acquire)) return;
                     std::string error;
                     const bool ok = database.relocateTrack(
                         trackId, filesystemPath(file), std::max<std::int64_t>(0, file.getSize()),
@@ -287,8 +308,111 @@ private:
             });
     }
 
+    void backupLibrary() {
+        if (!databaseAvailable || maintenanceChooser
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
+        auto directory = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+        if (!directory.isDirectory())
+            directory = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+        const auto stamp = juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M%S");
+        const auto suggested = directory.getChildFile("BrokeDJ-library-" + stamp + ".sqlite3");
+        maintenanceChooser = std::make_unique<juce::FileChooser>(
+            uiText("Backup BrokeDJ library", "Utwórz kopię biblioteki BrokeDJ"),
+            suggested, "*.sqlite3");
+        const auto weak = std::weak_ptr<int>(lifetime);
+        maintenanceChooser->launchAsync(
+            juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                | juce::FileBrowserComponent::warnAboutOverwriting,
+            [this, weak](const juce::FileChooser& chooserRef) {
+                if (weak.expired()) return;
+                auto selected = chooserRef.getResult();
+                maintenanceChooser.reset();
+                if (selected == juce::File{}) return;
+                if (selected.getFileExtension().toLowerCase() != ".sqlite3")
+                    selected = selected.withFileExtension("sqlite3");
+                const auto weakAgain = std::weak_ptr<int>(lifetime);
+                writeWorkers.addJob([this, weakAgain, selected] {
+                    if (weakAgain.expired() || cancelled.load(std::memory_order_acquire)) return;
+                    std::string error;
+                    const bool ok = database.backupTo(filesystemPath(selected), &error);
+                    juce::MessageManager::callAsync([this, weakAgain, selected, ok] {
+                        if (weakAgain.expired() || cancelled.load(std::memory_order_acquire)) return;
+                        owner.showWorkflowStatus(ok
+                            ? uiText("Library backup saved: ", "Kopia biblioteki zapisana: ")
+                                + selected.getFileName()
+                            : uiText("Library backup failed.", "Kopia biblioteki nie powiodła się."));
+                        if (!ok)
+                            juce::AlertWindow::showMessageBoxAsync(
+                                juce::MessageBoxIconType::WarningIcon,
+                                uiText("Library backup failed", "Kopia biblioteki nie powiodła się"),
+                                uiText("BrokeDJ could not create a verified SQLite backup. The live library was not replaced.",
+                                       "BrokeDJ nie mógł utworzyć zweryfikowanej kopii SQLite. Bieżąca biblioteka nie została zastąpiona."));
+                    });
+                });
+            });
+    }
+
+    void restoreLibraryBackup() {
+        if (!databaseAvailable || maintenanceChooser
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
+        auto directory = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+        maintenanceChooser = std::make_unique<juce::FileChooser>(
+            uiText("Restore BrokeDJ library backup", "Przywróć kopię biblioteki BrokeDJ"),
+            directory, "*.sqlite3");
+        const auto weak = std::weak_ptr<int>(lifetime);
+        maintenanceChooser->launchAsync(
+            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [this, weak](const juce::FileChooser& chooserRef) {
+                if (weak.expired()) return;
+                const auto selected = chooserRef.getResult();
+                maintenanceChooser.reset();
+                if (!selected.existsAsFile()) return;
+
+                databaseMaintenance.store(true, std::memory_order_release);
+                queryGeneration.fetch_add(1, std::memory_order_acq_rel);
+                if (panel) {
+                    panel->setBusy(true);
+                    panel->setMessage(uiText("Validating and restoring library backup…",
+                                             "Walidacja i przywracanie kopii biblioteki…"));
+                }
+                const auto weakAgain = std::weak_ptr<int>(lifetime);
+                writeWorkers.addJob([this, weakAgain, selected] {
+                    if (weakAgain.expired() || cancelled.load(std::memory_order_acquire)) return;
+                    // The database connection is FULLMUTEX, but library restore is
+                    // intentionally exclusive at workflow level so search results
+                    // cannot straddle the replacement snapshot.
+                    searchWorkers.removeAllJobs(true, -1);
+                    std::string error;
+                    const bool ok = database.restoreFrom(filesystemPath(selected), &error);
+                    databaseMaintenance.store(false, std::memory_order_release);
+                    juce::MessageManager::callAsync([this, weakAgain, selected, ok] {
+                        if (weakAgain.expired() || cancelled.load(std::memory_order_acquire)) return;
+                        owner.showWorkflowStatus(ok
+                            ? uiText("Library backup restored: ", "Przywrócono kopię biblioteki: ")
+                                + selected.getFileName()
+                            : uiText("Library restore rejected; current library kept.",
+                                     "Odrzucono kopię; bieżąca biblioteka została zachowana."));
+                        if (panel) {
+                            panel->setBusy(false);
+                            queueSearch(panel->query());
+                        }
+                        juce::AlertWindow::showMessageBoxAsync(
+                            ok ? juce::MessageBoxIconType::InfoIcon
+                               : juce::MessageBoxIconType::WarningIcon,
+                            ok ? uiText("Library restored", "Biblioteka przywrócona")
+                               : uiText("Library restore rejected", "Odrzucono przywracanie biblioteki"),
+                            ok ? uiText("The backup passed SQLite validation and replaced the local library snapshot. Music files were not modified.",
+                                        "Kopia przeszła walidację SQLite i zastąpiła lokalny zapis biblioteki. Pliki muzyczne nie zostały zmienione.")
+                               : uiText("The selected backup failed validation or restore. The current local library remains in place.",
+                                        "Wybrana kopia nie przeszła walidacji lub przywracania. Bieżąca lokalna biblioteka pozostała bez zmian."));
+                    });
+                });
+            });
+    }
+
     void saveSession() {
-        if (restoreInProgress || sessionChooser) return;
+        if (restoreInProgress || sessionChooser
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
         auto directory = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
         if (!directory.isDirectory())
             directory = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
@@ -332,7 +456,8 @@ private:
     }
 
     void loadSession(bool recoverBackup) {
-        if (restoreInProgress || sessionChooser) return;
+        if (restoreInProgress || sessionChooser
+            || databaseMaintenance.load(std::memory_order_acquire)) return;
         auto directory = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
         sessionChooser = std::make_unique<juce::FileChooser>(
             recoverBackup
@@ -383,11 +508,13 @@ private:
                              const juce::File& source, bool usedBackup) {
         restoreInProgress = true;
         restoredDecks = 0;
+        relocatedDecks = 0;
         missingDecks = 0;
         failedDecks = 0;
         emptySlots = 0;
         restoredFromBackup = usedBackup;
         restoredSessionName = source.getFileName();
+        sessionSourceChooser.reset();
         for (auto& pending : pendingSessionDecks) pending = {};
 
         // Safety-first restore: stop all current transports and restore mixer
@@ -401,18 +528,19 @@ private:
                 continue;
             }
             const juce::File file(juce::String::fromUTF8(deckState.path.c_str()));
+            auto& pending = pendingSessionDecks[deck];
+            pending.active = true;
+            pending.originalFile = file;
+            pending.file = file;
+            pending.state = deckState;
             if (!file.existsAsFile()) {
-                ++missingDecks;
+                pending.awaitingRelocation = true;
                 continue;
             }
             if (!owner.loadFileIntoDeck(deck, file)) {
+                pending.active = false;
                 ++failedDecks;
-                continue;
             }
-            auto& pending = pendingSessionDecks[deck];
-            pending.active = true;
-            pending.file = file;
-            pending.state = deckState;
         }
 
         owner.showWorkflowStatus(uiText("Restoring session safely; playback stays paused…",
@@ -422,6 +550,82 @@ private:
             return;
         }
         startTimerHz(20);
+        promptNextMissingSessionSource();
+    }
+
+    void promptNextMissingSessionSource() {
+        if (!restoreInProgress || sessionSourceChooser) return;
+        for (std::size_t deck = 0; deck < pendingSessionDecks.size(); ++deck) {
+            auto& pending = pendingSessionDecks[deck];
+            if (!pending.active || !pending.awaitingRelocation) continue;
+
+            auto start = pending.originalFile.getParentDirectory();
+            if (!start.isDirectory())
+                start = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+            sessionSourceChooser = std::make_unique<juce::FileChooser>(
+                uiText("Locate moved session track for deck ", "Wskaż przeniesiony utwór sesji dla decku ")
+                    + juce::String::charToString(static_cast<juce::juce_wchar>('A' + static_cast<int>(deck))),
+                start.getChildFile(pending.originalFile.getFileName()),
+                "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
+            const auto weak = std::weak_ptr<int>(lifetime);
+            sessionSourceChooser->launchAsync(
+                juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                [this, weak, deck](const juce::FileChooser& chooserRef) {
+                    if (weak.expired() || !restoreInProgress || deck >= pendingSessionDecks.size()) return;
+                    const auto selected = chooserRef.getResult();
+                    sessionSourceChooser.reset();
+                    auto& target = pendingSessionDecks[deck];
+                    if (!target.active || !target.awaitingRelocation) {
+                        promptNextMissingSessionSource();
+                        return;
+                    }
+                    if (!selected.existsAsFile()) {
+                        target.active = false;
+                        target.awaitingRelocation = false;
+                        ++missingDecks;
+                        promptNextMissingSessionSource();
+                        if (pendingCount() == 0) finishSessionRestore();
+                        return;
+                    }
+
+                    const auto original = target.originalFile;
+                    target.file = selected;
+                    target.awaitingRelocation = false;
+                    target.ticks = 0;
+                    if (!owner.loadFileIntoDeck(deck, selected)) {
+                        target.active = false;
+                        ++failedDecks;
+                    } else {
+                        ++relocatedDecks;
+                        reconnectLibraryAfterSessionRelocate(original, selected);
+                    }
+                    promptNextMissingSessionSource();
+                    if (pendingCount() == 0) finishSessionRestore();
+                });
+            return;
+        }
+    }
+
+    void reconnectLibraryAfterSessionRelocate(const juce::File& original,
+                                               const juce::File& replacement) {
+        if (!databaseAvailable || databaseMaintenance.load(std::memory_order_acquire)) return;
+        const auto oldPath = utf8Path(original);
+        const auto newFile = replacement;
+        const auto weak = std::weak_ptr<int>(lifetime);
+        writeWorkers.addJob([this, weak, oldPath, newFile] {
+            if (weak.expired() || cancelled.load(std::memory_order_acquire)
+                || databaseMaintenance.load(std::memory_order_acquire)) return;
+            std::string error;
+            const auto matches = database.search(oldPath, 64, &error);
+            if (!error.empty()) return;
+            for (const auto& track : matches) {
+                if (track.path != oldPath) continue;
+                static_cast<void>(database.relocateTrack(
+                    track.id, filesystemPath(newFile), std::max<std::int64_t>(0, newFile.getSize()),
+                    modifiedNs(newFile), nullptr));
+                break;
+            }
+        });
     }
 
     void timerCallback() override {
@@ -429,9 +633,10 @@ private:
             stopTimer();
             return;
         }
+        promptNextMissingSessionSource();
         for (std::size_t deck = 0; deck < pendingSessionDecks.size(); ++deck) {
             auto& pending = pendingSessionDecks[deck];
-            if (!pending.active) continue;
+            if (!pending.active || pending.awaitingRelocation) continue;
             ++pending.ticks;
 
             const bool matches = owner.sessionDeckMatches(deck, pending.file);
@@ -475,7 +680,7 @@ private:
                 ++failedDecks;
             }
         }
-        if (pendingCount() == 0) finishSessionRestore();
+        if (pendingCount() == 0 && !sessionSourceChooser) finishSessionRestore();
     }
 
     [[nodiscard]] int pendingCount() const noexcept {
@@ -486,9 +691,11 @@ private:
 
     void finishSessionRestore() {
         stopTimer();
+        sessionSourceChooser.reset();
         restoreInProgress = false;
         juce::String detail = uiText("Restored decks: ", "Przywrócone decki: ")
             + juce::String(restoredDecks)
+            + uiText(" / relocated sources: ", " / wskazane przeniesione źródła: ") + juce::String(relocatedDecks)
             + uiText(" / missing files: ", " / brakujące pliki: ") + juce::String(missingDecks)
             + uiText(" / failed slots: ", " / nieudane sloty: ") + juce::String(failedDecks);
         if (emptySlots > 0)
@@ -520,10 +727,13 @@ private:
     juce::ThreadPool searchWorkers{1};
     juce::ThreadPool writeWorkers{1};
     std::atomic<bool> cancelled{false};
+    std::atomic<bool> databaseMaintenance{false};
     std::atomic<std::uint64_t> queryGeneration{0};
     std::shared_ptr<int> lifetime;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::FileChooser> sessionChooser;
+    std::unique_ptr<juce::FileChooser> sessionSourceChooser;
+    std::unique_ptr<juce::FileChooser> maintenanceChooser;
     juce::Component::SafePointer<juce::DialogWindow> dialog;
     juce::Component::SafePointer<LibraryPanel> panel;
     bool databaseAvailable = false;
@@ -532,6 +742,7 @@ private:
     bool restoreInProgress = false;
     bool restoredFromBackup = false;
     int restoredDecks = 0;
+    int relocatedDecks = 0;
     int missingDecks = 0;
     int failedDecks = 0;
     int emptySlots = 0;
