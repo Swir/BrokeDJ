@@ -12,6 +12,8 @@ The native Library menu now exposes Save Session, Load Session and explicit veri
 
 Loading a valid snapshot first pauses all four current transports and restores mixer state. Existing track paths are then decoded through BrokeDJ's normal asynchronous loader. Saved transport/EQ/FX/fader/cue/loop controls are applied only after the expected file is actually loaded and adopted by the audio engine; a failed decode cannot apply saved controls to the wrong clip.
 
+The restore coordinator does not infer adoption from a path match or an old duration meter. After the expected source is published, it arms a zero-position `Controls::seek` marker. `Engine::process()` adopts pending clips before consuming that atomic seek mailbox, so observing the marker consumed is the acknowledgement that an audio callback has passed the adoption point for that publication. Only then can saved controls and position be applied. If audio callbacks are unavailable, the marker remains unconsumed and the restore fails boundedly instead of mutating stale audio state.
+
 Saved `wasPlaying` state is intentionally **not** auto-resumed. Every restored deck remains paused until the DJ explicitly presses Play. This avoids surprise audio when opening a session. Missing source files fail closed and are counted in the restore report. A restore waiting for clip adoption is bounded; an unavailable audio path cannot leave the UI waiting forever or be reported as a successful deck restore.
 
 Current pre-alpha limitation: an empty saved deck slot does not yet eject a source that was already loaded in that slot before restore; the old source is paused and the completion dialog states this limitation. A true realtime-safe deck-eject command remains open M4 work.
