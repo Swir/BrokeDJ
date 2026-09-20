@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <thread>
 #include <string>
@@ -22,6 +23,21 @@ std::unique_ptr<broke::Clip> clip(float value = 0.25f, int frames = 48000) {
     c->sampleRate = 48000;
     c->left.assign(static_cast<std::size_t>(frames), value);
     c->right = c->left;
+    return c;
+}
+std::unique_ptr<broke::Clip> sineClip(float frequencyHz, float amplitude = 0.15f,
+                                     int frames = 4 * 48000) {
+    auto c = std::make_unique<broke::Clip>();
+    c->sampleRate = 48000;
+    c->left.resize(static_cast<std::size_t>(frames));
+    c->right.resize(static_cast<std::size_t>(frames));
+    for (int i = 0; i < frames; ++i) {
+        const auto phase = 2.0 * std::numbers::pi * static_cast<double>(frequencyHz)
+            * static_cast<double>(i) / c->sampleRate;
+        const float value = amplitude * static_cast<float>(std::sin(phase));
+        c->left[static_cast<std::size_t>(i)] = value;
+        c->right[static_cast<std::size_t>(i)] = value;
+    }
     return c;
 }
 struct Fixture {
@@ -41,6 +57,28 @@ struct Fixture {
         engine.control(deck).playing = true;
     }
 };
+float rmsOf(const std::array<float, 512>& samples) {
+    double energy = 0.0;
+    for (const float sample : samples)
+        energy += static_cast<double>(sample) * static_cast<double>(sample);
+    return static_cast<float>(std::sqrt(energy / static_cast<double>(samples.size())));
+}
+float measureEqBand(float frequencyHz, float low, float mid, float high) {
+    Fixture f;
+    check(f.engine.submit(0, sineClip(frequencyHz)), "EQ response sine accepted");
+    f.render();
+    auto& control = f.engine.control(0);
+    control.gain = 1.0f;
+    control.trimDb = 0.0f;
+    control.low = low;
+    control.mid = mid;
+    control.high = high;
+    control.playing = true;
+    f.engine.crossfader = 0.0f;
+    f.engine.master = 1.0f;
+    f.render(32);
+    return rmsOf(f.audio[0]);
+}
 void run() {
     {
         Fixture f;
@@ -217,6 +255,46 @@ void run() {
         f.engine.control(0).low = 0; f.engine.control(0).mid = 0; f.engine.control(0).high = 0;
         f.render(12);
         check(std::abs(f.audio[0][400]) < 0.0001f, "three-band EQ kill is silent");
+    }
+    {
+        const float lowAt80 = measureEqBand(80.0f, 1.0f, 0.0f, 0.0f);
+        const float midAt80 = measureEqBand(80.0f, 0.0f, 1.0f, 0.0f);
+        const float highAt80 = measureEqBand(80.0f, 0.0f, 0.0f, 1.0f);
+        const float lowAt1k = measureEqBand(1000.0f, 1.0f, 0.0f, 0.0f);
+        const float midAt1k = measureEqBand(1000.0f, 0.0f, 1.0f, 0.0f);
+        const float highAt1k = measureEqBand(1000.0f, 0.0f, 0.0f, 1.0f);
+        const float lowAt8k = measureEqBand(8000.0f, 1.0f, 0.0f, 0.0f);
+        const float midAt8k = measureEqBand(8000.0f, 0.0f, 1.0f, 0.0f);
+        const float highAt8k = measureEqBand(8000.0f, 0.0f, 0.0f, 1.0f);
+        const float unityAt1k = measureEqBand(1000.0f, 1.0f, 1.0f, 1.0f);
+        const float killAt1k = measureEqBand(1000.0f, 0.0f, 0.0f, 0.0f);
+
+        check(lowAt80 > midAt80 * 2.0f && lowAt80 > highAt80 * 8.0f,
+              "low EQ band is selective at 80 Hz");
+        check(midAt1k > lowAt1k * 3.0f && midAt1k > highAt1k * 2.0f,
+              "mid EQ band is selective at 1 kHz");
+        check(highAt8k > lowAt8k * 8.0f && highAt8k > midAt8k * 2.5f,
+              "high EQ band is selective at 8 kHz");
+        check(unityAt1k > 0.09f && unityAt1k < 0.12f,
+              "unity EQ reconstructs nominal 1 kHz level");
+        check(killAt1k < unityAt1k * 0.001f,
+              "full EQ kill suppresses 1 kHz by at least 60 dB in fixture");
+
+        Fixture f;
+        check(f.engine.submit(0, sineClip(1000.0f)), "invalid EQ fixture sine accepted");
+        f.render();
+        auto& control = f.engine.control(0);
+        control.gain = 1.0f;
+        control.low = std::numeric_limits<float>::quiet_NaN();
+        control.mid = std::numeric_limits<float>::infinity();
+        control.high = -std::numeric_limits<float>::infinity();
+        control.playing = true;
+        f.engine.crossfader = 0.0f;
+        f.engine.master = 1.0f;
+        f.render(16);
+        check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float sample) {
+            return std::isfinite(sample);
+        }), "invalid EQ controls fail to finite fallback");
     }
     {
         Fixture f;
