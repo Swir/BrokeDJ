@@ -62,6 +62,7 @@ public:
 private:
     struct PendingSessionDeck final {
         bool active = false;
+        bool adoptionMarkerArmed = false;
         juce::File file;
         broke::session::DeckState state;
         int ticks = 0;
@@ -435,7 +436,21 @@ private:
 
             const bool matches = owner.sessionDeckMatches(deck, pending.file);
             const bool loadingNow = owner.sessionDeckLoading(deck);
-            if (matches && owner.sessionDeckDuration(deck) > 0.0) {
+
+            if (matches && !pending.adoptionMarkerArmed) {
+                // The expected path is assigned only after Engine::submit()
+                // succeeds. Arm a zero-position seek now. Engine adopts pending
+                // clips before consuming this atomic mailbox, so a later
+                // consumed marker is an audio-thread proof that the expected
+                // source has passed the adoption point.
+                owner.armSessionDeckAdoptionMarker(deck);
+                pending.adoptionMarkerArmed = true;
+                continue;
+            }
+
+            if (matches && pending.adoptionMarkerArmed
+                && owner.sessionDeckAdoptionMarkerConsumed(deck)
+                && owner.sessionDeckDuration(deck) > 0.0) {
                 const bool applied = owner.applyRestoredDeckState(deck, pending.state);
                 pending.active = false;
                 if (applied) ++restoredDecks;
@@ -453,7 +468,8 @@ private:
             }
 
             // A valid clip is adopted by the audio callback. If no working audio
-            // device is available, do not spin forever or pretend restore completed.
+            // device is available, the adoption marker is never consumed: fail
+            // boundedly instead of applying state to stale audio or spinning forever.
             if (pending.ticks > 300) {
                 pending.active = false;
                 ++failedDecks;
