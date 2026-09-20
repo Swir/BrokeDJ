@@ -125,6 +125,32 @@ public:
                              const broke::PerformanceDeckOwner::HotCueBank& hotCues,
                              bool trackReady, bool isSyncMaster, bool syncAvailable, bool syncLocked);
     [[nodiscard]] bool jogScratchActive() const noexcept { return jogScratch.active(); }
+    void syncSessionControls(const broke::session::DeckState& state) {
+        loop.setToggleState(state.wholeTrackLoop, juce::dontSendNotification);
+        cue.setToggleState(state.headphoneCue, juce::dontSendNotification);
+        beatLoop.setToggleState(false, juce::dontSendNotification);
+        reverse.setToggleState(false, juce::dontSendNotification);
+        slip.setToggleState(false, juce::dontSendNotification);
+        syncMaster.setToggleState(false, juce::dontSendNotification);
+        sync.setToggleState(false, juce::dontSendNotification);
+        knobs[0].setValue(juce::jlimit<double>(broke::minTrimDb, broke::maxTrimDb, state.trimDb),
+                          juce::dontSendNotification);
+        knobs[1].setValue(juce::jlimit(0.0, 1.5, static_cast<double>(state.channelGain)),
+                          juce::dontSendNotification);
+        knobs[2].setValue(juce::jlimit(-20.0, 20.0,
+                          (static_cast<double>(state.playbackRate) - 1.0) * 100.0),
+                          juce::dontSendNotification);
+        knobs[3].setValue(juce::jlimit(0.0, 2.0, static_cast<double>(state.low)),
+                          juce::dontSendNotification);
+        knobs[4].setValue(juce::jlimit(0.0, 2.0, static_cast<double>(state.mid)),
+                          juce::dontSendNotification);
+        knobs[5].setValue(juce::jlimit(0.0, 2.0, static_cast<double>(state.high)),
+                          juce::dontSendNotification);
+        knobs[6].setValue(juce::jlimit(0.0, 0.7, static_cast<double>(state.echo)),
+                          juce::dontSendNotification);
+        knobs[7].setValue(juce::jlimit(0.0, 6.0, static_cast<double>(state.drive)),
+                          juce::dontSendNotification);
+    }
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -168,15 +194,15 @@ public:
         return true;
     }
 
-    [[nodiscard]] broke::session::SessionState captureSessionState() const {
+    [[nodiscard]] broke::session::SessionState captureSessionState() {
         broke::session::SessionState state;
         state.mixer.crossfader = engine.crossfader.load(std::memory_order_acquire);
         state.mixer.master = engine.master.load(std::memory_order_acquire);
         state.mixer.headphoneLevel = engine.headphoneLevel.load(std::memory_order_acquire);
         for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
             auto& target = state.decks[deck];
-            const auto& control = engine.control(deck);
-            if (deckFiles[deck].existsAsFile())
+            auto& control = engine.control(deck);
+            if (deckFiles[deck] != juce::File{})
                 target.path = deckFiles[deck].getFullPathName().toStdString();
             const double position = engine.meter(deck).position.load(std::memory_order_acquire);
             target.positionSeconds = std::isfinite(position) && position >= 0.0 ? position : 0.0;
@@ -252,6 +278,7 @@ public:
         control.drive.store(std::clamp(state.drive, 0.0f, 6.0f), std::memory_order_release);
         const double position = std::clamp(state.positionSeconds, 0.0, duration);
         control.seek.store(duration > 0.0 ? position / duration : 0.0, std::memory_order_release);
+        decks[deck]->syncSessionControls(state);
         decks[deck]->refresh();
         return true;
     }
