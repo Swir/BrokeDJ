@@ -134,8 +134,13 @@ public:
 };
 
 // UI -> audio controls. Seek is a last-request-wins normalized mailbox.
+// Reverse changes the audible/source direction. Slip keeps the underlying
+// transport moving forward while reverse is audible, so releasing reverse can
+// rejoin the uninterrupted timeline. Beat-loop and external source renderers
+// reject these modes fail-closed in Engine::process().
 struct Controls final {
     std::atomic<bool> playing{false}, loop{false}, headphone{false};
+    std::atomic<bool> reverse{false}, slip{false};
     std::atomic<float> gain{0.7f}, rate{1.0f};
     std::atomic<float> low{1.0f}, mid{1.0f}, high{1.0f};
     std::atomic<float> echo{0.0f}, drive{0.0f};
@@ -511,11 +516,16 @@ public:
     [[nodiscard]] bool setDeckSourceRenderer(std::size_t deck, DeckSourceRenderer* renderer) noexcept;
     // Atomically publish/clear a source-time loop region while audio is running.
     // The built-in loop renderer is installed from Engine construction, so no
-    // renderer pointer is swapped in the callback lifecycle. If a research or
-    // other external source renderer owns the deck, arming fails closed.
+    // renderer pointer is swapped in the callback lifecycle. If reverse/slip is
+    // armed, or a research/other external renderer owns the deck, arming fails
+    // closed instead of silently combining incompatible transport semantics.
     [[nodiscard]] bool setLoopRegionSeconds(std::size_t deck, double startSeconds,
                                             double endSeconds) noexcept {
-        if (deck >= deckCount || sourceRenderers[deck] != &loopRegionRenderers[deck]) return false;
+        if (deck >= deckCount || sourceRenderers[deck] != &loopRegionRenderers[deck]
+            || controls[deck].reverse.load(std::memory_order_relaxed)
+            || controls[deck].slip.load(std::memory_order_relaxed)) {
+            return false;
+        }
         return loopRegionRenderers[deck].setRegion(startSeconds, endSeconds);
     }
     void clearLoopRegion(std::size_t deck) noexcept {
@@ -546,6 +556,8 @@ private:
         std::array<float, 2> lastProcessed{}, transitionFrom{};
         int transitionRemaining = 0;
         bool wasPlaying = false;
+        bool wasReverse = false;
+        bool wasSlip = false;
         bool streamReady = true;
     };
     void prepareResamplerKernels();

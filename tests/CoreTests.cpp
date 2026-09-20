@@ -95,12 +95,23 @@ void run() {
         check(!f.engine.setLoopRegionSeconds(4, plan.startSeconds, plan.endSeconds), "invalid loop deck rejected");
         check(!f.engine.setLoopRegionSeconds(0, plan.endSeconds, plan.startSeconds), "reversed loop region rejected");
         check(!f.engine.setLoopRegionSeconds(0, std::numeric_limits<double>::quiet_NaN(), plan.endSeconds), "non-finite loop region rejected");
+        f.engine.control(0).reverse = true;
+        check(!f.engine.setLoopRegionSeconds(0, plan.startSeconds, plan.endSeconds), "beat loop rejects reverse mode");
+        f.engine.control(0).reverse = false;
+        f.engine.control(0).slip = true;
+        check(!f.engine.setLoopRegionSeconds(0, plan.startSeconds, plan.endSeconds), "beat loop rejects slip mode");
+        f.engine.control(0).slip = false;
         check(f.engine.setLoopRegionSeconds(0, plan.startSeconds, plan.endSeconds), "reviewed beat-loop region armed");
         check(f.engine.loopRegionEnabled(0), "loop-region state published");
         f.engine.control(0).seek = plan.startSeconds / 4.0;
         f.engine.control(0).loop = true;
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).slip = true;
         f.engine.control(0).playing = true;
-        f.render(240);
+        f.render();
+        check(!f.engine.control(0).reverse.load() && !f.engine.control(0).slip.load(),
+              "active beat loop clears incompatible reverse and slip fail-closed");
+        f.render(239);
         const double wrappedPosition = f.engine.meter(0).position.load();
         check(f.engine.control(0).playing.load(), "beat loop keeps transport playing");
         check(wrappedPosition >= plan.startSeconds && wrappedPosition < plan.endSeconds,
@@ -129,6 +140,66 @@ void run() {
         f.engine.control(0).playing = false;
         f.engine.control(0).seek = 0.5; f.render();
         check(std::abs(f.engine.meter(0).position.load() - 0.5) < 0.0001f, "normalized seek works while paused");
+    }
+    {
+        Fixture f; f.load(0, 0.25f, 6 * 48000);
+        f.engine.control(0).playing = false;
+        f.engine.control(0).seek = 0.60;
+        f.render();
+        const double anchor = f.engine.meter(0).position.load();
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).playing = true;
+        f.render(8);
+        const double transport = f.engine.meter(0).position.load();
+        const double audible = f.engine.meter(0).audiblePosition.load();
+        check(transport < anchor - 0.05, "reverse transport moves backward");
+        check(std::abs(transport - audible) < 0.0001, "ordinary reverse keeps transport and audible cursor together");
+        check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float sample) { return std::isfinite(sample); }),
+              "reverse output remains finite");
+    }
+    {
+        Fixture f; f.load(0, 0.25f, 6 * 48000);
+        f.engine.control(0).playing = false;
+        f.engine.control(0).seek = 0.50;
+        f.render();
+        const double anchor = f.engine.meter(0).position.load();
+        f.engine.control(0).slip = true;
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).playing = true;
+        f.render(8);
+        const double hiddenTransport = f.engine.meter(0).position.load();
+        const double audibleReverse = f.engine.meter(0).audiblePosition.load();
+        check(hiddenTransport > anchor + 0.05, "slip reverse preserves a forward hidden transport");
+        check(audibleReverse < anchor - 0.05, "slip reverse audible cursor moves backward");
+        check(hiddenTransport - audibleReverse > 0.10, "slip exposes independent transport and audible cursors");
+        f.engine.control(0).reverse = false;
+        f.render();
+        check(std::abs(f.engine.meter(0).position.load() - f.engine.meter(0).audiblePosition.load()) < 0.0001,
+              "releasing reverse in slip rejoins uninterrupted transport");
+        check(f.engine.control(0).playing.load(), "slip rejoin keeps playback running");
+    }
+    {
+        Fixture f; f.load(0, 0.25f, 48000);
+        f.engine.control(0).playing = false;
+        f.engine.control(0).seek = 0.0;
+        f.render();
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).playing = true;
+        f.render();
+        check(!f.engine.control(0).playing.load(), "reverse at track start stops without whole-track loop");
+        check(f.engine.meter(0).position.load() == 0.0, "reverse start stop remains bounded at zero");
+    }
+    {
+        Fixture f; f.load(0, 0.25f, 48000);
+        f.engine.control(0).playing = false;
+        f.engine.control(0).seek = 0.0;
+        f.render();
+        f.engine.control(0).loop = true;
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).playing = true;
+        f.render(2);
+        check(f.engine.control(0).playing.load(), "whole-track loop supports reverse wrap");
+        check(f.engine.meter(0).position.load() > 0.9, "reverse whole-track loop wraps to track end");
     }
     {
         Fixture f;
@@ -164,6 +235,8 @@ void run() {
         Fixture f; f.load(0);
         check(f.engine.submit(0, clip(0.1f)), "replacement submitted"); f.render();
         check(!f.engine.control(0).playing.load(), "replacement never auto-plays");
+        check(!f.engine.control(0).reverse.load() && !f.engine.control(0).slip.load(),
+              "replacement clears transient reverse/slip transport modes");
         check(f.engine.submit(0, clip(0.2f)), "second replacement queued");
         f.render(); f.engine.collectRetired(); f.render(); f.engine.collectRetired();
         check(f.engine.meter(0).duration.load() == 1.0, "retirement backpressure recovers");
