@@ -17,6 +17,70 @@
 #include <optional>
 
 juce::String text(const char* english, const char* polish);
+
+class CrossfaderSlider final : public juce::Slider {
+public:
+    explicit CrossfaderSlider(broke::Engine& targetEngine, bool enableCurveMenu = true)
+        : engine(targetEngine), curveMenuEnabled(enableCurveMenu) {
+        if (curveMenuEnabled) refreshTooltip();
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override {
+        if (!curveMenuEnabled || !event.mods.isPopupMenu()) {
+            juce::Slider::mouseDown(event);
+            return;
+        }
+
+        const auto current = broke::crossfaderCurveFromRaw(
+            engine.crossfaderCurve.load(std::memory_order_acquire));
+        juce::PopupMenu menu;
+        menu.addItem(1, text("Constant power", "Stała moc"), true,
+                     current == broke::CrossfaderCurve::constantPower);
+        menu.addItem(2, text("Linear", "Liniowa"), true,
+                     current == broke::CrossfaderCurve::linear);
+        menu.addItem(3, text("Fast cut", "Szybkie cięcie"), true,
+                     current == broke::CrossfaderCurve::fastCut);
+
+        juce::Component::SafePointer<CrossfaderSlider> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+                           [safe](int result) {
+            if (!safe || result < 1 || result > 3) return;
+            const auto curve = result == 1 ? broke::CrossfaderCurve::constantPower
+                : result == 2 ? broke::CrossfaderCurve::linear
+                              : broke::CrossfaderCurve::fastCut;
+            safe->setCurve(curve);
+        });
+    }
+
+private:
+    static juce::String curveName(broke::CrossfaderCurve curve) {
+        switch (curve) {
+            case broke::CrossfaderCurve::linear:
+                return text("Linear", "Liniowa");
+            case broke::CrossfaderCurve::fastCut:
+                return text("Fast cut", "Szybkie cięcie");
+            case broke::CrossfaderCurve::constantPower:
+            default:
+                return text("Constant power", "Stała moc");
+        }
+    }
+
+    void setCurve(broke::CrossfaderCurve curve) {
+        engine.crossfaderCurve.store(static_cast<std::uint8_t>(curve), std::memory_order_release);
+        refreshTooltip();
+    }
+
+    void refreshTooltip() {
+        const auto current = broke::crossfaderCurveFromRaw(
+            engine.crossfaderCurve.load(std::memory_order_acquire));
+        setTooltip(text("Crossfader curve: ", "Krzywa crossfadera: ") + curveName(current)
+                   + text(". Right-click to change.", ". Kliknij prawym przyciskiem, aby zmienić."));
+    }
+
+    broke::Engine& engine;
+    bool curveMenuEnabled = true;
+};
+
 class Waveform final : public juce::Component {
 public:
     std::vector<float> peaks;
@@ -158,7 +222,7 @@ private:
     juce::Label title, subtitle, status, crossLabel, masterLabel, cueLabel, meterLabel;
     juce::TextButton settings;
     juce::HyperlinkButton author;
-    juce::Slider crossfader, master, headphone;
+    CrossfaderSlider crossfader{engine}, master{engine, false}, headphone{engine, false};
     std::atomic<bool> audioReady{false};
     juce::TooltipWindow tooltips{this, 600};
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)

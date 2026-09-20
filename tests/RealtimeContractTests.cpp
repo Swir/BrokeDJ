@@ -183,6 +183,10 @@ void run() {
             b.reverse = phase == 1 || phase == 3;
             b.slip = phase == 2 || phase == 3;
         }
+        if ((block % 79) == 0) {
+            const auto mode = static_cast<std::uint8_t>((block / 79) % 3);
+            engine.crossfaderCurve.store(mode, std::memory_order_relaxed);
+        }
         engine.crossfader = static_cast<float>(block % 101) / 100.0f;
         renderBlock(engine, audio, out);
     }
@@ -191,8 +195,8 @@ void run() {
 
     const auto observedAllocations = allocations.load(std::memory_order_relaxed);
     const auto observedDeallocations = deallocations.load(std::memory_order_relaxed);
-    check(observedAllocations == 0, "audio callback performs no heap allocation under transport/FX/beat-loop/reverse/slip stress");
-    check(observedDeallocations == 0, "audio callback performs no heap deallocation under transport/FX/beat-loop/reverse/slip stress");
+    check(observedAllocations == 0, "audio callback performs no heap allocation under transport/FX/beat-loop/reverse/slip/crossfader-curve stress");
+    check(observedDeallocations == 0, "audio callback performs no heap deallocation under transport/FX/beat-loop/reverse/slip/crossfader-curve stress");
     for (const auto& channel : audio) {
         check(std::all_of(channel.begin(), channel.end(), [](float value) { return std::isfinite(value); }),
               "callback output remains finite after stress");
@@ -207,6 +211,7 @@ void run() {
               << " ns_per_rendered_frame=" << nsPerFrame
               << " beat_loop_region_active=1"
               << " reverse_slip_stress=1"
+              << " crossfader_curve_stress=1"
               << " timing_is_diagnostic_only=1\n";
 
     // Release-build CI records these timing diagnostics across representative

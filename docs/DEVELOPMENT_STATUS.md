@@ -4,43 +4,43 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `fcc52b6ad731c0aafa12ea47468e72214317e9a2`; PR #47 (`M2: add bounded continuous reviewed-grid Sync lock`) is already merged.
-- Active development: PR #48 (`M1: verify staged Windows artifact integrity and launch`) from `feat/m1-staged-artifact-contract`.
-- First package run `35516016674` for PR head `c986192a111b616010fd24f820b2ac45b1778268` completed with Linux sanitizers/package-tool tests and the Windows build/test/staging job green, but the separate downloaded-artifact verification job failed before launch.
-- The failed uploaded artifact was downloaded and reproduced outside the workflow. Its manifest contained staged JUCE dotfiles that `actions/upload-artifact` had omitted by default, so checksum verification correctly reported those manifested files as missing.
-- The same evidence exposed a second source-identity bug: pull-request jobs were packaging GitHub's synthetic merge SHA through `${{ github.sha }}` rather than the actual PR head SHA, despite the package contract claiming exact source identity.
-- Repair head `9edfc7621ee843e1cd80abe03624c8de93700742` makes both build jobs explicitly check out the PR head (falling back to `github.sha` for push/dispatch), uses that same SHA throughout package identity checks, and uploads hidden staged files so the uploaded tree matches the manifest.
-- Exact-head run `35518807500` for `eed9de6c731a08eb1a40534779627064b4edd911` passed Linux generated-progress/package-tool/ASan/UBSan/full CTest, Windows configure/build/full CTest/audio diagnostics/native no-audio GUI resize smoke/silent device probe/staging/upload, and the separate downloaded-artifact checksum plus staged executable smoke job.
-- The downloaded green artifact was independently re-verified after the run: 3,453 manifested files matched, `SOURCE-COMMIT.txt` and the manifest both identify `eed9de6c731a08eb1a40534779627064b4edd911`, and all eight manifested hidden entries were present.
-- This checkpoint-only documentation commit creates a newer PR head, so merge still requires the exact-final-head workflow to remain green. Integration also remains subject to the normal BrokeDJ merge cadence; a green development artifact is not itself a reason to bypass that cadence.
+- Default branch baseline: `main` at `413c722ada39ac58568c2cef025cdbf5965aa97b`; PR #48 (`M1: verify staged Windows artifact integrity and launch`) is merged.
+- Post-merge main workflow run `35519957972` for `413c722ada39ac58568c2cef025cdbf5965aa97b` completed successfully.
+- Active development: PR #49 (`M3: add configurable smoothed crossfader curves`) from `feat/m3-crossfader-curves`.
+- Previous checkpoint head `8a786e77fc67123ee912000c263f108dc8b37bb7` passed the Linux sanitizer/full-CTest job but failed the Windows x64 build in run `35520885684`.
+- The Windows failure was a real MSVC portability regression: the constructor iterated `{&crossfader, &master, &headphone}` with `auto*`, but `crossfader` had become `CrossfaderSlider*` while the other two remained `juce::Slider*`, so MSVC could not deduce one initializer-list pointer type.
+- Repair code head `64eda004806d12849623699fd2d9c2a13b05c097` makes the three top-level mixer sliders one concrete slider type while keeping the curve-menu path enabled only on the actual crossfader. Ordinary master/headphone slider interaction still delegates directly to JUCE.
+- Exact repair-head workflow run `35522114779` is the current code gate. At this checkpoint its Linux and Windows jobs are still running, so PR #49 remains unmerged. This status commit creates a newer documentation-only head and therefore also requires its own exact-final-head green run before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - GitHub Releases remains empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
 
-## Active M1 slice: staged artifact integrity and no-build-tree smoke
+## Active M3 slice: configurable crossfader laws
 
-1. **Deterministic package/source integrity contract**
-   - `scripts/package_contract.py` creates a schema-versioned `PACKAGE-MANIFEST.json` and sorted `SHA256SUMS.txt` over the staged Windows development payload.
-   - The contract requires the executable, source archive, source-commit witness, repository/JUCE notices and retained CI evidence; it rejects missing/extra/tampered files, path traversal, duplicate entries and staged symbolic links.
-   - Manifest content omits timestamps, machine names and local paths so the contract itself does not publish private workstation data.
+1. **Three real mixer laws, core-first**
+   - JUCE-independent `CrossfaderCurve` supports Constant Power (default), Linear and Fast Cut.
+   - Invalid raw mode values fail safe to Constant Power and non-finite positions resolve to a finite center state.
+   - Fast Cut uses a bounded continuous cubic transition instead of a discontinuous hard switch.
 
-2. **Exact source and upload identity**
-   - Pull-request build jobs explicitly check out `github.event.pull_request.head.sha`; push/workflow-dispatch runs fall back to `github.sha`.
-   - Windows staging writes that same source identity to `BrokeDJ/SOURCE-COMMIT.txt`, archives source from the checked-out `HEAD`, copies validation/audio/GUI/device-probe evidence and then creates/verifies the manifest before upload.
-   - The uploaded artifact includes hidden files because the staged JUCE payload can legally contain dotfiles that are part of the checksum manifest; omission at the transport layer is treated as an integrity failure, not ignored.
+2. **Realtime-safe live switching**
+   - The engine keeps its existing bounded crossfader-position smoothing and additionally smooths the resulting left/right gain pair, so a live curve-mode change does not create an unsmoothed gain discontinuity.
+   - Curve selection is a lock-free atomic control; the callback performs no I/O, allocation, deallocation, locking or unbounded work for this feature.
+   - Realtime contract stress changes crossfader law while transport, FX, beat-loop and reverse/slip controls are also moving, and still requires zero callback heap allocation/deallocation.
 
-3. **Downloaded staged-artifact launch gate**
-   - A separate Windows job downloads the uploaded development artifact into a fresh job workspace, verifies hashes/source identity and launches the staged `BrokeDJ.exe` rather than the build-tree executable.
-   - It runs only the no-audio `--smoke-test` and `--device-probe-ci` contracts; it does not open an audio device or emit sound.
-   - Passing this gate proves artifact integrity plus no-build-tree lifecycle/probe launch on the Windows runner, not a consumer clean-machine or physical-hardware qualification.
+3. **Native Windows-facing control and compiler portability**
+   - Right-clicking the actual crossfader opens a native PL/EN menu for Constant Power, Linear and Fast Cut; master/headphone sliders do not expose that menu.
+   - Quality tests cover law math, fail-safe inputs, production-engine center-level differences, finite automation and continuity across a live curve switch.
+   - The Windows-only compile regression found by exact-head CI was fixed before any further feature expansion; the repair is still awaiting the full exact-head gate.
+   - The feature does not close M3 and does not imply a transparent limiter, zero latency or complete professional gain staging.
 
 ## Gates still open
 
-- PR #48 requires an exact-final-head green workflow for this checkpoint commit and must remain unmerged until the normal BrokeDJ integration cadence permits it.
-- M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and real four-output master 1/2 versus cue 3/4 verification.
+- PR #49 must remain unmerged until the exact-final-head workflow for the newest branch head is green.
+- M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical four-output master 1/2 versus cue 3/4 verification.
 - Representative user-owned/licensed music-domain BPM/key/grid evidence remains open.
 - Production key-lock listening/latency, MIDI/controller mappings and concrete controller profiles remain unqualified.
+- Mixer work still lacks complete trim/gain-staging, richer metering, booth/mic/ducking and qualified recording/limiter behavior.
 - Physical storage/underrun behavior, multi-hour soak and public alpha/beta Release qualification remain open.
 
 ## Next largest step
 
-Keep PR #48 scoped to its M1 package contract and integrate it only after an exact-final-head green run at the normal BrokeDJ cadence. Then continue finish-first work on remaining internally closable M2 analysis/key-lock/controller qualification while preserving the manual M1 hardware gates.
+Finish PR #49 first. Do not widen mixer scope until the repaired exact-final-head passes Linux sanitizers/full CTest plus Windows x64 build/full CTest/audio diagnostics/native no-audio GUI smoke/silent device probe/staging/downloaded-artifact smoke. After normal integration, continue the finish-first product path with measured trim/gain staging and richer metering while preserving the still-open M1 physical-hardware gates and M2 evidence/controller gates.

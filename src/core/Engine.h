@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Swir
 #pragma once
+#include "CrossfaderCurve.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -541,6 +542,8 @@ public:
     const Meter& meter(std::size_t deck) const { return meters.at(deck); }
     [[nodiscard]] int preparedMaxAudioBlockFrames() const noexcept { return maxBlockFrames; }
     std::atomic<float> crossfader{0.5f}, master{0.5f}, headphoneLevel{0.5f};
+    std::atomic<std::uint8_t> crossfaderCurve{
+        static_cast<std::uint8_t>(CrossfaderCurve::constantPower)};
     std::atomic<float> masterPeak{0.0f};
     std::atomic<bool> clipped{false};
 private:
@@ -574,6 +577,7 @@ private:
     double sampleRate = 44100.0;
     float lowCoeff = 0.0f, highCoeff = 0.0f, smoothing = 0.0f;
     float masterSmooth = 0.0f, crossSmooth = 0.5f, headphoneSmooth = 0.5f;
+    std::array<float, 2> crossGainSmooth{0.70710678f, 0.70710678f};
     int transitionSamples = 1;
     int maxBlockFrames = 0;
 };
