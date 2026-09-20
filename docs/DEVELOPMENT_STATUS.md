@@ -7,8 +7,8 @@ This file is the durable engineering checkpoint for the current repository state
 - Verified default branch: `main` at `ad1191173d10a6954ec1c16cde1134d214f2fc16` (`M2: expose native Reverse and Slip deck controls (#41)`). Its post-merge GitHub Actions run `35489195912` completed successfully.
 - Active development branch: `feat/m2-jog-scrub-stream-stress`.
 - Active pull request: #42 (`M2: add bounded jog/scratch transport and reverse/slip stream stress`).
-- Functional branch checkpoint before this status update: `51fce60ab33bc0f31a3735227854203864e37106`.
-- Initial exact-head CI run for that functional checkpoint: `35491240602`; it was started after PR creation. A documentation checkpoint after it requires its own final-head validation before merge.
+- Functional branch checkpoint before this status update: `288f5bf9aab5c44ac80b74d3470a0798acb5b256`.
+- Exact-head CI run for that functional checkpoint: `35491326770`; it validates the code/test tree before this status-only checkpoint. The status update itself requires the normal final-head PR validation before merge.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
 - No public BrokeDJ Release exists or is qualified by this checkpoint.
 
@@ -38,7 +38,8 @@ This file is the durable engineering checkpoint for the current repository state
 
 - A deterministic core-only fixture represents a 90-minute stream using only the fixed `StreamCache`, without allocating full-track audio.
 - The stress covers hidden-forward versus audible-reverse cursor divergence, release/rejoin, repeated direction changes, request bounds and finite output.
-- Intentional reverse starvation followed by refill exercises existing lock-free read-miss/starvation/refill diagnostics without presenting cache events as physical audio-interface underruns.
+- Intentional reverse starvation must create exactly one new starvation episode; refill must close exactly one episode while output remains finite.
+- These lock-free cache events are not presented as physical audio-interface underruns.
 - This fixture does not replace compressed-codec slow-storage tests or real hardware listening; those remain separate evidence.
 
 ## Validation evidence and gates still open
