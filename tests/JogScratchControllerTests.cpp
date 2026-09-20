@@ -184,6 +184,99 @@ void conflictingOwnersFailClosed() {
     check(invalid.begin() == broke::JogScratchController::Result::invalidDeck,
           "invalid deck fails closed");
 }
+
+void ownershipChangesDuringGestureFailClosed() {
+    broke::Engine engine;
+    engine.prepare(48000.0, 256);
+    check(engine.submit(3, makeClip()), "mid-gesture ownership fixture submits");
+    RenderBlock block;
+    process(engine, block);
+
+    auto& control = engine.control(3);
+    control.rate.store(1.20f);
+    control.playing.store(true);
+    broke::PerformanceDeckOwner owner(engine, 3);
+    broke::JogScratchController scratch(engine, owner, 3);
+
+    check(scratch.begin() == broke::JogScratchController::Result::applied,
+          "mid-gesture slip test begins from forward transport");
+    check(owner.setSlipEnabled(true) == broke::PerformanceDeckOwner::Result::applied,
+          "foreign slip owner can arrive after platter touch");
+    const double seekBeforeSlipConflict = control.seek.load();
+    check(scratch.setVelocity(-1.0) == broke::JogScratchController::Result::busy,
+          "velocity update rejects slip ownership acquired mid-gesture");
+    check(scratch.moveBySeconds(0.5) == broke::JogScratchController::Result::busy,
+          "relative move rejects slip ownership acquired mid-gesture");
+    check(owner.slipEnabled() && !owner.reverseEnabled()
+              && control.seek.load() == seekBeforeSlipConflict,
+          "rejected scratch update preserves foreign slip and seek state");
+    check(scratch.end() == broke::JogScratchController::Result::busy,
+          "release reports ownership conflict instead of resuming stale play state");
+    check(!scratch.active() && owner.slipEnabled() && !owner.reverseEnabled()
+              && !control.playing.load(),
+          "conflicted release leaves foreign slip intact and transport stopped");
+    check(std::abs(static_cast<double>(control.rate.load()) - 1.20) < 1.0e-6,
+          "conflicted release restores pre-gesture rate without resuming playback");
+    owner.clearReverseSlip();
+
+    control.playing.store(true);
+    check(scratch.begin() == broke::JogScratchController::Result::applied,
+          "mid-gesture beat-loop test begins");
+    broke::BeatGrid grid;
+    check(grid.reset(0.0, 120.0), "mid-gesture beat-loop grid initializes");
+    check(owner.setReviewedGrid(grid) == broke::PerformanceDeckOwner::Result::applied,
+          "mid-gesture beat-loop grid accepted");
+    check(owner.armBeatLoopAt(1.0, 8.0, 4.0)
+              == broke::PerformanceDeckOwner::Result::applied,
+          "beat loop can acquire transport after stationary platter touch");
+    check(scratch.setVelocity(1.0) == broke::JogScratchController::Result::busy,
+          "velocity update rejects beat-loop ownership acquired mid-gesture");
+    check(scratch.end() == broke::JogScratchController::Result::busy,
+          "release reports beat-loop ownership conflict");
+    check(!scratch.active() && owner.beatLoopActive() && !control.playing.load(),
+          "conflicted release preserves beat loop and does not resume old playback");
+    owner.disarmLoop();
+}
+
+void forcedCancelAndDestructorStopTransport() {
+    broke::Engine engine;
+    engine.prepare(48000.0, 256);
+    check(engine.submit(0, makeClip()), "forced-cancel fixture submits");
+    RenderBlock block;
+    process(engine, block);
+
+    auto& control = engine.control(0);
+    control.rate.store(1.25f);
+    control.playing.store(true);
+    broke::PerformanceDeckOwner owner(engine, 0);
+    broke::JogScratchController scratch(engine, owner, 0);
+    check(scratch.begin() == broke::JogScratchController::Result::applied,
+          "forced-cancel gesture begins");
+    check(scratch.setVelocity(-0.9) == broke::JogScratchController::Result::applied,
+          "forced-cancel fixture enters reverse transport");
+    check(scratch.cancel() == broke::JogScratchController::Result::applied,
+          "forced cancel terminates active platter ownership");
+    check(!scratch.active() && !control.playing.load() && !control.reverse.load(),
+          "forced cancel stops playback and clears transient reverse");
+    check(std::abs(static_cast<double>(control.rate.load()) - 1.25) < 1.0e-6,
+          "forced cancel restores the user's pre-gesture rate");
+    check(scratch.cancel() == broke::JogScratchController::Result::notActive,
+          "double forced cancel is deterministic");
+
+    control.rate.store(1.30f);
+    control.playing.store(true);
+    {
+        broke::JogScratchController scoped(engine, owner, 0);
+        check(scoped.begin() == broke::JogScratchController::Result::applied,
+              "scoped gesture begins");
+        check(scoped.setVelocity(-1.1) == broke::JogScratchController::Result::applied,
+              "scoped gesture enters reverse transport");
+    }
+    check(!control.playing.load() && !control.reverse.load(),
+          "controller destruction fail-closes active transport");
+    check(std::abs(static_cast<double>(control.rate.load()) - 1.30) < 1.0e-6,
+          "controller destruction preserves the user's pre-gesture rate");
+}
 } // namespace
 
 int main() {
@@ -191,6 +284,8 @@ int main() {
         signedVelocityDrivesRealProductionTransport();
         relativeMoveUsesAudibleCursorAndTrackBounds();
         conflictingOwnersFailClosed();
+        ownershipChangesDuringGestureFailClosed();
+        forcedCancelAndDestructorStopTransport();
         std::cout << "JogScratchControllerTests: " << checks << " checks passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
