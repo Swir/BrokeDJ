@@ -139,16 +139,21 @@ public:
             const float inputPeak = std::max(std::abs(mixedLeft), std::abs(mixedRight));
             blockInputPeak = std::max(blockInputPeak, inputPeak);
 
-            const float requestedGain = limitOn && inputPeak > ceiling && inputPeak > 1.0e-12f
-                ? ceiling / inputPeak : 1.0f;
-            if (requestedGain < limiterGainState) {
-                // Zero-attack sample-peak protection. This is deliberately not
-                // described as transparent or true-peak limiting.
-                limiterGainState = requestedGain;
+            if (!limitOn) {
+                // A bypass request is an explicit control decision: do not leave
+                // residual attenuation from an earlier limiter event.
+                limiterGainState = 1.0f;
             } else {
-                limiterGainState = 1.0f - (1.0f - limiterGainState) * limiterReleaseCoeff;
+                const float requestedGain = inputPeak > ceiling && inputPeak > 1.0e-12f
+                    ? ceiling / inputPeak : 1.0f;
+                if (requestedGain < limiterGainState) {
+                    // Zero-attack sample-peak protection. This is deliberately not
+                    // described as transparent or true-peak limiting.
+                    limiterGainState = requestedGain;
+                } else {
+                    limiterGainState = 1.0f - (1.0f - limiterGainState) * limiterReleaseCoeff;
+                }
             }
-            if (!limitOn && limiterGainState > 0.999999f) limiterGainState = 1.0f;
 
             float outputLeft = mixedLeft * limiterGainState;
             float outputRight = mixedRight * limiterGainState;
@@ -159,7 +164,7 @@ public:
 
             blockOutputPeak = std::max(blockOutputPeak,
                 std::max(std::abs(outputLeft), std::abs(outputRight)));
-            const float reduction = limiterGainState < 1.0f
+            const float reduction = limitOn && limiterGainState < 1.0f
                 ? -20.0f * std::log10(std::max(limiterGainState, 1.0e-12f)) : 0.0f;
             blockMaxReduction = std::max(blockMaxReduction, reduction);
         }
