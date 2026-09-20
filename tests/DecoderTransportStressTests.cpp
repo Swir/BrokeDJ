@@ -106,9 +106,11 @@ struct RenderBlock final {
 
 void process(broke::Engine& engine, RenderBlock& block) {
     engine.process(block.outputs.data(), static_cast<int>(block.outputs.size()), blockFrames);
+    bool finite = true;
     for (const auto& channel : block.audio)
         for (const auto sample : channel)
-            check(std::isfinite(sample), "compressed transport output stays finite");
+            finite = finite && std::isfinite(sample);
+    check(finite, "compressed transport output stays finite");
 }
 
 void runInFlightPrefetchPreemption() {
@@ -152,7 +154,6 @@ void exerciseCompressedReverseSlip(juce::AudioFormat& format,
           "compressed fixture decodes through production streaming adapter");
 
     auto cache = decoded.clip->stream;
-    const auto sourceRate = decoded.clip->sampleRate;
     const auto sourceFrames = decoded.clip->frames();
     const auto targetFrame = sourceFrames * 3 / 4;
     check(waitForRegion(cache, targetFrame, 4000),
@@ -178,11 +179,14 @@ void exerciseCompressedReverseSlip(juce::AudioFormat& format,
     const double hiddenStart = engine.meter(0).position.load();
     const double audibleStart = engine.meter(0).audiblePosition.load();
 
-    // Render faster than the intentionally delayed worker can decode. This is
-    // deterministic cache starvation evidence, not a physical-disk underrun claim.
-    for (int i = 0; i < 360; ++i) process(engine, block);
+    // Render faster than the intentionally delayed worker can decode. Keep the
+    // burst shorter than the remaining hidden timeline so EOF cannot masquerade
+    // as a refill failure. This is deterministic cache-starvation evidence, not
+    // a physical-disk underrun claim.
+    for (int i = 0; i < 96; ++i) process(engine, block);
 
     const auto starved = cache->diagnostics();
+    check(control.playing.load(), "compressed stress remains inside the source timeline");
     check(engine.meter(0).position.load() > hiddenStart,
           "hidden compressed Slip timeline keeps moving forward");
     check(engine.meter(0).audiblePosition.load() < audibleStart,
@@ -192,24 +196,33 @@ void exerciseCompressedReverseSlip(juce::AudioFormat& format,
     check(starved.starving, "compressed Reverse/Slip exposes active starvation");
 
     const auto requested = cache->requestedFrame();
+    constexpr auto chunkFrames = static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+    const auto recoveryChunk = requested / chunkFrames;
     check(waitForRegion(cache, requested, 5000),
           "compressed Reverse/Slip delayed reader refills requested region");
+    if (recoveryChunk > 0) {
+        check(waitForChunk(cache, recoveryChunk - 1, 3000),
+              "compressed refill prepares previous interpolation neighbour");
+    }
+    check(waitForChunk(cache, recoveryChunk + 1, 3000),
+          "compressed refill prepares next interpolation neighbour");
 
+    // With the exact chunk and both immediate neighbours resident, the callback
+    // can close the existing starvation episode without depending on runner
+    // scheduling during another moving slow-reader race.
     bool recovered = false;
-    for (int i = 0; i < 240; ++i) {
+    for (int i = 0; i < 6; ++i) {
         process(engine, block);
         if (!cache->diagnostics().starving) {
             recovered = true;
             break;
         }
-        juce::Thread::sleep(3);
     }
     const auto refilled = cache->diagnostics();
     check(recovered && refilled.refillEvents > beforeDiagnostics.refillEvents,
-          "compressed Reverse/Slip closes starvation after refill");
+          "compressed Reverse/Slip closes starvation after prepared refill");
 
-    const auto requestedChunk = cache->requestedFrame()
-        / static_cast<std::int64_t>(broke::StreamCache::chunkFrames);
+    const auto requestedChunk = cache->requestedFrame() / chunkFrames;
     if (requestedChunk >= 3) {
         check(waitForChunk(cache, requestedChunk - 2, 3000),
               "compressed reverse direction builds read-ahead behind audible cursor");
