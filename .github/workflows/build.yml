@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check generated progress
         run: python3 scripts/update_progress.py --check
+      - name: Test staged-package contract tool
+        run: python3 scripts/package_contract.py self-test
       - name: Configure
         run: cmake -S . -B build/core -DBROKEDJ_BUILD_APP=OFF -DBROKEDJ_SANITIZE=ON -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON -DCMAKE_BUILD_TYPE=Debug
       - name: Build
@@ -127,9 +129,70 @@ jobs:
           Copy-Item build/windows/diagnostics/gui-smoke.json dist/BrokeDJ/GUI-SMOKE.json
           Copy-Item build/windows/diagnostics/device-probe-ci.txt dist/BrokeDJ/DEVICE-PROBE-CI.txt
           Copy-Item build/windows/diagnostics/device-probe-ci.json dist/BrokeDJ/DEVICE-PROBE-CI.json
+          Set-Content -Path dist/BrokeDJ/SOURCE-COMMIT.txt -Value '${{ github.sha }}' -NoNewline -Encoding utf8
+          Copy-Item scripts/package_contract.py dist/VERIFY-PACKAGE.py
+          python scripts/package_contract.py create --root dist --commit '${{ github.sha }}' --cmake CMakeLists.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Package manifest creation failed' }
+          python scripts/package_contract.py verify --root dist --expected-commit '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Package manifest verification failed' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BrokeDJ-0.1.0-development-windows-x64
           path: dist/
           if-no-files-found: error
           retention-days: 14
+
+  package-smoke:
+    name: Windows x64 / staged artifact smoke
+    needs: windows
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: BrokeDJ-0.1.0-development-windows-x64
+          path: package
+      - name: Verify downloaded artifact manifest and checksums
+        shell: pwsh
+        run: |
+          python package/VERIFY-PACKAGE.py verify --root package --expected-commit '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Downloaded package verification failed' }
+      - name: Run staged no-audio lifecycle and device-probe smoke
+        shell: pwsh
+        run: |
+          Push-Location package/BrokeDJ
+          try {
+            Remove-Item 'BrokeDJ-gui-smoke.json' -ErrorAction SilentlyContinue
+            Remove-Item 'BrokeDJ-device-probe.txt' -ErrorAction SilentlyContinue
+            Remove-Item 'BrokeDJ-device-probe.json' -ErrorAction SilentlyContinue
+
+            $gui = Start-Process -FilePath '.\BrokeDJ.exe' -ArgumentList '--smoke-test' -PassThru
+            if (-not $gui.WaitForExit(30000)) { $gui.Kill(); throw 'Staged GUI smoke test timed out' }
+            if ($gui.ExitCode -ne 0) { throw "Staged GUI smoke failed: $($gui.ExitCode)" }
+            $smoke = Get-Content 'BrokeDJ-gui-smoke.json' -Raw | ConvertFrom-Json
+            if ($smoke.schema_version -ne 1 -or
+                $smoke.mode -ne 'native-resize-lifecycle' -or
+                $smoke.plays_audio -ne $false -or
+                $smoke.opens_audio_device -ne $false -or
+                $smoke.success -ne $true -or
+                $smoke.step_count -ne 4) {
+              throw 'Staged GUI smoke report failed contract validation'
+            }
+
+            $probe = Start-Process -FilePath '.\BrokeDJ.exe' -ArgumentList '--device-probe-ci' -PassThru -Wait
+            if ($probe.ExitCode -ne 0) { throw "Staged device probe failed: $($probe.ExitCode)" }
+            $probeJson = Get-Content 'BrokeDJ-device-probe.json' -Raw | ConvertFrom-Json
+            if ($probeJson.schema_version -ne 2 -or
+                $probeJson.mode -ne 'ci-enumeration' -or
+                $probeJson.plays_audio -ne $false -or
+                $probeJson.calls_device_open -ne $false -or
+                $probeJson.starts_audio_callback -ne $false -or
+                $probeJson.creates_device_descriptors -ne $false -or
+                $probeJson.unexpected_open_state_count -ne 0 -or
+                $probeJson.safety_invariants_ok -ne $true) {
+              throw 'Staged device-probe report failed safety/schema validation'
+            }
+          }
+          finally {
+            Pop-Location
+          }
