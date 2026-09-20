@@ -8,6 +8,7 @@
 #include "PerformanceStateStore.h"
 #include "TrackAnalysis.h"
 #include "TempoSegmentEditorComponent.h"
+#include "NativeJogScratchControl.h"
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
 #include "KeyLockDeckLifecycle.h"
 #endif
@@ -67,6 +68,7 @@ private:
     std::size_t index;
     juce::Label heading, track, time, rhythm;
     Waveform waveform;
+    NativeJogScratchControl jogScratch{*this, waveform, engine, index};
     juce::TextButton load, play, rewind, loop, beatLoop, cue;
     juce::ComboBox beatLoopLength;
     std::array<juce::TextButton, broke::PerformanceDeckOwner::hotCueCount> hotCuePads;
