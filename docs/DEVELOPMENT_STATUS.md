@@ -4,43 +4,39 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `413c722ada39ac58568c2cef025cdbf5965aa97b`; PR #48 (`M1: verify staged Windows artifact integrity and launch`) is merged.
-- Post-merge main workflow run `35519957972` for `413c722ada39ac58568c2cef025cdbf5965aa97b` completed successfully.
-- Active development: PR #49 (`M3: add configurable smoothed crossfader curves`) from `feat/m3-crossfader-curves`.
-- Previous checkpoint head `8a786e77fc67123ee912000c263f108dc8b37bb7` passed the Linux sanitizer/full-CTest job but failed the Windows x64 build in run `35520885684`.
-- The Windows failure was a real MSVC portability regression: the constructor iterated `{&crossfader, &master, &headphone}` with `auto*`, but `crossfader` had become `CrossfaderSlider*` while the other two remained `juce::Slider*`, so MSVC could not deduce one initializer-list pointer type.
-- Repair code head `64eda004806d12849623699fd2d9c2a13b05c097` makes the three top-level mixer sliders one concrete slider type while keeping the curve-menu path enabled only on the actual crossfader. Ordinary master/headphone slider interaction still delegates directly to JUCE.
-- Exact repair-head workflow run `35522114779` is the current code gate. At this checkpoint its Linux and Windows jobs are still running, so PR #49 remains unmerged. This status commit creates a newer documentation-only head and therefore also requires its own exact-final-head green run before merge.
-- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA).
-- GitHub Releases remains empty; no public BrokeDJ Release exists or is qualified by this checkpoint.
+- Default branch baseline: `main` at `4c6c04548c358f032f576d791ce52d1c96cb1c88`; PR #49 (`M3: add configurable smoothed crossfader curves`) is merged.
+- Active development: PR #50 (`M3: add input trim and richer mixer metering`) from `feat/m3-gain-staging-metering`.
+- Functional head `8e31822ff38167c2ba58501be65080fadc6b36ee` passed exact-head workflow run `35525650716`: Linux sanitizer/full CTest, Windows x64 build/full CTest/audio diagnostics, native no-audio GUI lifecycle+resize smoke, silent device probe, staged package/source creation, uploaded-artifact checksum verification and downloaded staged-app smoke all succeeded.
+- This documentation checkpoint is newer than that functional head and therefore must receive its own exact-final-head green workflow before PR #50 may merge.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). This package does not close M3.
+- GitHub Releases remains empty; no public BrokeDJ Release is qualified by this checkpoint.
 
-## Active M3 slice: configurable crossfader laws
+## Active M3 slice: gain staging and metering
 
-1. **Three real mixer laws, core-first**
-   - JUCE-independent `CrossfaderCurve` supports Constant Power (default), Linear and Fast Cut.
-   - Invalid raw mode values fail safe to Constant Power and non-finite positions resolve to a finite center state.
-   - Fast Cut uses a bounded continuous cubic transition instead of a discontinuous hard switch.
+1. **Separate input trim and channel fader**
+   - Each deck now has a bounded `-24..+12 dB` input trim before EQ, effects and pre-fader headphone cue.
+   - The existing post-FX channel gain remains a distinct fader stage instead of being repurposed as trim.
+   - Non-finite trim input fails safe to unity; trim automation is smoothed inside the existing bounded callback path.
 
-2. **Realtime-safe live switching**
-   - The engine keeps its existing bounded crossfader-position smoothing and additionally smooths the resulting left/right gain pair, so a live curve-mode change does not create an unsmoothed gain discontinuity.
-   - Curve selection is a lock-free atomic control; the callback performs no I/O, allocation, deallocation, locking or unbounded work for this feature.
-   - Realtime contract stress changes crossfader law while transport, FX, beat-loop and reverse/slip controls are also moving, and still requires zero callback heap allocation/deallocation.
+2. **Useful overload evidence**
+   - Per-deck metering now exposes pre-fader peak, post-fader peak/RMS and a pre-fader overload flag.
+   - Master metering now exposes both peak and RMS while preserving the existing pre-protection overload evidence.
+   - The native PL/EN UI exposes TRIM and Fader separately, shows deck input peak/overload state, and reports master PK/RMS in dBFS.
 
-3. **Native Windows-facing control and compiler portability**
-   - Right-clicking the actual crossfader opens a native PL/EN menu for Constant Power, Linear and Fast Cut; master/headphone sliders do not expose that menu.
-   - Quality tests cover law math, fail-safe inputs, production-engine center-level differences, finite automation and continuity across a live curve switch.
-   - The Windows-only compile regression found by exact-head CI was fixed before any further feature expansion; the repair is still awaiting the full exact-head gate.
-   - The feature does not close M3 and does not imply a transparent limiter, zero latency or complete professional gain staging.
+3. **Realtime and regression coverage**
+   - Deterministic quality tests cover dB conversion/clamping, +6 dB gain behavior, NaN fail-safe behavior, RMS/peak relationships, channel-overload visibility, cue semantics and separation from master overload.
+   - Realtime stress automates trim/fader together with transport, effects, beat loop, reverse/slip and crossfader-curve changes while still requiring zero callback heap allocation/deallocation and finite meters/audio.
+   - This is gain-staging infrastructure, not a claim of transparent limiting or physical-device qualification.
 
 ## Gates still open
 
-- PR #49 must remain unmerged until the exact-final-head workflow for the newest branch head is green.
+- PR #50 must remain unmerged until the newest documentation-inclusive head has a fully green exact-head workflow.
 - M1 still requires real Windows 11 clean-machine/manual resize/HiDPI/import/device-switching checks and physical four-output master 1/2 versus cue 3/4 verification.
 - Representative user-owned/licensed music-domain BPM/key/grid evidence remains open.
 - Production key-lock listening/latency, MIDI/controller mappings and concrete controller profiles remain unqualified.
-- Mixer work still lacks complete trim/gain-staging, richer metering, booth/mic/ducking and qualified recording/limiter behavior.
+- M3 still lacks configurable routing/booth, qualified EQ curves and limiter behavior, microphone/ducking, and dropout-aware set recording.
 - Physical storage/underrun behavior, multi-hour soak and public alpha/beta Release qualification remain open.
 
 ## Next largest step
 
-Finish PR #49 first. Do not widen mixer scope until the repaired exact-final-head passes Linux sanitizers/full CTest plus Windows x64 build/full CTest/audio diagnostics/native no-audio GUI smoke/silent device probe/staging/downloaded-artifact smoke. After normal integration, continue the finish-first product path with measured trim/gain staging and richer metering while preserving the still-open M1 physical-hardware gates and M2 evidence/controller gates.
+Finish PR #50 first and merge only after its exact-final-head Linux/Windows/package gate is green. Then continue the finish-first product path with a bounded dropout-aware set-recording pipeline and its recovery/file-integrity tests before spending time on optional mixer polish. Keep the still-open M1 physical-hardware and M2 evidence/controller gates explicit rather than treating CI as a substitute for them.
