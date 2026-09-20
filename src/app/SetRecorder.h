@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Swir
 #pragma once
 
-#include <JuceHeader.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 
 #include <algorithm>
 #include <array>
@@ -88,7 +88,16 @@ public:
         }
 
         accepting.store(true, std::memory_order_release);
-        startThread(juce::Thread::Priority::normal);
+        if (!startThread(juce::Thread::Priority::normal)) {
+            accepting.store(false, std::memory_order_release);
+            {
+                const juce::ScopedLock lock(stateLock);
+                writer.reset();
+            }
+            static_cast<void>(recovery.deleteFile());
+            setError("Recording rejected: background writer thread could not start.");
+            return false;
+        }
         return true;
     }
 
@@ -99,10 +108,12 @@ public:
         accepting.store(false, std::memory_order_release);
         signalThreadShouldExit();
         notify();
-        if (isThreadRunning()) stopThread(10000);
+        if (isThreadRunning() && !stopThread(10000))
+            setError("Recording writer did not stop cleanly within the shutdown bound.");
     }
 
-    // Realtime entry point. No I/O, mutex, allocation or unbounded retry.
+    // Realtime entry point. No I/O, mutex, allocation, condition-variable notify
+    // or unbounded retry. The writer polls the FIFO from its background thread.
     // A full FIFO drops the unavailable tail and records explicit evidence.
     void capture(const float* masterLeft, const float* masterRight, int frames) noexcept {
         if (!accepting.load(std::memory_order_acquire) || frames <= 0) return;
@@ -124,7 +135,6 @@ public:
         }
         fifo.finishedWrite(accepted);
         if (accepted < frames) noteDrop(static_cast<std::uint64_t>(frames - accepted));
-        if (accepted > 0) notify();
     }
 
     [[nodiscard]] bool isRecording() const noexcept {
@@ -165,7 +175,7 @@ private:
             const int available = fifo.getNumReady();
             if (available <= 0) {
                 if (threadShouldExit()) break;
-                wait(20);
+                wait(10);
                 continue;
             }
 
@@ -206,12 +216,17 @@ private:
 
         juce::File finalTarget;
         juce::File recovery;
+        bool flushOk = true;
         {
             const juce::ScopedLock lock(stateLock);
-            if (writer) writer->flush();
+            if (writer) flushOk = writer->flush();
             writer.reset();
             finalTarget = destination;
             recovery = recoveryFile;
+        }
+        if (!flushOk) {
+            writerFailed.store(true, std::memory_order_release);
+            setError("Recording flush failed; the .part recovery file was retained.");
         }
 
         if (!writerFailed.load(std::memory_order_acquire) && recovery.existsAsFile()) {
