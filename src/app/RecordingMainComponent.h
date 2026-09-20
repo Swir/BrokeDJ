@@ -4,28 +4,78 @@
 
 #include "MainComponent.h"
 #include "SetRecorder.h"
+#include "core/MasterPathProcessor.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <memory>
+#include <vector>
 
-// Thin native wrapper that records the already-rendered master outputs 1/2.
-// MainComponent keeps ownership of playback/device logic; SetRecorder owns only
-// the bounded realtime copy and background WAV finalization path.
+// Native post-mix wrapper: records the already-rendered master outputs 1/2,
+// optionally mixes a selected microphone input with bounded ducking, and applies
+// a linked-stereo sample-peak safety limiter before the recording tap.
+// MainComponent keeps ownership of playback/device logic; all disk I/O remains
+// inside SetRecorder's background writer.
 class RecordingMainComponent final : public MainComponent {
 public:
     explicit RecordingMainComponent(bool openAudio = true, bool enableKeyLockResearch = false)
         : MainComponent(openAudio, enableKeyLockResearch) {
         recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
         recordButton.setTooltip(text(
-            "Record master outputs 1/2 to a 24-bit WAV. Disk encoding runs on a background thread; FIFO overflow is counted as a recording dropout instead of blocking playback.",
-            "Nagraj wyjście master 1/2 do WAV 24-bit. Zapis na dysk działa w tle; przepełnienie bufora jest liczone jako dropout nagrania zamiast blokować odtwarzanie."));
+            "Record post-limiter master outputs 1/2 to a 24-bit WAV. Disk encoding runs on a background thread; FIFO overflow is counted as a recording dropout instead of blocking playback.",
+            "Nagraj wyjście master 1/2 po limiterze do WAV 24-bit. Zapis na dysk działa w tle; przepełnienie bufora jest liczone jako dropout nagrania zamiast blokować odtwarzanie."));
         recordButton.onClick = [this] { toggleRecording(); };
         addAndMakeVisible(recordButton);
+
+        limiterButton.setButtonText("LIMIT");
+        limiterButton.setClickingTogglesState(true);
+        limiterButton.setToggleState(true, juce::dontSendNotification);
+        limiterButton.setTooltip(text(
+            "Linked-stereo -1 dBFS sample-peak safety limiter. Zero attack, 120 ms release, no look-ahead or true-peak reconstruction; not presented as a transparent mastering limiter.",
+            "Sprzężony limiter stereo -1 dBFS dla szczytów próbek. Zerowy attack, release 120 ms, bez look-ahead i true-peak; nie jest przedstawiany jako przezroczysty limiter masteringowy."));
+        limiterButton.onClick = [this] {
+            masterPath.setLimiterEnabled(limiterButton.getToggleState());
+        };
+        addAndMakeVisible(limiterButton);
+
+        micButton.setButtonText("MIC");
+        micButton.setClickingTogglesState(true);
+        micButton.setTooltip(text(
+            "Mix the first active audio input into master 1/2 at 0 dB with up to 12 dB music ducking. Enable an input with MIC I/O first.",
+            "Dodaj pierwsze aktywne wejście audio do master 1/2 przy 0 dB z duckingiem muzyki do 12 dB. Najpierw włącz wejście przez MIC I/O."));
+        micButton.onClick = [this] {
+            const bool requested = micButton.getToggleState();
+            if (requested && !microphoneInputAvailable.load(std::memory_order_acquire)) {
+                micButton.setToggleState(false, juce::dontSendNotification);
+                masterPath.setMicrophoneEnabled(false);
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon,
+                    text("Microphone input unavailable", "Wejście mikrofonowe niedostępne"),
+                    text("Open MIC I/O, enable an input channel, then enable MIC again. BrokeDJ does not fold a missing input into the master path.",
+                         "Otwórz MIC I/O, włącz kanał wejściowy, a potem ponownie włącz MIC. BrokeDJ nie dodaje brakującego wejścia do mastera."));
+                return;
+            }
+            masterPath.setMicrophoneEnabled(requested);
+        };
+        addAndMakeVisible(micButton);
+
+        micIoButton.setButtonText("MIC I/O");
+        micIoButton.setTooltip(text(
+            "Select optional input channels and 2–4 output channels. The default launch still requests output only; microphone capture is opt-in.",
+            "Wybierz opcjonalne kanały wejściowe oraz 2–4 kanały wyjściowe. Domyślnie program uruchamia tylko wyjście; mikrofon jest opcjonalny."));
+        micIoButton.onClick = [this] { showMicIoSettings(); };
+        addAndMakeVisible(micIoButton);
+
+        masterPath.setMicrophoneGainDb(0.0f);
+        masterPath.setDuckDepthDb(12.0f);
+        masterPath.setLimiterCeilingDb(-1.0f);
+        masterPath.setLimiterEnabled(true);
     }
 
     ~RecordingMainComponent() override {
         recordChooser.reset();
+        if (micSettings) delete micSettings.getComponent();
         recorder.stop();
     }
 
@@ -33,11 +83,20 @@ public:
         MainComponent::prepareToPlay(samplesPerBlockExpected, sampleRate);
         preparedSampleRate.store(std::isfinite(sampleRate) ? sampleRate : 0.0,
                                  std::memory_order_release);
+        masterPath.prepare(sampleRate);
+        microphoneScratch.assign(static_cast<std::size_t>(std::max(1, samplesPerBlockExpected)), 0.0f);
+
+        bool hasInput = false;
+        if (auto* device = deviceManager.getCurrentAudioDevice())
+            hasInput = device->getActiveInputChannels().countNumberOfSetBits() > 0;
+        microphoneInputAvailable.store(hasInput, std::memory_order_release);
     }
 
     void releaseResources() override {
         recorder.stop();
         preparedSampleRate.store(0.0, std::memory_order_release);
+        microphoneInputAvailable.store(false, std::memory_order_release);
+        masterPath.resetRealtimeState();
         MainComponent::releaseResources();
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
             if (!safe) return;
@@ -47,8 +106,27 @@ public:
     }
 
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override {
+        const bool copyMic = info.buffer != nullptr && info.numSamples > 0
+            && microphoneInputAvailable.load(std::memory_order_acquire)
+            && masterPath.isMicrophoneEnabled()
+            && info.buffer->getNumChannels() > 0
+            && static_cast<std::size_t>(info.numSamples) <= microphoneScratch.size();
+        if (copyMic) {
+            const auto* input = info.buffer->getReadPointer(0, info.startSample);
+            std::copy_n(input, info.numSamples, microphoneScratch.data());
+        }
+
         MainComponent::getNextAudioBlock(info);
-        if (!recorder.isRecording() || info.buffer == nullptr || info.numSamples <= 0) return;
+        if (info.buffer == nullptr || info.numSamples <= 0) return;
+
+        if (info.buffer->getNumChannels() >= 2) {
+            auto* left = info.buffer->getWritePointer(0, info.startSample);
+            auto* right = info.buffer->getWritePointer(1, info.startSample);
+            masterPath.process(copyMic ? microphoneScratch.data() : nullptr,
+                               left, right, info.numSamples);
+        }
+
+        if (!recorder.isRecording()) return;
         if (info.buffer->getNumChannels() < 2) {
             recorder.capture(nullptr, nullptr, info.numSamples);
             return;
@@ -60,13 +138,49 @@ public:
 
     void resized() override {
         MainComponent::resized();
-        constexpr int buttonWidth = 108;
         constexpr int settingsWidth = 165;
-        recordButton.setBounds(getWidth() - 20 - settingsWidth - 8 - buttonWidth,
-                               20, buttonWidth, 34);
+        constexpr int gap = 6;
+        int right = getWidth() - 20 - settingsWidth - 8;
+
+        constexpr int recordWidth = 92;
+        recordButton.setBounds(right - recordWidth, 20, recordWidth, 34);
+        right -= recordWidth + gap;
+
+        constexpr int limiterWidth = 58;
+        limiterButton.setBounds(right - limiterWidth, 20, limiterWidth, 34);
+        right -= limiterWidth + gap;
+
+        constexpr int micWidth = 52;
+        micButton.setBounds(right - micWidth, 20, micWidth, 34);
+        right -= micWidth + gap;
+
+        constexpr int ioWidth = 64;
+        micIoButton.setBounds(right - ioWidth, 20, ioWidth, 34);
     }
 
 private:
+    static juce::String dbfs(float linear) {
+        if (!std::isfinite(linear) || linear <= 1.0e-9f) return "— dBFS";
+        return juce::String(20.0f * std::log10(linear), 1) + " dBFS";
+    }
+
+    void showMicIoSettings() {
+        if (micSettings) {
+            micSettings->toFront(true);
+            return;
+        }
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = text("BrokeDJ / Microphone and outputs", "BrokeDJ / Mikrofon i wyjścia");
+        options.dialogBackgroundColour = juce::Colour(0xff080e1a);
+        options.useNativeTitleBar = true;
+        options.resizable = true;
+        options.content.setOwned(new juce::AudioDeviceSelectorComponent(
+            deviceManager, 0, 2, 2, 4, false, false, true, false));
+        options.content->setSize(620, 500);
+        options.componentToCentreAround = this;
+        micSettings = options.launchAsync();
+    }
+
     void toggleRecording() {
         if (recorder.isRecording()) {
             stopRecordingAndReport();
@@ -110,6 +224,7 @@ private:
             selected = selected.withFileExtension("wav");
         if (selected.exists()) selected = selected.getNonexistentSibling(false);
 
+        masterPath.resetMetrics();
         if (!recorder.start(selected, rate)) {
             const auto state = recorder.snapshot();
             juce::AlertWindow::showMessageBoxAsync(
@@ -123,13 +238,14 @@ private:
         const auto state = recorder.snapshot();
         recordButton.setToggleState(true, juce::dontSendNotification);
         recordButton.setButtonText(text("STOP REC", "STOP NAGR."));
-        recordButton.setTooltip(text("Recording master 1/2 to: ", "Nagrywanie master 1/2 do: ")
+        recordButton.setTooltip(text("Recording post-limiter master 1/2 to: ", "Nagrywanie master 1/2 po limiterze do: ")
                                 + state.destination.getFullPathName());
     }
 
     void stopRecordingAndReport() {
         recorder.stop();
         const auto state = recorder.snapshot();
+        const auto masterState = masterPath.snapshot();
         recordButton.setToggleState(false, juce::dontSendNotification);
         recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
 
@@ -150,7 +266,12 @@ private:
                << text(" | dropped frames: ", " | pominięte klatki: ")
                << static_cast<juce::int64>(state.droppedFrames)
                << text(" | dropout events: ", " | zdarzenia dropout: ")
-               << static_cast<juce::int64>(state.dropoutEvents);
+               << static_cast<juce::int64>(state.dropoutEvents)
+               << text(" | limiter max GR: ", " | limiter max GR: ")
+               << juce::String(masterState.maxGainReductionDb, 1) << " dB"
+               << text(" | max output: ", " | max wyjście: ") << dbfs(masterState.maxOutputPeak);
+        if (masterState.microphoneEnabled)
+            detail << text(" | microphone ducking active", " | ducking mikrofonu aktywny");
         recordButton.setTooltip(detail);
 
         const auto icon = state.finalized && state.dropoutEvents == 0
@@ -164,9 +285,16 @@ private:
     }
 
     SetRecorder recorder;
+    broke::MasterPathProcessor masterPath;
     juce::TextButton recordButton;
+    juce::TextButton limiterButton;
+    juce::TextButton micButton;
+    juce::TextButton micIoButton;
     std::unique_ptr<juce::FileChooser> recordChooser;
+    juce::Component::SafePointer<juce::DialogWindow> micSettings;
+    std::vector<float> microphoneScratch;
     std::atomic<double> preparedSampleRate{0.0};
+    std::atomic<bool> microphoneInputAvailable{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordingMainComponent)
 };
