@@ -267,6 +267,14 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_performance_state_store_tests PRIVATE brokedj_decoder)
         add_test(NAME performance_state_store COMMAND brokedj_performance_state_store_tests)
         set_tests_properties(performance_state_store PROPERTIES TIMEOUT 30)
+
+        add_executable(brokedj_set_recorder_tests tests/SetRecorderTests.cpp)
+        target_include_directories(brokedj_set_recorder_tests PRIVATE src)
+        target_compile_definitions(brokedj_set_recorder_tests PRIVATE JUCE_USE_CURL=0)
+        target_link_libraries(brokedj_set_recorder_tests PRIVATE juce::juce_audio_formats)
+        juce_generate_juce_header(brokedj_set_recorder_tests)
+        add_test(NAME set_recorder COMMAND brokedj_set_recorder_tests)
+        set_tests_properties(set_recorder PROPERTIES TIMEOUT 30)
     endif()
 
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"
