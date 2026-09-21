@@ -1,0 +1,164 @@
+name: M1 hardware witness tool
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/m1_hardware_witness.ps1'
+      - 'docs/M1_HARDWARE_WITNESS.md'
+      - '.github/workflows/m1-witness-tool.yml'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-witness-tool:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Parse PowerShell witness script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\scripts\m1_hardware_witness.ps1').Path,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          Write-Host 'PowerShell parser: OK'
+
+      - name: Validate evidence integrity and negative cases
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ M1 witness fixture executable' -NoNewline -Encoding ascii
+          $appHash = (Get-FileHash -LiteralPath .\BrokeDJ.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $probe = [ordered]@{
+            schema_version = 2
+            mode = 'silent-capability'
+            plays_audio = $false
+            calls_device_open = $false
+            starts_audio_callback = $false
+            creates_device_descriptors = $true
+            backend_count = 1
+            output_device_count = 1
+            four_output_candidate_count = 1
+            unexpected_open_state_count = 0
+            safety_invariants_ok = $true
+            qualification_note = 'Fixture only; no hardware qualification claim.'
+            backends = @(
+              [ordered]@{
+                index = 0
+                name = 'fixture-backend'
+                output_count = 1
+                default_output_index = 0
+                descriptor_details_skipped = $false
+                devices = @()
+              }
+            )
+          }
+          $probe | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-device-probe.json -Encoding utf8
+          $probeHash = (Get-FileHash -LiteralPath .\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $complete = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M1-windows-hardware'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
+            app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = 'unknown'; sha256 = $appHash }
+            deviceProbe = [ordered]@{
+              fileName = 'BrokeDJ-device-probe.json'
+              schemaVersion = 2
+              sha256 = $probeHash
+              outputDeviceCount = 1
+              fourOutputCandidateCount = 1
+              safetyInvariantsOk = $true
+            }
+            checks = [ordered]@{
+              cleanLaunch = $true
+              resizeAndHiDpi = $true
+              importAndPlayback = $true
+              deviceSwitchRecovery = $true
+              fourOutputCueIsolation = $true
+              runtimeErrorReview = $true
+            }
+            privacy = [ordered]@{
+              containsDeviceNames = $false
+              containsTrackPaths = $false
+              containsTrackNames = $false
+              containsSourceMusic = $false
+            }
+          }
+          $complete | ConvertTo-Json -Depth 8 | Set-Content .\complete.json -Encoding utf8
+          & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+            -EvidencePath .\complete.json -ValidateExisting
+          if ($LASTEXITCODE -ne 0) { throw 'Complete M1 witness fixture was rejected.' }
+
+          function Assert-Rejected([object]$Fixture, [string]$Path, [string]$Message, [string]$Probe = '.\BrokeDJ-device-probe.json') {
+            $Fixture | ConvertTo-Json -Depth 8 | Set-Content $Path -Encoding utf8
+            & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
+              -AppPath .\BrokeDJ.exe -ProbePath $Probe -EvidencePath $Path -ValidateExisting
+            if ($LASTEXITCODE -eq 0) { throw $Message }
+            $global:LASTEXITCODE = 0
+          }
+
+          $incomplete = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $incomplete.checks.fourOutputCueIsolation = $false
+          Assert-Rejected $incomplete '.\incomplete.json' 'Incomplete M1 witness fixture was accepted.'
+
+          $spoofedBoolean = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $spoofedBoolean.checks.deviceSwitchRecovery = 'true'
+          Assert-Rejected $spoofedBoolean '.\spoofed-boolean.json' 'String boolean was accepted as M1 evidence.'
+
+          $spoofedCount = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $spoofedCount.deviceProbe.fourOutputCandidateCount = '1'
+          Assert-Rejected $spoofedCount '.\spoofed-count.json' 'String probe count was accepted as M1 evidence.'
+
+          $privacyLeak = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $privacyLeak.privacy.containsDeviceNames = $true
+          Assert-Rejected $privacyLeak '.\privacy-leak.json' 'Privacy-unsafe M1 evidence was accepted.'
+
+          $extraTopLevel = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $extraTopLevel | Add-Member -NotePropertyName deviceName -NotePropertyValue 'private-device'
+          Assert-Rejected $extraTopLevel '.\extra-top-level.json' 'Unexpected M1 evidence field was accepted.'
+
+          $appMismatch = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $appMismatch.app.sha256 = ('b' * 64)
+          Assert-Rejected $appMismatch '.\app-mismatch.json' 'Wrong executable fingerprint was accepted.'
+
+          $probeMismatch = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $probeMismatch.deviceProbe.sha256 = ('c' * 64)
+          Assert-Rejected $probeMismatch '.\probe-mismatch.json' 'Wrong device-probe fingerprint was accepted.'
+
+          $unsafeProbe = $probe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $unsafeProbe.safety_invariants_ok = $false
+          $unsafeProbe | ConvertTo-Json -Depth 8 | Set-Content .\unsafe-probe.json -Encoding utf8
+          $unsafeHash = (Get-FileHash -LiteralPath .\unsafe-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $unsafeEvidence = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $unsafeEvidence.deviceProbe.sha256 = $unsafeHash
+          Assert-Rejected $unsafeEvidence '.\unsafe-probe-evidence.json' 'Unsafe device probe was accepted.' '.\unsafe-probe.json'
+
+          $noFourOutputProbe = $probe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $noFourOutputProbe.four_output_candidate_count = 0
+          $noFourOutputProbe | ConvertTo-Json -Depth 8 | Set-Content .\no-four-output-probe.json -Encoding utf8
+          $noFourOutputHash = (Get-FileHash -LiteralPath .\no-four-output-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $noFourOutputEvidence = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $noFourOutputEvidence.deviceProbe.sha256 = $noFourOutputHash
+          $noFourOutputEvidence.deviceProbe.fourOutputCandidateCount = 0
+          Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output-probe.json'
+
+          Write-Host 'M1 evidence contract: complete fixture accepted; incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch and unsafe-probe cases rejected.'
+          $global:LASTEXITCODE = 0
+          exit 0
