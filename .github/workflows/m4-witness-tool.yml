@@ -1,0 +1,72 @@
+name: M4 witness tool
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/m4_library_witness.ps1'
+      - 'docs/M4_LIBRARY_WITNESS.md'
+      - '.github/workflows/m4-witness-tool.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-witness-tool:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell witness script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\scripts\m4_library_witness.ps1').Path,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          Write-Host 'PowerShell parser: OK'
+
+      - name: Validate complete and incomplete evidence contracts
+        shell: pwsh
+        run: |
+          $complete = @{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M4-library-workflow'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = @{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
+            app = @{ fileName = 'BrokeDJ.exe'; fileVersion = 'fixture'; sha256 = ('a' * 64) }
+            checks = @{
+              launchAndResize = $true
+              importAndSearch = $true
+              tagsAndPlaylists = $true
+              history = $true
+              duplicateAndMissingReview = $true
+              relocate = $true
+              libraryBackupRestore = $true
+              sessionSaveLoad = $true
+            }
+            privacy = @{ containsTrackPaths = $false; containsTrackNames = $false; containsSourceMusic = $false }
+          }
+          $complete | ConvertTo-Json -Depth 6 | Set-Content complete.json -Encoding utf8
+          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
+            -AppPath .\unused.exe -EvidencePath .\complete.json -ValidateExisting
+          if ($LASTEXITCODE -ne 0) { throw 'Complete witness fixture was rejected.' }
+
+          $incomplete = $complete.Clone()
+          $incomplete.checks = @{}
+          foreach ($property in $complete.checks.Keys) { $incomplete.checks[$property] = $complete.checks[$property] }
+          $incomplete.checks.libraryBackupRestore = $false
+          $incomplete | ConvertTo-Json -Depth 6 | Set-Content incomplete.json -Encoding utf8
+          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
+            -AppPath .\unused.exe -EvidencePath .\incomplete.json -ValidateExisting
+          if ($LASTEXITCODE -eq 0) { throw 'Incomplete witness fixture was accepted.' }
+          Write-Host 'Evidence contract: complete accepted, incomplete rejected.'
