@@ -33,6 +33,16 @@ struct TempFile final {
     juce::File file;
 };
 
+struct TempDirectory final {
+    explicit TempDirectory(const juce::String& stem)
+        : directory(juce::File::getSpecialLocation(juce::File::tempDirectory)
+                        .getNonexistentChildFile(stem, {}, false)) {
+        check(directory.createDirectory().wasOk(), "temporary cache directory created");
+    }
+    ~TempDirectory() { directory.deleteRecursively(); }
+    juce::File directory;
+};
+
 juce::AudioBuffer<float> makeTone() {
     juce::AudioBuffer<float> audio(2, generatedFrames);
     constexpr double twoPi = 6.283185307179586476925286766559;
@@ -79,6 +89,14 @@ bool anyPeak(const std::vector<float>& peaks) {
     });
 }
 
+bool samePeaks(const std::vector<float>& first, const std::vector<float>& second) {
+    if (first.size() != second.size()) return false;
+    for (std::size_t i = 0; i < first.size(); ++i) {
+        if (std::abs(first[i] - second[i]) > 0.000001f) return false;
+    }
+    return true;
+}
+
 bool waitForRegion(const std::shared_ptr<broke::StreamCache>& cache,
                    std::int64_t frame, int timeoutMs) {
     cache->request(frame);
@@ -104,18 +122,22 @@ void exerciseDecode(const juce::File& file, const char* label, bool requireLongS
     std::atomic<bool> cancelled{false};
     DecodeOptions memoryOptions;
     memoryOptions.streamingThresholdBytes = std::numeric_limits<std::int64_t>::max();
+    memoryOptions.enableWaveformCache = false;
     auto memory = decodeTrack(file, cancelled, memoryOptions);
     check(memory.error.isEmpty() && memory.clip && memory.clip->valid(), "codec decodes in-memory");
     check(!memory.clip->streamed(), "high threshold keeps fixture in memory");
     check(memory.peaks.size() == 512 && anyPeak(memory.peaks), "codec preview contains signal");
+    check(!memory.waveformCacheHit, "disabled cache cannot report a hit");
 
     DecodeOptions streamOptions;
     streamOptions.streamingThresholdBytes = 1;
+    streamOptions.enableWaveformCache = false;
     auto streamed = decodeTrack(file, cancelled, streamOptions);
     check(streamed.error.isEmpty() && streamed.clip && streamed.clip->valid() && streamed.clip->streamed(),
           "codec decodes through streaming path");
     check(streamed.clip->sourceOwner != nullptr, "streaming reader lifetime is retained");
     check(streamed.peaks.size() == 512 && anyPeak(streamed.peaks), "streaming preview contains signal");
+    check(!streamed.waveformCacheHit, "streaming decode respects disabled cache");
 
     if (requireLongSeek) {
         check(streamed.clip->frames() > static_cast<std::int64_t>(broke::StreamCache::chunkFrames) * 8,
@@ -155,6 +177,50 @@ void runCodecMatrix() {
     exerciseDecode(mp3File.file, "MP3", false);
 }
 
+void runWaveformCacheChecks() {
+    juce::WavAudioFormat wav;
+    TempFile wavFile(".wav", "BrokeDJ-waveform-cache-fixture");
+    writeGeneratedFixture(wav, wavFile);
+    TempDirectory cache("BrokeDJ-waveform-cache");
+
+    std::atomic<bool> cancelled{false};
+    DecodeOptions options;
+    options.streamingThresholdBytes = std::numeric_limits<std::int64_t>::max();
+    options.waveformCacheRoot = cache.directory;
+
+    auto first = decodeTrack(wavFile.file, cancelled, options);
+    check(first.error.isEmpty() && first.clip && first.clip->valid(), "cache fixture first decode succeeds");
+    check(!first.waveformCacheHit && first.peaks.size() == 512 && anyPeak(first.peaks),
+          "first waveform decode generates cache source data");
+    const auto firstPeaks = first.peaks;
+
+    auto second = decodeTrack(wavFile.file, cancelled, options);
+    check(second.error.isEmpty() && second.waveformCacheHit,
+          "unchanged source reuses persisted waveform preview");
+    check(samePeaks(firstPeaks, second.peaks), "cached waveform matches generated preview");
+
+    const auto futureMtime = wavFile.file.getLastModificationTime() + juce::RelativeTime::seconds(120.0);
+    check(wavFile.file.setLastModificationTime(futureMtime), "fixture mtime changes for cache invalidation");
+    auto changed = decodeTrack(wavFile.file, cancelled, options);
+    check(changed.error.isEmpty() && !changed.waveformCacheHit,
+          "changed source identity invalidates cached waveform");
+    auto changedHit = decodeTrack(wavFile.file, cancelled, options);
+    check(changedHit.error.isEmpty() && changedHit.waveformCacheHit,
+          "regenerated waveform becomes reusable after identity change");
+
+    juce::Array<juce::File> entries;
+    cache.directory.findChildFiles(entries, juce::File::findFiles, false, "*.waveform");
+    check(entries.size() == 1, "cache keeps one path-keyed waveform record");
+    check(entries[0].replaceWithText("corrupt-cache\n"), "cache corruption fixture writes");
+    auto recovered = decodeTrack(wavFile.file, cancelled, options);
+    check(recovered.error.isEmpty() && !recovered.waveformCacheHit
+              && recovered.peaks.size() == 512 && anyPeak(recovered.peaks),
+          "corrupt cache fails closed and waveform is regenerated");
+    auto recoveredHit = decodeTrack(wavFile.file, cancelled, options);
+    check(recoveredHit.error.isEmpty() && recoveredHit.waveformCacheHit,
+          "regenerated cache is reusable after corruption recovery");
+}
+
 void runReverseDirectionReadAhead() {
     juce::WavAudioFormat wav;
     TempFile wavFile(".wav", "BrokeDJ-reverse-read-ahead-fixture");
@@ -163,6 +229,7 @@ void runReverseDirectionReadAhead() {
     std::atomic<bool> cancelled{false};
     DecodeOptions options;
     options.streamingThresholdBytes = 1;
+    options.enableWaveformCache = false;
     auto result = decodeTrack(wavFile.file, cancelled, options);
     check(result.error.isEmpty() && result.clip && result.clip->streamed(),
           "reverse read-ahead fixture uses streaming path");
@@ -193,6 +260,7 @@ void runSlowReaderPreemption() {
     DecodeOptions options;
     options.streamingThresholdBytes = 1;
     options.readAheadDelayMs = 120;
+    options.enableWaveformCache = false;
     auto result = decodeTrack(wavFile.file, cancelled, options);
     check(result.error.isEmpty() && result.clip && result.clip->streamed(), "slow reader uses streaming path");
 
@@ -228,7 +296,9 @@ void runFailureChecks() {
     };
     check(bad.file.replaceWithData(garbage.data(), garbage.size()), "invalid fixture writes");
     std::atomic<bool> cancelled{false};
-    auto invalid = decodeTrack(bad.file, cancelled);
+    DecodeOptions noCache;
+    noCache.enableWaveformCache = false;
+    auto invalid = decodeTrack(bad.file, cancelled, noCache);
     check(!invalid.clip && invalid.error.isNotEmpty(), "invalid file fails with diagnostic");
 
     juce::WavAudioFormat wav;
@@ -237,6 +307,7 @@ void runFailureChecks() {
     cancelled = true;
     DecodeOptions forcedStream;
     forcedStream.streamingThresholdBytes = 1;
+    forcedStream.enableWaveformCache = false;
     auto stopped = decodeTrack(wavFile.file, cancelled, forcedStream);
     check(!stopped.clip && stopped.error.containsIgnoreCase("cancel"), "cancelled import stops publication");
 }
@@ -245,6 +316,7 @@ void runFailureChecks() {
 int main() {
     try {
         runCodecMatrix();
+        runWaveformCacheChecks();
         runReverseDirectionReadAhead();
         runSlowReaderPreemption();
         runFailureChecks();
