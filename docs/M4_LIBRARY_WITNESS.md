@@ -6,7 +6,7 @@ This witness closes the remaining manual interaction gate for BrokeDJ's M4 libra
 
 Use disposable copies or non-critical local tracks. BrokeDJ must not delete or overwrite the original music while exercising duplicate review, missing-file handling, relocation, backup/restore or session persistence.
 
-The witness recorder stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. Review any evidence before publishing it.
+The witness recorder stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. Review any evidence before publishing it. The evidence schema is closed: validation rejects unrecognized top-level, environment, app, check or privacy fields so free-form notes or accidental path/name fields cannot silently become part of an accepted witness record.
 
 ## Prepare
 
@@ -59,7 +59,7 @@ From a source checkout:
   -ValidateExisting
 ```
 
-`-ValidateExisting` validates the BrokeDJ M4 schema/scope, Windows 11 x64 environment fields, strict JSON boolean types, privacy flags and every required workflow result. It also recalculates the selected `AppPath` filename, file version and SHA-256 and requires all three to match the saved evidence. This catches accidental review against the wrong executable and rejects simple type-spoofing such as the string `"true"` being substituted for a real JSON boolean.
+`-ValidateExisting` validates the exact BrokeDJ M4 field set, schema/scope, Windows 11 x64 environment fields, strict JSON integer/string/boolean types, privacy flags and every required workflow result. It also recalculates the selected `AppPath` filename, file version and SHA-256 and requires all three to match the saved evidence. This catches accidental review against the wrong executable and rejects simple type-spoofing such as the string `"true"` being substituted for a real JSON boolean or `"26100"` for an integer Windows build. Unexpected fields are rejected rather than preserved as accepted evidence.
 
 The JSON is still an auditable user witness record, not a digital signature or proof that a person performed an action. It remains editable by whoever controls the file. Treat legitimacy as the combination of the user-controlled workflow, exact executable fingerprint, CI state and review history; manually changing a failed result does not create valid qualification evidence.
 
