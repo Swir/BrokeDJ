@@ -16,14 +16,20 @@ import sqlite3
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 TRACK_COUNT = 5_000
 HISTORY_COUNT = 12_000
+PLAYLIST_COUNT = 8
+TAG_COUNT = 32
+PLAYLIST_ITEM_COUNT = TRACK_COUNT
+TRACK_TAG_COUNT = TRACK_COUNT
+PLAYLIST_BROWSE_LIMIT = 500
 SMOKE_TIMEOUT_SECONDS = 30
+DUPLICATE_HASH = "d" * 64
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     raise RuntimeError(message)
 
 
@@ -104,21 +110,103 @@ def require_production_schema(connection: sqlite3.Connection) -> int:
     return version
 
 
-def seed_fixture(database: Path) -> tuple[int, int, int]:
+def playlist_query(
+    connection: sqlite3.Connection,
+    playlist_id: int,
+    query: str,
+    limit: int = PLAYLIST_BROWSE_LIMIT,
+) -> list[int]:
+    """Mirror the bounded SQL semantics used by the native playlist browser."""
+    limit = max(1, min(int(limit), PLAYLIST_BROWSE_LIMIT))
+    prefix = (
+        "SELECT t.id FROM playlist_items pi JOIN tracks t ON t.id=pi.track_id "
+        "WHERE pi.playlist_id=? "
+    )
+    parameters: list[Any] = [playlist_id]
+    if query == "is:duplicate":
+        predicate = (
+            "AND t.missing=0 AND t.content_hash<>'' "
+            "AND t.content_hash IN(SELECT content_hash FROM tracks WHERE missing=0 "
+            "AND content_hash<>'' GROUP BY content_hash HAVING COUNT(*)>1) "
+        )
+    elif query == "is:missing":
+        predicate = "AND t.missing=1 "
+    else:
+        predicate = (
+            "AND (?='' OR instr(lower(t.title),lower(?))>0 "
+            "OR instr(lower(t.artist),lower(?))>0 "
+            "OR instr(lower(t.album),lower(?))>0 "
+            "OR instr(lower(t.path),lower(?))>0 "
+            "OR EXISTS(SELECT 1 FROM track_tags tt JOIN tags g ON g.id=tt.tag_id "
+            "WHERE tt.track_id=t.id AND instr(lower(g.name),lower(?))>0)) "
+        )
+        parameters.extend([query] * 6)
+    parameters.append(limit)
+    rows = connection.execute(
+        prefix + predicate + "ORDER BY pi.position,pi.rowid LIMIT ?;",
+        parameters,
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def validate_playlist_browse_contract(connection: sqlite3.Connection) -> dict[str, int]:
+    playlist_one_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM playlist_items WHERE playlist_id=1;"
+        ).fetchone()[0]
+    )
+    if playlist_one_count <= PLAYLIST_BROWSE_LIMIT:
+        fail("playlist fixture must exceed the native browse limit")
+
+    bounded = playlist_query(connection, 1, "")
+    if len(bounded) != PLAYLIST_BROWSE_LIMIT:
+        fail("playlist browse did not enforce the 500-row result bound")
+
+    title_match = playlist_query(connection, 1, "Scale Track 00000")
+    if title_match != [1]:
+        fail(f"playlist title search mismatch: {title_match}")
+
+    tag_match = playlist_query(connection, 1, "tag-00")
+    if not tag_match or 1 not in tag_match:
+        fail("playlist tag search did not resolve the seeded tag relationship")
+
+    duplicate_match = playlist_query(connection, 1, "is:duplicate")
+    if duplicate_match != [1, 9]:
+        fail(f"playlist duplicate directive mismatch: {duplicate_match}")
+
+    missing_match = playlist_query(connection, 1, "is:missing")
+    if missing_match != [17]:
+        fail(f"playlist missing directive mismatch: {missing_match}")
+
+    return {
+        "playlist_1_rows": playlist_one_count,
+        "bounded_rows": len(bounded),
+        "title_matches": len(title_match),
+        "tag_matches": len(tag_match),
+        "duplicate_matches": len(duplicate_match),
+        "missing_matches": len(missing_match),
+    }
+
+
+def seed_fixture(database: Path) -> tuple[int, dict[str, int]]:
     connection = sqlite3.connect(database, timeout=2.5)
     try:
         version = require_production_schema(connection)
-        existing_tracks = int(connection.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0])
-        existing_history = int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0])
-        if existing_tracks != 0 or existing_history != 0:
-            fail(
-                "refusing to seed a non-empty library database "
-                f"(tracks={existing_tracks}, history={existing_history})"
-            )
+        existing = {
+            "tracks": int(connection.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0]),
+            "history": int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0]),
+            "playlists": int(connection.execute("SELECT COUNT(*) FROM playlists;").fetchone()[0]),
+            "playlist_items": int(connection.execute("SELECT COUNT(*) FROM playlist_items;").fetchone()[0]),
+            "tags": int(connection.execute("SELECT COUNT(*) FROM tags;").fetchone()[0]),
+            "track_tags": int(connection.execute("SELECT COUNT(*) FROM track_tags;").fetchone()[0]),
+        }
+        if any(existing.values()):
+            fail(f"refusing to seed a non-empty library database: {existing}")
 
         tracks = []
         for index in range(TRACK_COUNT):
             synthetic_path = f"C:/BrokeDJ-CI/nonexistent/track-{index:05d}.wav"
+            content_hash = DUPLICATE_HASH if index in (0, 8) else f"{index + 1:064x}"
             tracks.append(
                 (
                     synthetic_path,
@@ -132,8 +220,8 @@ def seed_fixture(database: Path) -> tuple[int, int, int]:
                     "",
                     1000 + index,
                     1000 + index,
-                    f"{index + 1:064x}",
-                    0,
+                    content_hash,
+                    1 if index == 16 else 0,
                 )
             )
 
@@ -152,37 +240,94 @@ def seed_fixture(database: Path) -> tuple[int, int, int]:
                 "INSERT INTO history(track_id,played_at_ms) VALUES(?,?);",
                 history,
             )
-
-        track_count = int(connection.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0])
-        history_count = int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0])
-        if track_count != TRACK_COUNT or history_count != HISTORY_COUNT:
-            fail(
-                "large-library fixture count mismatch "
-                f"(tracks={track_count}, history={history_count})"
+            playlists = [
+                (index + 1, f"Scale Playlist {index + 1:02d}", 200_000 + index)
+                for index in range(PLAYLIST_COUNT)
+            ]
+            connection.executemany(
+                "INSERT INTO playlists(id,name,created_at_ms) VALUES(?,?,?);",
+                playlists,
             )
+            playlist_positions = [0] * PLAYLIST_COUNT
+            playlist_items = []
+            for index in range(TRACK_COUNT):
+                playlist_index = index % PLAYLIST_COUNT
+                playlist_items.append(
+                    (playlist_index + 1, index + 1, playlist_positions[playlist_index])
+                )
+                playlist_positions[playlist_index] += 1
+            connection.executemany(
+                "INSERT INTO playlist_items(playlist_id,track_id,position) VALUES(?,?,?);",
+                playlist_items,
+            )
+            tags = [(index + 1, f"tag-{index:02d}") for index in range(TAG_COUNT)]
+            connection.executemany("INSERT INTO tags(id,name) VALUES(?,?);", tags)
+            track_tags = [
+                (index + 1, (index % TAG_COUNT) + 1)
+                for index in range(TRACK_COUNT)
+            ]
+            connection.executemany(
+                "INSERT INTO track_tags(track_id,tag_id) VALUES(?,?);",
+                track_tags,
+            )
+
+        counts = {
+            "tracks": int(connection.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0]),
+            "history": int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0]),
+            "playlists": int(connection.execute("SELECT COUNT(*) FROM playlists;").fetchone()[0]),
+            "playlist_items": int(connection.execute("SELECT COUNT(*) FROM playlist_items;").fetchone()[0]),
+            "tags": int(connection.execute("SELECT COUNT(*) FROM tags;").fetchone()[0]),
+            "track_tags": int(connection.execute("SELECT COUNT(*) FROM track_tags;").fetchone()[0]),
+        }
+        expected = {
+            "tracks": TRACK_COUNT,
+            "history": HISTORY_COUNT,
+            "playlists": PLAYLIST_COUNT,
+            "playlist_items": PLAYLIST_ITEM_COUNT,
+            "tags": TAG_COUNT,
+            "track_tags": TRACK_TAG_COUNT,
+        }
+        if counts != expected:
+            fail(f"large-library fixture count mismatch: got={counts} expected={expected}")
+        playlist_contract = validate_playlist_browse_contract(connection)
         quick_check = str(connection.execute("PRAGMA quick_check;").fetchone()[0])
         if quick_check != "ok":
             fail(f"SQLite quick_check failed after fixture seeding: {quick_check}")
-        return version, track_count, history_count
+        return version, counts | playlist_contract
     finally:
         connection.close()
 
 
-def verify_fixture(database: Path) -> tuple[int, int, int, str]:
+def verify_fixture(database: Path) -> tuple[int, dict[str, int], str]:
     connection = sqlite3.connect(database, timeout=2.5)
     try:
         version = require_production_schema(connection)
-        track_count = int(connection.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0])
-        history_count = int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0])
-        quick_check = str(connection.execute("PRAGMA quick_check;").fetchone()[0])
-        if track_count != TRACK_COUNT or history_count != HISTORY_COUNT:
+        counts = {
+            "tracks": int(connection.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0]),
+            "history": int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0]),
+            "playlists": int(connection.execute("SELECT COUNT(*) FROM playlists;").fetchone()[0]),
+            "playlist_items": int(connection.execute("SELECT COUNT(*) FROM playlist_items;").fetchone()[0]),
+            "tags": int(connection.execute("SELECT COUNT(*) FROM tags;").fetchone()[0]),
+            "track_tags": int(connection.execute("SELECT COUNT(*) FROM track_tags;").fetchone()[0]),
+        }
+        expected = {
+            "tracks": TRACK_COUNT,
+            "history": HISTORY_COUNT,
+            "playlists": PLAYLIST_COUNT,
+            "playlist_items": PLAYLIST_ITEM_COUNT,
+            "tags": TAG_COUNT,
+            "track_tags": TRACK_TAG_COUNT,
+        }
+        if counts != expected:
             fail(
                 "native application changed deterministic fixture cardinality unexpectedly "
-                f"(tracks={track_count}, history={history_count})"
+                f"(got={counts} expected={expected})"
             )
+        playlist_contract = validate_playlist_browse_contract(connection)
+        quick_check = str(connection.execute("PRAGMA quick_check;").fetchone()[0])
         if quick_check != "ok":
             fail(f"SQLite quick_check failed after native lifecycle smoke: {quick_check}")
-        return version, track_count, history_count, quick_check
+        return version, counts | playlist_contract, quick_check
     finally:
         connection.close()
 
@@ -219,28 +364,40 @@ def main() -> int:
             f"{database}"
         )
 
-    schema_version, seeded_tracks, seeded_history = seed_fixture(database)
+    schema_version, seeded = seed_fixture(database)
     loaded_ms, loaded = run_gui_smoke(executable, workdir)
-    schema_after, tracks_after, history_after, quick_check = verify_fixture(database)
+    schema_after, after, quick_check = verify_fixture(database)
     if schema_after != schema_version:
         fail("schema version changed unexpectedly during the native lifecycle smoke")
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "native-large-library-lifecycle",
         "plays_audio": False,
         "opens_audio_device": False,
         "fixture": {
-            "tracks": seeded_tracks,
-            "history_rows": seeded_history,
-            "database_schema_version": schema_version,
+            "tracks": seeded["tracks"],
+            "history_rows": seeded["history"],
+            "playlists": seeded["playlists"],
+            "playlist_items": seeded["playlist_items"],
+            "tags": seeded["tags"],
+            "track_tags": seeded["track_tags"],
             "synthetic_paths_only": True,
             "music_files_created_or_modified": False,
         },
+        "playlist_browse_contract": {
+            "result_limit": PLAYLIST_BROWSE_LIMIT,
+            "playlist_1_rows": seeded["playlist_1_rows"],
+            "bounded_rows": seeded["bounded_rows"],
+            "title_matches": seeded["title_matches"],
+            "tag_matches": seeded["tag_matches"],
+            "duplicate_matches": seeded["duplicate_matches"],
+            "missing_matches": seeded["missing_matches"],
+        },
         "preflight_gui_elapsed_ms": round(preflight_ms, 3),
         "large_library_gui_elapsed_ms": round(loaded_ms, 3),
-        "post_smoke_tracks": tracks_after,
-        "post_smoke_history_rows": history_after,
+        "post_smoke": after,
+        "database_schema_version": schema_version,
         "sqlite_quick_check": quick_check,
         "gui_contract": {
             "mode": loaded.get("mode"),
@@ -250,9 +407,10 @@ def main() -> int:
         "success": True,
         "qualification_note": (
             "Automated Windows no-audio startup/resize evidence with a 5,000-track/12,000-history "
-            "local SQLite fixture. Elapsed time is diagnostic only. This does not replace an "
-            "interactive Windows 11 import/search review, HiDPI review, physical audio-device "
-            "qualification, controller testing, listening, or live-readiness gates."
+            "local SQLite fixture plus deterministic playlist/tag membership and bounded playlist-query "
+            "semantics. Elapsed time is diagnostic only. This does not replace an interactive Windows 11 "
+            "import/search/tag/playlist review, HiDPI review, physical audio-device qualification, controller "
+            "testing, listening, or live-readiness gates."
         ),
     }
     report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

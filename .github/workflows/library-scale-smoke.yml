@@ -44,17 +44,40 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Development EXE large-library smoke failed' }
 
           $report = Get-Content build/windows/diagnostics/library-scale-development.json -Raw | ConvertFrom-Json
-          if ($report.schema_version -ne 1 -or
+          if ($report.schema_version -ne 2 -or
               $report.mode -ne 'native-large-library-lifecycle' -or
               $report.plays_audio -ne $false -or
               $report.opens_audio_device -ne $false -or
+              $report.database_schema_version -ne 2 -or
               $report.fixture.tracks -ne 5000 -or
               $report.fixture.history_rows -ne 12000 -or
+              $report.fixture.playlists -ne 8 -or
+              $report.fixture.playlist_items -ne 5000 -or
+              $report.fixture.tags -ne 32 -or
+              $report.fixture.track_tags -ne 5000 -or
               $report.fixture.synthetic_paths_only -ne $true -or
               $report.fixture.music_files_created_or_modified -ne $false -or
-              $report.post_smoke_tracks -ne 5000 -or
-              $report.post_smoke_history_rows -ne 12000 -or
+              $report.playlist_browse_contract.result_limit -ne 500 -or
+              $report.playlist_browse_contract.playlist_1_rows -ne 625 -or
+              $report.playlist_browse_contract.bounded_rows -ne 500 -or
+              $report.playlist_browse_contract.title_matches -ne 1 -or
+              $report.playlist_browse_contract.tag_matches -ne 157 -or
+              $report.playlist_browse_contract.duplicate_matches -ne 2 -or
+              $report.playlist_browse_contract.missing_matches -ne 1 -or
+              $report.post_smoke.tracks -ne 5000 -or
+              $report.post_smoke.history -ne 12000 -or
+              $report.post_smoke.playlists -ne 8 -or
+              $report.post_smoke.playlist_items -ne 5000 -or
+              $report.post_smoke.tags -ne 32 -or
+              $report.post_smoke.track_tags -ne 5000 -or
+              $report.post_smoke.playlist_1_rows -ne 625 -or
+              $report.post_smoke.bounded_rows -ne 500 -or
+              $report.post_smoke.title_matches -ne 1 -or
+              $report.post_smoke.tag_matches -ne 157 -or
+              $report.post_smoke.duplicate_matches -ne 2 -or
+              $report.post_smoke.missing_matches -ne 1 -or
               $report.sqlite_quick_check -ne 'ok' -or
+              $report.gui_contract.mode -ne 'native-resize-lifecycle' -or
               $report.gui_contract.success -ne $true -or
               $report.gui_contract.step_count -ne 4 -or
               $report.success -ne $true) {
@@ -85,12 +108,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Staged EXE large-library smoke failed' }
 
           $report = Get-Content build/windows/diagnostics/library-scale-staged.json -Raw | ConvertFrom-Json
-          if ($report.schema_version -ne 1 -or
+          if ($report.schema_version -ne 2 -or
               $report.mode -ne 'native-large-library-lifecycle' -or
+              $report.plays_audio -ne $false -or
+              $report.opens_audio_device -ne $false -or
+              $report.database_schema_version -ne 2 -or
               $report.fixture.tracks -ne 5000 -or
               $report.fixture.history_rows -ne 12000 -or
+              $report.fixture.playlists -ne 8 -or
+              $report.fixture.playlist_items -ne 5000 -or
+              $report.fixture.tags -ne 32 -or
+              $report.fixture.track_tags -ne 5000 -or
+              $report.fixture.synthetic_paths_only -ne $true -or
+              $report.fixture.music_files_created_or_modified -ne $false -or
+              $report.playlist_browse_contract.result_limit -ne 500 -or
+              $report.playlist_browse_contract.playlist_1_rows -ne 625 -or
+              $report.playlist_browse_contract.bounded_rows -ne 500 -or
+              $report.playlist_browse_contract.title_matches -ne 1 -or
+              $report.playlist_browse_contract.tag_matches -ne 157 -or
+              $report.playlist_browse_contract.duplicate_matches -ne 2 -or
+              $report.playlist_browse_contract.missing_matches -ne 1 -or
+              $report.post_smoke.tracks -ne 5000 -or
+              $report.post_smoke.history -ne 12000 -or
+              $report.post_smoke.playlists -ne 8 -or
+              $report.post_smoke.playlist_items -ne 5000 -or
+              $report.post_smoke.tags -ne 32 -or
+              $report.post_smoke.track_tags -ne 5000 -or
+              $report.post_smoke.playlist_1_rows -ne 625 -or
+              $report.post_smoke.bounded_rows -ne 500 -or
+              $report.post_smoke.title_matches -ne 1 -or
+              $report.post_smoke.tag_matches -ne 157 -or
+              $report.post_smoke.duplicate_matches -ne 2 -or
+              $report.post_smoke.missing_matches -ne 1 -or
               $report.sqlite_quick_check -ne 'ok' -or
+              $report.gui_contract.mode -ne 'native-resize-lifecycle' -or
               $report.gui_contract.success -ne $true -or
+              $report.gui_contract.step_count -ne 4 -or
               $report.success -ne $true) {
             throw 'Staged EXE large-library smoke JSON contract failed'
           }

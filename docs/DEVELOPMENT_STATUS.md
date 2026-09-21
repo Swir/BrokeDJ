@@ -4,10 +4,14 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `f8084c9e51b79c76676f0e20b81a14598d647893`. PR #65 (`M4: qualify large-library history and backfill bounds`) was integrated after exact-head workflow `35570973881` completed successfully; post-merge main workflow `35572013939` also completed successfully.
-- Active development: PR #66, branch `feat/m4-native-library-scale-smoke`. Functional package head before this checkpoint documentation commit: `75d68a862445830bca6506a0eb894f0a266db397`.
-- Exact-head workflows started for that functional head: normal build/test run `35572867859` and focused native large-library run `35572867933`. This documentation commit changes the PR head, so both workflows must pass again for the final head before merge.
-- The package adds a Windows-native, no-audio lifecycle qualification against a deterministic 5,000-track / 12,000-history local SQLite fixture for both the development EXE and a freshly staged EXE.
+- Default branch baseline: `main` at `bd04efadb412bbc506a09b88a541bebeb3275f2d`. PR #66 (`M4: add native large-library lifecycle qualification`) was integrated only after exact-head build/test run `35573083933` and focused native-library run `35573083971` completed successfully. Post-merge main runs `35576169961` (build/test) and `35576169949` (native library scale smoke) also completed successfully.
+- Active development: PR #67, branch `feat/m4-playlist-browse-filter`. Latest functional head before this checkpoint documentation commit: `4a885ccfea9a46fcc234d89d06d34012e822cd39`.
+- PR #67 adds a bounded native playlist selector to the local library, playlist-scoped title/artist/album/path/tag search, `is:duplicate` / `is:missing` review inside a playlist, selected-track playlist membership visibility and refreshed playlist counts after membership edits.
+- Playlist catalog refresh uses a dedicated background `ThreadPool`, independent from the cancellable playlist-browse queue, so an immediate post-edit search cannot cancel a queued catalog-count refresh. The catalog worker is generation-checked and drained during shutdown.
+- Exact-head build/test run `35578928463` completed successfully for head `a354a7af93a9156245412d3b87d783bcebdb6469`. Focused native-library run `35578928484` failed after the development EXE and harness themselves completed successfully because the workflow still validated report schema v1 / obsolete flat post-smoke fields while the deterministic playlist fixture intentionally emits schema v2 / nested post-smoke data.
+- Functional commit `4a885ccfea9a46fcc234d89d06d34012e822cd39` repairs that CI contract: both development and staged-package gates now require schema v2, production database schema v2, all deterministic 5,000-track / 12,000-history / playlist / tag cardinalities, the bounded 500-row playlist-query contract, nested post-smoke invariants, SQLite `quick_check=ok`, native no-audio GUI lifecycle success and explicit no-audio/no-device-open safety flags.
+- The focused large-library harness seeds deterministic playlist/tag relationships in addition to 5,000 tracks and 12,000 history rows and verifies the same 500-row playlist-query bound and review directives used by the native UI contract. No synthetic music files are created or modified.
+- This checkpoint documentation commit changes the PR head after the workflow repair. Required exact-final-head build/test and focused native-library workflows must therefore pass again before integration; a green earlier head is not sufficient.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 is materially advancing but is not complete.
 - GitHub Releases remains empty; no public BrokeDJ release is qualified by this checkpoint.
 
@@ -17,28 +21,30 @@ This file is the durable engineering checkpoint for the current repository state
 - Readable local imports receive streaming SHA-256 content identity outside the realtime callback; relocation refreshes that identity, while `is:duplicate` and `is:missing` remain non-destructive review filters.
 - Real playback-start edges are recorded on a background worker into the local SQLite history, and a native PL/EN `HISTORY` window reads a bounded recent-history view without database work in the audio callback.
 - Legacy non-missing rows with empty hashes receive a cancellable background backfill limited to 64 candidates per application start; disconnected paths are marked missing without deleting or overwriting source audio.
-- Large-library automated coverage now seeds the production schema with 5,000 tracks and 12,000 history rows, requires the 250-row history window to stay bounded, verifies two independent 64-candidate legacy maintenance passes, normalizes Windows/Linux missing-file classification and rejects unstable file snapshots before publishing SHA-256 identity.
+- Large-library automated coverage seeds the production schema with 5,000 tracks and 12,000 history rows, keeps recent-history reads bounded, verifies bounded legacy maintenance passes, normalizes Windows/Linux missing-file classification and rejects unstable file snapshots before publishing SHA-256 identity.
+- PR #66 added a Windows-native no-audio lifecycle qualification against that deterministic production-schema fixture for both the development EXE and a freshly staged EXE, with `PRAGMA quick_check=ok` and unchanged fixture cardinality required after the native lifecycle.
 - Four-deck plus mixer session snapshots are bounded/versioned/checksummed, support verified backup recovery, and keep session I/O outside the realtime callback.
 - Native Save Session / Load Session / verified `.bak` recovery pauses transports, uses the normal asynchronous decoder, reconnects moved library records when possible and does not auto-resume saved playback.
 - Empty saved session slots use the realtime-safe deck-eject mailbox: the audio callback never deletes the retired clip and deterministic realtime tests require zero heap allocations/deallocations during clear adoption.
 - Persistent waveform previews cache only bounded normalized peak data with source size/mtime validation. Cache I/O stays in decoder/background work and stale/corrupt entries fail closed to regeneration.
 
-## Active M4 native large-library qualification package
+## Active M4 playlist-browsing package
 
-- `scripts/library_scale_smoke.py` first runs the real BrokeDJ Windows EXE with `--smoke-test` and no audio device, then verifies that the app-created database is the production migrated schema before seeding any fixture rows.
-- The harness refuses a non-empty database and refuses destructive local use outside GitHub Actions unless `--allow-local` is explicitly supplied. All fixture paths are synthetic and deliberately nonexistent; it does not create, overwrite or inspect user music files.
-- It seeds exactly 5,000 synthetic track rows and 12,000 playback-history rows, reruns the native resize/lifecycle smoke, then requires unchanged fixture cardinality plus `PRAGMA quick_check=ok`.
-- A focused Windows workflow runs the same qualification against the normal development EXE and then against a freshly staged EXE, retaining JSON evidence as a CI artifact.
-- The native smoke requires `plays_audio=false`, `opens_audio_device=false`, four deterministic resize/lifecycle steps and valid content bounds. Elapsed startup/lifecycle timings are diagnostic only and are not performance, latency or hardware guarantees.
-- The existing full build workflow remains unchanged and still gates Linux ASan/UBSan/progress/package checks plus Windows x64 build/full CTest/audio diagnostics/no-audio GUI/device/package smoke.
+- The native PL/EN library panel exposes `All tracks` plus a bounded playlist catalog with per-playlist track counts. Playlist catalog reads use a separate read-only SQLite connection and remain outside the audio callback.
+- Playlist catalog refresh and playlist browsing use independent worker queues. Search cancellation is therefore limited to stale browse jobs and cannot cancel post-edit catalog refreshes.
+- Selecting a playlist executes bounded background reads (maximum 500 rows) in playlist order. Normal search covers title, artist, album, local path and tags; `is:duplicate` and `is:missing` keep their non-destructive review meaning inside the selected playlist.
+- Selection metadata reports both tags and playlist memberships. Membership edits refresh the selected-track metadata and playlist catalog rather than mutating source music.
+- The native large-library fixture adds eight playlists, 5,000 playlist-item rows, 32 tags and 5,000 track-tag rows. Deterministic checks cover the 500-row bound, title search, tag search, duplicate review and missing-file review before and after the native no-audio lifecycle.
+- The focused Windows workflow applies the fixture to the real development EXE and then to a freshly staged EXE. It never creates or edits music files and does not open an audio device.
+- Workflow-side report validation is deliberately pinned to the harness schema and deterministic fixture contract so a future intentional report/schema change must update its gate instead of silently accepting stale field names.
 
 ## Gates still open
 
-- PR #66 remains development-only until both the normal exact-final-head GitHub Actions workflow and the focused native large-library workflow are green for the same final head.
-- Automated native startup/resize evidence with a populated local database does not replace a user-controlled Windows 11 large-library import/search/tag/playlist interaction witness. M4 remains open until that broader workflow and recovery UX are reviewed.
+- PR #67 remains development-only until required exact-final-head GitHub Actions checks are green for the same final head. A green earlier functional head is not sufficient after checkpoint/documentation changes.
+- Automated native startup/resize and SQL-contract evidence with a populated local database does not replace a user-controlled Windows 11 library import/search/tag/playlist interaction witness. M4 remains open until that broader workflow and recovery UX are reviewed.
 - Automated build/tests do not replace Windows 11 clean-machine/manual HiDPI review, physical audio-device switching, master/cue/booth isolation, reviewed listening, controller input or live reliability qualification.
 - Representative music-domain BPM/key/grid evidence, production key-lock listening/latency, controller profiles, long-session soak and physical recording/microphone evidence remain separate gates.
 
 ## Next largest step
 
-Require green exact-final-head PR #66 runs and fix any regression before integration. Then continue M4 FINISH FIRST with a repeatable user-controlled Windows 11 library/import/search/tag/playlist witness and recovery review rather than widening optional DSP scope.
+Require green exact-final-head PR #67 build/test and focused native-library runs, fixing any regression before integration. After this internally automatable playlist package is green, keep the user-controlled Windows M4 interaction/recovery witness explicit and finish any remaining internally closable M4 acceptance work before widening scope.
