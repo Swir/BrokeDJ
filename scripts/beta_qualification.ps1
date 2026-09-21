@@ -46,7 +46,7 @@ function Resolve-Leaf([string]$Path, [string]$ExpectedName) {
 }
 
 function Resolve-WitnessScript([string]$PackagedName, [string]$RepositoryName) {
-    $root = Split-Path -Parent $MyInvocation.ScriptName
+    $root = $PSScriptRoot
     if ([string]::IsNullOrWhiteSpace($root)) { $root = (Get-Location).Path }
     foreach ($name in @($PackagedName, $RepositoryName)) {
         $candidate = Join-Path $root $name
@@ -194,6 +194,11 @@ function Read-Qualification([System.IO.FileInfo]$App,
 }
 
 $app = Resolve-Leaf -Path $AppPath -ExpectedName 'BrokeDJ.exe'
+if (-not $ValidateExisting) {
+    Assert-NotCi
+    Assert-Windows11X64
+}
+
 $probe = Resolve-Leaf -Path $ProbePath -ExpectedName 'BrokeDJ-device-probe.json'
 $evidenceFiles = @{
     m1 = Resolve-Leaf -Path $M1EvidencePath -ExpectedName 'BrokeDJ-M1-Hardware-Witness.json'
@@ -216,9 +221,6 @@ if ($ValidateExisting) {
     Read-Qualification -App $app -Probe $probe -EvidenceFiles $evidenceFiles -Path $QualificationPath
     exit 0
 }
-
-Assert-NotCi
-Assert-Windows11X64
 
 $qualification = [ordered]@{
     schema = 1
