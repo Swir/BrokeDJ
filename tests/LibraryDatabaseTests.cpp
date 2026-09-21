@@ -48,6 +48,14 @@ broke::library::TrackRecord track(std::string path, std::string title,
     return value;
 }
 
+void writeBytes(const std::filesystem::path& path, std::string_view bytes) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    check(static_cast<bool>(output), "open content-hash fixture");
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    check(static_cast<bool>(output), "write content-hash fixture");
+}
+
 void createVersionOneDatabase(const std::filesystem::path& path) {
     sqlite3* db = nullptr;
     check(sqlite3_open_v2(path.string().c_str(), &db,
@@ -179,25 +187,35 @@ void testLibraryWorkflow() {
     check(duplicates.size() == 1 && duplicates.front().contentHash == "sha256-A"
               && duplicates.front().tracks.size() == 2,
           "content hash finds duplicate group");
+    const auto duplicateSearch = db.search(broke::library::LibraryDatabase::duplicateSearchDirective,
+                                           32, &error);
+    check(duplicateSearch.size() == 2, "duplicate directive exposes duplicate candidates");
 
     check(db.markMissing(*alphaCopyId, true, &error), "mark duplicate missing");
     duplicates = db.duplicateGroups(32, &error);
     check(duplicates.empty(), "missing file excluded from duplicate candidates");
+    const auto missingSearch = db.search(broke::library::LibraryDatabase::missingSearchDirective,
+                                         32, &error);
+    check(missingSearch.size() == 1 && missingSearch.front().id == *alphaCopyId,
+          "missing directive exposes disconnected tracks");
     check(db.markMissing(*alphaCopyId, false, &error), "restore duplicate presence");
 
     check(db.markMissing(*alphaId, true, &error), "mark source missing");
     const auto relocatedPath = temp.path / "moved" / "Alpha.wav";
-    check(db.relocateTrack(*alphaId, relocatedPath, 654321, 123456789, &error),
+    writeBytes(relocatedPath, "relocated-alpha");
+    const auto relocatedSize = static_cast<std::int64_t>(std::filesystem::file_size(relocatedPath));
+    check(db.relocateTrack(*alphaId, relocatedPath, relocatedSize, 123456789, &error),
           "relocate source");
     const auto relocated = db.search("Alpha.wav", 20, &error);
     bool relocatedFound = false;
     for (const auto& item : relocated) {
         if (item.id == *alphaId) {
             relocatedFound = item.path.find("moved/Alpha.wav") != std::string::npos
-                && !item.missing && item.fileSize == 654321;
+                && !item.missing && item.fileSize == relocatedSize
+                && item.contentHash.size() == 64;
         }
     }
-    check(relocatedFound, "relocation preserves id and updates path identity");
+    check(relocatedFound, "relocation preserves id and refreshes content identity");
     check(db.tagsForTrack(*alphaId, &error).size() == 2,
           "relocation preserves tag relationships");
     check(db.playlistTracks(*playlist, &error).front().id == *alphaId,
@@ -225,6 +243,80 @@ void testLibraryWorkflow() {
     check(!db.restoreFrom(futureBackup, &error), "future backup schema rejected before replacement");
     check(db.search("", 100, nullptr).size() == 3,
           "future backup rejection leaves live database intact");
+}
+
+void testAutomaticContentHashing() {
+    TempDirectory temp;
+    std::string error;
+    broke::library::LibraryDatabase db;
+    check(db.open(temp.path / "hash-library.sqlite3", &error), "open hash library");
+
+    const auto first = temp.path / "music" / "first.wav";
+    const auto second = temp.path / "music" / "second.wav";
+    writeBytes(first, "abc");
+    writeBytes(second, "abc");
+
+    auto firstTrack = track(first.generic_string(), "First", "Fixture", "");
+    firstTrack.fileSize = 3;
+    auto secondTrack = track(second.generic_string(), "Second", "Fixture", "");
+    secondTrack.fileSize = 3;
+    const auto firstId = db.upsertTrack(firstTrack, &error);
+    const auto secondId = db.upsertTrack(secondTrack, &error);
+    check(firstId && secondId, "hash local imports");
+
+    const auto rows = db.search("Fixture", 10, &error);
+    check(rows.size() == 2, "hashed imports remain searchable");
+    constexpr std::string_view abcSha256 =
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    check(rows[0].contentHash == abcSha256 && rows[1].contentHash == abcSha256,
+          "local import hash matches SHA-256 reference vector");
+
+    auto duplicates = db.search(broke::library::LibraryDatabase::duplicateSearchDirective,
+                                10, &error);
+    check(duplicates.size() == 2, "automatic hashes feed duplicate review");
+
+    const auto moved = temp.path / "moved" / "first.wav";
+    writeBytes(moved, "different-content");
+    const auto movedSize = static_cast<std::int64_t>(std::filesystem::file_size(moved));
+    check(db.relocateTrack(*firstId, moved, movedSize, 222, &error),
+          "relocation rehashes selected file");
+    duplicates = db.search(broke::library::LibraryDatabase::duplicateSearchDirective, 10, &error);
+    check(duplicates.empty(), "relocation content change removes stale duplicate identity");
+
+    const auto movedResult = db.search("moved", 10, &error);
+    check(movedResult.size() == 1 && movedResult.front().contentHash.size() == 64
+              && movedResult.front().contentHash != abcSha256,
+          "relocated track stores refreshed SHA-256");
+}
+
+void testSyntheticLargeLibraryQueries() {
+    TempDirectory temp;
+    std::string error;
+    broke::library::LibraryDatabase db;
+    check(db.open(temp.path / "large-library.sqlite3", &error), "open synthetic large library");
+
+    constexpr int trackCount = 1500;
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < trackCount; ++i) {
+        auto value = track("virtual/track-" + std::to_string(i) + ".wav",
+                           "Track " + std::to_string(i), "Stress Artist",
+                           i % 300 == 0 ? "stress-duplicate" : "hash-" + std::to_string(i));
+        if (i == trackCount - 1) value.title = "Needle Track 1499";
+        check(db.upsertTrack(value, &error).has_value(), "populate synthetic large library");
+    }
+
+    const auto bounded = db.search("", 100, &error);
+    check(bounded.size() == 100, "large-library search respects result bound");
+    const auto needle = db.search("Needle Track 1499", 10, &error);
+    check(needle.size() == 1, "large-library targeted search resolves final row");
+    const auto duplicates = db.search(broke::library::LibraryDatabase::duplicateSearchDirective,
+                                      100, &error);
+    check(duplicates.size() == 5, "large-library duplicate directive remains bounded and correct");
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    std::cout << "Synthetic library diagnostic: " << trackCount
+              << " rows inserted and queried in " << elapsed << " ms\n";
 }
 
 void testMigration() {
@@ -358,6 +450,8 @@ void testSessionPersistence() {
 int main() {
     try {
         testLibraryWorkflow();
+        testAutomaticContentHashing();
+        testSyntheticLargeLibraryQueries();
         testMigration();
         testFutureSchemaRejected();
         testSessionPersistence();

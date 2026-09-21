@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Swir
 #include "LibraryDatabase.h"
+#include "FileContentHash.h"
 
 #include <sqlite3.h>
 
@@ -17,17 +18,13 @@ namespace {
 class Statement final {
 public:
     Statement(sqlite3* db, const char* sql) {
-        if (db != nullptr)
-            result = sqlite3_prepare_v2(db, sql, -1, &statement, nullptr);
+        if (db != nullptr) result = sqlite3_prepare_v2(db, sql, -1, &statement, nullptr);
     }
-    ~Statement() {
-        if (statement != nullptr) sqlite3_finalize(statement);
-    }
+    ~Statement() { if (statement != nullptr) sqlite3_finalize(statement); }
     Statement(const Statement&) = delete;
     Statement& operator=(const Statement&) = delete;
 
     [[nodiscard]] bool ready() const noexcept { return result == SQLITE_OK && statement != nullptr; }
-    [[nodiscard]] int status() const noexcept { return result; }
     [[nodiscard]] sqlite3_stmt* get() const noexcept { return statement; }
 
 private:
@@ -54,6 +51,14 @@ void setError(std::string* output, std::string_view message) {
 [[nodiscard]] std::string pathUtf8(const std::filesystem::path& path) {
     const auto value = path.lexically_normal().generic_u8string();
     return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+}
+
+[[nodiscard]] std::filesystem::path pathFromUtf8(std::string_view value) {
+    std::u8string utf8;
+    utf8.reserve(value.size());
+    for (const auto ch : value)
+        utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(ch)));
+    return std::filesystem::path(utf8);
 }
 
 [[nodiscard]] std::int64_t nowUnixMs() noexcept {
@@ -101,8 +106,7 @@ constexpr const char* trackSelectColumns =
         setError(error, db, "prepare quick_check");
         return false;
     }
-    const int step = sqlite3_step(statement.get());
-    if (step != SQLITE_ROW) {
+    if (sqlite3_step(statement.get()) != SQLITE_ROW) {
         setError(error, db, "run quick_check");
         return false;
     }
@@ -140,13 +144,26 @@ constexpr const char* trackSelectColumns =
     return true;
 }
 
-} // namespace
-
-LibraryDatabase::~LibraryDatabase() {
-    close();
+[[nodiscard]] std::optional<std::string> populateHashWhenLocalFileExists(
+    const TrackRecord& track, std::string* error) {
+    if (!track.contentHash.empty()) return track.contentHash;
+    const auto path = pathFromUtf8(track.path);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return std::string{};
+    const auto hash = sha256File(path);
+    if (!hash) {
+        setError(error, "Unable to read local track for content hashing");
+        return std::nullopt;
+    }
+    return *hash;
 }
 
-LibraryDatabase::LibraryDatabase(LibraryDatabase&& other) noexcept : db(std::exchange(other.db, nullptr)) {}
+} // namespace
+
+LibraryDatabase::~LibraryDatabase() { close(); }
+
+LibraryDatabase::LibraryDatabase(LibraryDatabase&& other) noexcept
+    : db(std::exchange(other.db, nullptr)) {}
 
 LibraryDatabase& LibraryDatabase::operator=(LibraryDatabase&& other) noexcept {
     if (this == &other) return *this;
@@ -175,8 +192,7 @@ bool LibraryDatabase::open(const std::filesystem::path& file, std::string* error
     const auto path = pathUtf8(file);
     sqlite3* opened = nullptr;
     const int result = sqlite3_open_v2(path.c_str(), &opened,
-                                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
-                                           | SQLITE_OPEN_FULLMUTEX,
+                                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                                        nullptr);
     if (result != SQLITE_OK || opened == nullptr) {
         setError(error, opened, "open library database");
@@ -209,8 +225,7 @@ bool LibraryDatabase::configure(std::string* error) {
     }
     return exec("PRAGMA foreign_keys=ON;"
                 "PRAGMA journal_mode=WAL;"
-                "PRAGMA synchronous=NORMAL;",
-                error);
+                "PRAGMA synchronous=NORMAL;", error);
 }
 
 bool LibraryDatabase::exec(const char* sql, std::string* error) const {
@@ -298,8 +313,7 @@ bool LibraryDatabase::migrate(std::string* error) {
             "track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,"
             "played_at_ms INTEGER NOT NULL"
             ");"
-            "PRAGMA user_version=1;",
-            error);
+            "PRAGMA user_version=1;", error);
         if (!ok || !exec("COMMIT;", error)) {
             (void) exec("ROLLBACK;", nullptr);
             return false;
@@ -311,14 +325,12 @@ bool LibraryDatabase::migrate(std::string* error) {
         if (!exec("BEGIN IMMEDIATE;", error)) return false;
         const bool ok = exec(
             "ALTER TABLE tracks ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';"
-            "ALTER TABLE tracks ADD COLUMN missing INTEGER NOT NULL DEFAULT 0 "
-            "CHECK(missing IN (0,1));"
+            "ALTER TABLE tracks ADD COLUMN missing INTEGER NOT NULL DEFAULT 0 CHECK(missing IN (0,1));"
             "CREATE INDEX idx_tracks_artist_title ON tracks(artist COLLATE NOCASE,title COLLATE NOCASE);"
             "CREATE INDEX idx_tracks_content_hash ON tracks(content_hash) WHERE content_hash<>'';"
             "CREATE INDEX idx_history_played_at ON history(played_at_ms DESC);"
             "CREATE INDEX idx_playlist_items_order ON playlist_items(playlist_id,position);"
-            "PRAGMA user_version=2;",
-            error);
+            "PRAGMA user_version=2;", error);
         if (!ok || !exec("COMMIT;", error)) {
             (void) exec("ROLLBACK;", nullptr);
             return false;
@@ -336,6 +348,9 @@ std::optional<std::int64_t> LibraryDatabase::upsertTrack(const TrackRecord& trac
         setError(error, "Invalid library track metadata");
         return std::nullopt;
     }
+
+    const auto resolvedHash = populateHashWhenLocalFileExists(track, error);
+    if (!resolvedHash) return std::nullopt;
 
     Statement statement(db,
         "INSERT INTO tracks(path,file_size,modified_ns,title,artist,album,duration_seconds,bpm,"
@@ -364,10 +379,9 @@ std::optional<std::int64_t> LibraryDatabase::upsertTrack(const TrackRecord& trac
         bound = bound && sqlite3_bind_double(statement.get(), 8, *track.bpm) == SQLITE_OK;
     else
         bound = bound && sqlite3_bind_null(statement.get(), 8) == SQLITE_OK;
-    bound = bound
-        && bindText(statement.get(), 9, track.musicalKey)
+    bound = bound && bindText(statement.get(), 9, track.musicalKey)
         && sqlite3_bind_int64(statement.get(), 10, now) == SQLITE_OK
-        && bindText(statement.get(), 11, track.contentHash)
+        && bindText(statement.get(), 11, *resolvedHash)
         && sqlite3_bind_int(statement.get(), 12, track.missing ? 1 : 0) == SQLITE_OK;
     if (!bound || sqlite3_step(statement.get()) != SQLITE_DONE) {
         setError(error, db, "upsert library track");
@@ -402,19 +416,31 @@ bool LibraryDatabase::markMissing(std::int64_t trackId, bool missing, std::strin
 bool LibraryDatabase::relocateTrack(std::int64_t trackId, const std::filesystem::path& newPath,
                                     std::int64_t fileSize, std::int64_t modifiedNs,
                                     std::string* error) {
-    if (newPath.empty() || fileSize < 0) {
+    if (db == nullptr || newPath.empty() || fileSize < 0) {
         setError(error, "Invalid relocated track metadata");
         return false;
     }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(newPath, ec) || ec) {
+        setError(error, "Relocated track file does not exist");
+        return false;
+    }
+    const auto hash = sha256File(newPath);
+    if (!hash) {
+        setError(error, "Unable to read relocated track for content hashing");
+        return false;
+    }
+
     const auto path = pathUtf8(newPath);
     Statement statement(db,
-        "UPDATE tracks SET path=?1,file_size=?2,modified_ns=?3,missing=0,last_seen_at_ms=?4 "
-        "WHERE id=?5;");
+        "UPDATE tracks SET path=?1,file_size=?2,modified_ns=?3,content_hash=?4,missing=0,last_seen_at_ms=?5 "
+        "WHERE id=?6;");
     if (!statement.ready() || !bindText(statement.get(), 1, path)
         || sqlite3_bind_int64(statement.get(), 2, fileSize) != SQLITE_OK
         || sqlite3_bind_int64(statement.get(), 3, modifiedNs) != SQLITE_OK
-        || sqlite3_bind_int64(statement.get(), 4, nowUnixMs()) != SQLITE_OK
-        || sqlite3_bind_int64(statement.get(), 5, trackId) != SQLITE_OK
+        || !bindText(statement.get(), 4, *hash)
+        || sqlite3_bind_int64(statement.get(), 5, nowUnixMs()) != SQLITE_OK
+        || sqlite3_bind_int64(statement.get(), 6, trackId) != SQLITE_OK
         || sqlite3_step(statement.get()) != SQLITE_DONE) {
         setError(error, db, "relocate library track");
         return false;
@@ -434,7 +460,57 @@ std::vector<TrackRecord> LibraryDatabase::search(std::string_view query, std::si
         return result;
     }
     limit = std::clamp<std::size_t>(limit, 1, 1000);
-    const std::string sql = std::string("SELECT DISTINCT ") + trackSelectColumns
+
+    std::string sql;
+    if (query == duplicateSearchDirective) {
+        sql = std::string("SELECT ") + trackSelectColumns
+            + " FROM tracks t WHERE t.missing=0 AND t.content_hash<>'' "
+              "AND t.content_hash IN(SELECT content_hash FROM tracks WHERE missing=0 "
+              "AND content_hash<>'' GROUP BY content_hash HAVING COUNT(*)>1) "
+              "ORDER BY t.content_hash,t.artist COLLATE NOCASE,t.title COLLATE NOCASE,t.id LIMIT ?1;";
+        Statement statement(db, sql.c_str());
+        if (!statement.ready()
+            || sqlite3_bind_int64(statement.get(), 1, static_cast<sqlite3_int64>(limit)) != SQLITE_OK) {
+            setError(error, db, "prepare duplicate library search");
+            return result;
+        }
+        for (;;) {
+            const int step = sqlite3_step(statement.get());
+            if (step == SQLITE_DONE) break;
+            if (step != SQLITE_ROW) {
+                setError(error, db, "search duplicate library tracks");
+                result.clear();
+                break;
+            }
+            result.push_back(readTrack(statement.get()));
+        }
+        return result;
+    }
+
+    if (query == missingSearchDirective) {
+        sql = std::string("SELECT ") + trackSelectColumns
+            + " FROM tracks t WHERE t.missing=1 "
+              "ORDER BY t.artist COLLATE NOCASE,t.title COLLATE NOCASE,t.id LIMIT ?1;";
+        Statement statement(db, sql.c_str());
+        if (!statement.ready()
+            || sqlite3_bind_int64(statement.get(), 1, static_cast<sqlite3_int64>(limit)) != SQLITE_OK) {
+            setError(error, db, "prepare missing-track library search");
+            return result;
+        }
+        for (;;) {
+            const int step = sqlite3_step(statement.get());
+            if (step == SQLITE_DONE) break;
+            if (step != SQLITE_ROW) {
+                setError(error, db, "search missing library tracks");
+                result.clear();
+                break;
+            }
+            result.push_back(readTrack(statement.get()));
+        }
+        return result;
+    }
+
+    sql = std::string("SELECT DISTINCT ") + trackSelectColumns
         + " FROM tracks t WHERE ?1='' "
           "OR instr(lower(t.title),lower(?1))>0 "
           "OR instr(lower(t.artist),lower(?1))>0 "
@@ -540,8 +616,7 @@ std::optional<std::int64_t> LibraryDatabase::createPlaylist(std::string_view nam
         return std::nullopt;
     }
     Statement insert(db,
-        "INSERT INTO playlists(name,created_at_ms) VALUES(?1,?2) "
-        "ON CONFLICT(name) DO NOTHING;");
+        "INSERT INTO playlists(name,created_at_ms) VALUES(?1,?2) ON CONFLICT(name) DO NOTHING;");
     if (!insert.ready() || !bindText(insert.get(), 1, name)
         || sqlite3_bind_int64(insert.get(), 2, nowUnixMs()) != SQLITE_OK
         || sqlite3_step(insert.get()) != SQLITE_DONE) {
@@ -635,8 +710,7 @@ std::vector<HistoryEntry> LibraryDatabase::recentHistory(std::size_t limit,
     std::vector<HistoryEntry> result;
     limit = std::clamp<std::size_t>(limit, 1, 1000);
     Statement statement(db,
-        "SELECT id,track_id,played_at_ms FROM history "
-        "ORDER BY played_at_ms DESC,id DESC LIMIT ?1;");
+        "SELECT id,track_id,played_at_ms FROM history ORDER BY played_at_ms DESC,id DESC LIMIT ?1;");
     if (!statement.ready()
         || sqlite3_bind_int64(statement.get(), 1, static_cast<sqlite3_int64>(limit)) != SQLITE_OK) {
         setError(error, db, "prepare play history query");
@@ -650,10 +724,9 @@ std::vector<HistoryEntry> LibraryDatabase::recentHistory(std::size_t limit,
             result.clear();
             break;
         }
-        result.push_back(HistoryEntry{
-            sqlite3_column_int64(statement.get(), 0),
-            sqlite3_column_int64(statement.get(), 1),
-            sqlite3_column_int64(statement.get(), 2)});
+        result.push_back(HistoryEntry{sqlite3_column_int64(statement.get(), 0),
+                                      sqlite3_column_int64(statement.get(), 1),
+                                      sqlite3_column_int64(statement.get(), 2)});
     }
     return result;
 }
@@ -708,8 +781,7 @@ bool LibraryDatabase::backupTo(const std::filesystem::path& destination,
     sqlite3* target = nullptr;
     const auto path = pathUtf8(destination);
     const int opened = sqlite3_open_v2(path.c_str(), &target,
-                                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
-                                           | SQLITE_OPEN_FULLMUTEX,
+                                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                                        nullptr);
     if (opened != SQLITE_OK || target == nullptr) {
         setError(error, target, "open backup destination");
@@ -736,8 +808,7 @@ bool LibraryDatabase::restoreFrom(const std::filesystem::path& source,
     sqlite3* input = nullptr;
     const auto path = pathUtf8(source);
     const int opened = sqlite3_open_v2(path.c_str(), &input,
-                                       SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
-                                       nullptr);
+                                       SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
     if (opened != SQLITE_OK || input == nullptr) {
         setError(error, input, "open backup source");
         if (input != nullptr) sqlite3_close_v2(input);

@@ -43,6 +43,8 @@ struct DuplicateGroup final {
 class LibraryDatabase final {
 public:
     static constexpr int currentSchemaVersion = 2;
+    static constexpr std::string_view duplicateSearchDirective = "is:duplicate";
+    static constexpr std::string_view missingSearchDirective = "is:missing";
 
     LibraryDatabase() = default;
     ~LibraryDatabase();
