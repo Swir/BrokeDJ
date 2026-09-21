@@ -137,6 +137,8 @@ jobs:
           Copy-Item docs/M1_HARDWARE_WITNESS.md dist/BrokeDJ/M1-HARDWARE-WITNESS.md
           Copy-Item scripts/m2_keylock_listening_witness.ps1 dist/BrokeDJ/M2-KEYLOCK-LISTENING-WITNESS.ps1
           Copy-Item docs/M2_KEYLOCK_LISTENING_WITNESS.md dist/BrokeDJ/M2-KEYLOCK-LISTENING-WITNESS.md
+          Copy-Item scripts/m3_mixer_recording_witness.ps1 dist/BrokeDJ/M3-MIXER-RECORDING-WITNESS.ps1
+          Copy-Item docs/M3_MIXER_RECORDING_WITNESS.md dist/BrokeDJ/M3-MIXER-RECORDING-WITNESS.md
           Copy-Item scripts/m4_library_witness.ps1 dist/BrokeDJ/M4-LIBRARY-WITNESS.ps1
           Copy-Item docs/M4_LIBRARY_WITNESS.md dist/BrokeDJ/M4-LIBRARY-WITNESS.md
           Set-Content -Path dist/BrokeDJ/SOURCE-COMMIT.txt -Value '${{ github.event.pull_request.head.sha || github.sha }}' -NoNewline -Encoding utf8
@@ -172,6 +174,8 @@ jobs:
           if (-not (Test-Path 'package/BrokeDJ/M1-HARDWARE-WITNESS.md')) { throw 'Packaged M1 witness guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/M2-KEYLOCK-LISTENING-WITNESS.ps1')) { throw 'Packaged M2 key-lock listening witness script missing' }
           if (-not (Test-Path 'package/BrokeDJ/M2-KEYLOCK-LISTENING-WITNESS.md')) { throw 'Packaged M2 key-lock listening witness guide missing' }
+          if (-not (Test-Path 'package/BrokeDJ/M3-MIXER-RECORDING-WITNESS.ps1')) { throw 'Packaged M3 mixer/recording witness script missing' }
+          if (-not (Test-Path 'package/BrokeDJ/M3-MIXER-RECORDING-WITNESS.md')) { throw 'Packaged M3 mixer/recording witness guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.ps1')) { throw 'Packaged M4 witness script missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.md')) { throw 'Packaged M4 witness guide missing' }
       - name: Confirm staged M2 listening witness cannot generate evidence in CI
@@ -188,6 +192,26 @@ jobs:
               -NoCriticalArtifactsObserved -RuntimeErrorReview
             if ($LASTEXITCODE -eq 0) { throw 'Packaged M2 witness generated listening evidence in CI.' }
             if (Test-Path 'BrokeDJ-M2-keylock-listening.json') { throw 'Packaged M2 witness wrote evidence in CI.' }
+            $global:LASTEXITCODE = 0
+          }
+          finally {
+            Pop-Location
+          }
+      - name: Confirm staged M3 mixer/recording witness cannot generate evidence in CI
+        shell: pwsh
+        run: |
+          Push-Location package/BrokeDJ
+          try {
+            Remove-Item 'BrokeDJ-M3-mixer-recording.json' -ErrorAction SilentlyContinue
+            & pwsh -NoProfile -File .\M3-MIXER-RECORDING-WITNESS.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath .\BrokeDJ-M3-mixer-recording.json `
+              -ContinuousSessionMinutes 60 -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+              -EqListeningReviewed -GainStagingReviewed -CrossfaderLawsReviewed `
+              -LimiterBehaviorReviewed -MicrophoneInputReviewed -DuckingReviewed `
+              -BoothRoutingReviewed -CueIsolationPreserved -RecordingCreated `
+              -RecordingPlaybackReviewed -ZeroRecordingDropoutsObserved -RuntimeErrorReview
+            if ($LASTEXITCODE -eq 0) { throw 'Packaged M3 witness generated qualification evidence in CI.' }
+            if (Test-Path 'BrokeDJ-M3-mixer-recording.json') { throw 'Packaged M3 witness wrote evidence in CI.' }
             $global:LASTEXITCODE = 0
           }
           finally {
