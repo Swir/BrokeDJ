@@ -162,6 +162,12 @@ inline void setError(std::string* output, std::string_view message) {
     return hash.finishHex();
 }
 
+[[nodiscard]] inline bool filesystemStatusMeansMissing(const std::error_code& error) noexcept {
+    return !error
+        || error == std::errc::no_such_file_or_directory
+        || error == std::errc::not_a_directory;
+}
+
 constexpr const char* trackColumns =
     "t.id,t.path,t.file_size,t.modified_ns,t.title,t.artist,t.album,"
     "t.duration_seconds,t.bpm,t.musical_key,t.content_hash,t.missing";
@@ -279,7 +285,12 @@ constexpr const char* trackColumns =
         ++result.scanned;
         const auto file = detail::pathFromUtf8(candidate.path);
         std::error_code filesystemError;
-        if (!std::filesystem::is_regular_file(file, filesystemError) || filesystemError) {
+        const bool regularFile = std::filesystem::is_regular_file(file, filesystemError);
+        if (!regularFile) {
+            if (!detail::filesystemStatusMeansMissing(filesystemError)) {
+                ++result.failed;
+                continue;
+            }
             detail::Statement markMissing(database,
                 "UPDATE tracks SET missing=1 WHERE id=?1 AND path=?2 AND content_hash='' AND missing=0;");
             if (!markMissing.ready()
@@ -302,6 +313,11 @@ constexpr const char* trackColumns =
             ++result.failed;
             continue;
         }
+        const auto modifiedBefore = std::filesystem::last_write_time(file, filesystemError);
+        if (filesystemError) {
+            ++result.failed;
+            continue;
+        }
         const auto hash = detail::sha256FileCancellable(file, cancelled);
         if (!hash) {
             if (cancelled != nullptr && cancelled->load(std::memory_order_acquire)) {
@@ -312,7 +328,16 @@ constexpr const char* trackColumns =
             continue;
         }
         const auto sizeAfter = std::filesystem::file_size(file, filesystemError);
-        if (filesystemError || sizeBefore != sizeAfter) {
+        if (filesystemError) {
+            ++result.failed;
+            continue;
+        }
+        const auto modifiedAfter = std::filesystem::last_write_time(file, filesystemError);
+        if (filesystemError) {
+            ++result.failed;
+            continue;
+        }
+        if (sizeBefore != sizeAfter || modifiedBefore != modifiedAfter) {
             ++result.skipped;
             continue;
         }
