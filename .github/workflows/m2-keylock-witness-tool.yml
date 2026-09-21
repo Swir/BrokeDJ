@@ -1,0 +1,147 @@
+name: M2 key-lock listening witness tool
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/m2_keylock_listening_witness.ps1'
+      - 'docs/M2_KEYLOCK_LISTENING_WITNESS.md'
+      - '.github/workflows/m2-keylock-witness-tool.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-witness-tool:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Parse PowerShell witness script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\scripts\m2_keylock_listening_witness.ps1').Path,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          Write-Host 'PowerShell parser: OK'
+
+      - name: Validate listening evidence contract and negative cases
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ M2 listening witness fixture executable' -NoNewline -Encoding ascii
+          $appFile = Get-Item -LiteralPath .\BrokeDJ.exe
+          $appHash = (Get-FileHash -LiteralPath .\BrokeDJ.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $appVersion = $appFile.VersionInfo.FileVersion
+          if ([string]::IsNullOrWhiteSpace($appVersion)) { $appVersion = 'unknown' }
+
+          $complete = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M2-key-lock-listening'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = [ordered]@{
+              windowsBuild = 26100
+              architecture = 'X64'
+              processArchitecture = 'X64'
+            }
+            app = [ordered]@{
+              fileName = 'BrokeDJ.exe'
+              fileVersion = [string]$appVersion
+              sha256 = $appHash
+            }
+            material = [ordered]@{
+              representativeTrackCount = 3
+              userOwnedOrLicensed = $true
+            }
+            checks = [ordered]@{
+              normalBaselineReviewed = $true
+              slowKeyLockReviewed = $true
+              fastKeyLockReviewed = $true
+              transportFallbackReviewed = $true
+              pitchStabilityAcceptable = $true
+              noCriticalArtifactsObserved = $true
+              runtimeErrorReview = $true
+            }
+            privacy = [ordered]@{
+              containsDeviceNames = $false
+              containsTrackPaths = $false
+              containsTrackNames = $false
+              containsSourceMusic = $false
+            }
+          }
+
+          $complete | ConvertTo-Json -Depth 8 | Set-Content .\complete.json -Encoding utf8
+          & pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -EvidencePath .\complete.json -ValidateExisting
+          if ($LASTEXITCODE -ne 0) { throw 'Complete M2 listening fixture was rejected.' }
+
+          function Assert-Rejected([object]$Fixture, [string]$Path, [string]$Message) {
+            $Fixture | ConvertTo-Json -Depth 8 | Set-Content $Path -Encoding utf8
+            & pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath $Path -ValidateExisting
+            if ($LASTEXITCODE -eq 0) { throw $Message }
+            $global:LASTEXITCODE = 0
+          }
+
+          $tooFewTracks = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $tooFewTracks.material.representativeTrackCount = 2
+          Assert-Rejected $tooFewTracks '.\too-few-tracks.json' 'Too-small representative set was accepted.'
+
+          $unlicensed = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $unlicensed.material.userOwnedOrLicensed = $false
+          Assert-Rejected $unlicensed '.\unlicensed.json' 'Unlicensed-material attestation was accepted.'
+
+          $spoofedBoolean = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $spoofedBoolean.checks.pitchStabilityAcceptable = 'true'
+          Assert-Rejected $spoofedBoolean '.\spoofed-boolean.json' 'String boolean was accepted.'
+
+          $spoofedCount = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $spoofedCount.material.representativeTrackCount = '3'
+          Assert-Rejected $spoofedCount '.\spoofed-count.json' 'String representative count was accepted.'
+
+          $incomplete = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $incomplete.checks.noCriticalArtifactsObserved = $false
+          Assert-Rejected $incomplete '.\incomplete.json' 'Incomplete listening evidence was accepted.'
+
+          $privacyLeak = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $privacyLeak.privacy.containsTrackPaths = $true
+          Assert-Rejected $privacyLeak '.\privacy-leak.json' 'Privacy-unsafe evidence was accepted.'
+
+          $extraField = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $extraField | Add-Member -NotePropertyName trackName -NotePropertyValue 'private'
+          Assert-Rejected $extraField '.\extra-field.json' 'Unexpected free-form evidence field was accepted.'
+
+          $appMismatch = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $appMismatch.app.sha256 = ('b' * 64)
+          Assert-Rejected $appMismatch '.\app-mismatch.json' 'Wrong executable fingerprint was accepted.'
+
+          $wrongArchitecture = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $wrongArchitecture.environment.architecture = 'X86'
+          Assert-Rejected $wrongArchitecture '.\wrong-architecture.json' 'Non-x64 evidence was accepted.'
+
+          # Generation mode itself must refuse CI, even if every manual-looking
+          # switch is supplied. CI may validate fixtures but may never mint a
+          # complete listening witness.
+          & pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -EvidencePath .\must-not-exist.json `
+            -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+            -NormalBaselineReviewed -SlowKeyLockReviewed -FastKeyLockReviewed `
+            -TransportFallbackReviewed -PitchStabilityAcceptable `
+            -NoCriticalArtifactsObserved -RuntimeErrorReview
+          if ($LASTEXITCODE -eq 0) { throw 'CI was allowed to generate M2 listening evidence.' }
+          if (Test-Path .\must-not-exist.json) { throw 'CI generation wrote an evidence file.' }
+          $global:LASTEXITCODE = 0
+
+          Write-Host 'M2 witness contract: complete fixture accepted; incomplete, spoofed, privacy-unsafe, wrong-identity/environment and CI-generation cases rejected.'
+          exit 0
