@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Seed and qualify BrokeDJ's native no-audio lifecycle against a large local library.
 
-This harness is intentionally destructive to the selected *CI fixture* database.  It refuses
-normal local execution unless --allow-local is supplied.  It never opens or modifies music
+This harness is intentionally destructive to the selected *CI fixture* database. It refuses
+normal local execution unless --allow-local is supplied. It never opens or modifies music
 files: every synthetic track path points at a deliberately nonexistent CI-only location.
 """
 
@@ -74,7 +74,7 @@ def run_gui_smoke(executable: Path, workdir: Path) -> tuple[float, dict[str, Any
 
 
 def require_production_schema(connection: sqlite3.Connection) -> int:
-    required_tables = {"tracks", "history", "tags", "track_tags", "playlists", "playlist_tracks"}
+    required_tables = {"tracks", "history", "tags", "track_tags", "playlists", "playlist_items"}
     tables = {
         str(row[0])
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table';")
@@ -212,7 +212,7 @@ def main() -> int:
     workdir.mkdir(parents=True, exist_ok=True)
     report.parent.mkdir(parents=True, exist_ok=True)
 
-    preflight_ms, preflight = run_gui_smoke(executable, workdir)
+    preflight_ms, _preflight = run_gui_smoke(executable, workdir)
     if not database.is_file():
         fail(
             "preflight GUI launch did not create the expected production library database: "
