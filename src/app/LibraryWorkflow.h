@@ -66,6 +66,7 @@ private:
         bool active = false;
         bool adoptionMarkerArmed = false;
         bool awaitingRelocation = false;
+        bool ejecting = false;
         juce::File file;
         juce::File originalFile;
         broke::session::DeckState state;
@@ -512,27 +513,38 @@ private:
         missingDecks = 0;
         failedDecks = 0;
         emptySlots = 0;
+        ejectedEmptySlots = 0;
         restoredFromBackup = usedBackup;
         restoredSessionName = source.getFileName();
         sessionSourceChooser.reset();
         for (auto& pending : pendingSessionDecks) pending = {};
 
         // Safety-first restore: stop all current transports and restore mixer
-        // controls, but never auto-resume a saved playing deck. Each source is
-        // decoded through the existing async loader before position/controls apply.
+        // controls, but never auto-resume a saved playing deck. Each non-empty
+        // source goes through the async loader; empty saved slots use Engine's
+        // allocation-free clear mailbox and finalize only after the audio side
+        // no longer owns the previous source.
         owner.prepareForSessionRestore(state.mixer);
         for (std::size_t deck = 0; deck < broke::session::SessionState::deckCount; ++deck) {
             const auto& deckState = state.decks[deck];
+            auto& pending = pendingSessionDecks[deck];
+            pending.state = deckState;
             if (deckState.path.empty()) {
                 ++emptySlots;
+                if (!owner.beginSessionDeckEject(deck)) {
+                    ++failedDecks;
+                    continue;
+                }
+                pending.active = true;
+                pending.ejecting = true;
+                owner.armSessionDeckAdoptionMarker(deck);
+                pending.adoptionMarkerArmed = true;
                 continue;
             }
             const juce::File file(juce::String::fromUTF8(deckState.path.c_str()));
-            auto& pending = pendingSessionDecks[deck];
             pending.active = true;
             pending.originalFile = file;
             pending.file = file;
-            pending.state = deckState;
             if (!file.existsAsFile()) {
                 pending.awaitingRelocation = true;
                 continue;
@@ -557,7 +569,7 @@ private:
         if (!restoreInProgress || sessionSourceChooser) return;
         for (std::size_t deck = 0; deck < pendingSessionDecks.size(); ++deck) {
             auto& pending = pendingSessionDecks[deck];
-            if (!pending.active || !pending.awaitingRelocation) continue;
+            if (!pending.active || pending.ejecting || !pending.awaitingRelocation) continue;
 
             auto start = pending.originalFile.getParentDirectory();
             if (!start.isDirectory())
@@ -639,6 +651,25 @@ private:
             if (!pending.active || pending.awaitingRelocation) continue;
             ++pending.ticks;
 
+            if (pending.ejecting) {
+                // Zero duration is the authoritative observable for an empty
+                // audio-owned slot. The seek marker is normally consumed in the
+                // same callback, but a never-adopted pending clip can be removed
+                // entirely on the non-audio publisher before a callback exists.
+                if (owner.sessionDeckDuration(deck) <= 0.0) {
+                    const bool applied = owner.completeSessionDeckEject(deck, pending.state);
+                    pending.active = false;
+                    if (applied) ++ejectedEmptySlots;
+                    else ++failedDecks;
+                    continue;
+                }
+                if (pending.ticks > 300) {
+                    pending.active = false;
+                    ++failedDecks;
+                }
+                continue;
+            }
+
             const bool matches = owner.sessionDeckMatches(deck, pending.file);
             const bool loadingNow = owner.sessionDeckLoading(deck);
 
@@ -696,19 +727,17 @@ private:
         juce::String detail = uiText("Restored decks: ", "Przywrócone decki: ")
             + juce::String(restoredDecks)
             + uiText(" / relocated sources: ", " / wskazane przeniesione źródła: ") + juce::String(relocatedDecks)
+            + uiText(" / empty slots restored: ", " / przywrócone puste sloty: ") + juce::String(ejectedEmptySlots)
             + uiText(" / missing files: ", " / brakujące pliki: ") + juce::String(missingDecks)
             + uiText(" / failed slots: ", " / nieudane sloty: ") + juce::String(failedDecks);
         if (emptySlots > 0)
-            detail += uiText(" / empty saved slots: ", " / puste zapisane sloty: ") + juce::String(emptySlots);
+            detail += uiText(" / empty slots expected: ", " / oczekiwane puste sloty: ") + juce::String(emptySlots);
         detail += uiText(". Playback remains paused after restore.",
                          ". Playback pozostaje wstrzymany po odtworzeniu sesji.");
-        if (emptySlots > 0)
-            detail += uiText(" Empty saved slots do not eject an already loaded source yet.",
-                             " Puste zapisane sloty nie usuwają jeszcze wcześniej wczytanego źródła.");
         if (restoredFromBackup)
             detail += uiText(" Verified .bak recovery was used.", " Użyto zweryfikowanej kopii .bak.");
 
-        const bool clean = missingDecks == 0 && failedDecks == 0;
+        const bool clean = missingDecks == 0 && failedDecks == 0 && ejectedEmptySlots == emptySlots;
         owner.showWorkflowStatus(clean
             ? uiText("Session restored (paused): ", "Sesja przywrócona (pauza): ") + restoredSessionName
             : uiText("Session restored with missing/failed decks.",
@@ -746,5 +775,6 @@ private:
     int missingDecks = 0;
     int failedDecks = 0;
     int emptySlots = 0;
+    int ejectedEmptySlots = 0;
     juce::String restoredSessionName;
 };
