@@ -4,44 +4,31 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `6f8afd22ae998fb1f6db62e96e0f8ddd6262da1b`, the merge commit for PR #70 (`M4: package the Windows library workflow witness`).
-- PR #70 exact-final-head `6f12237c84a68cf1919fac6f224b4726e8d7f56a` passed all three required pull-request workflows before merge: M4 witness tool `35601862448`, Native library scale smoke `35601862697` and Build and test `35601862558`.
-- Merged-main verification for `6f8afd22ae998fb1f6db62e96e0f8ddd6262da1b` is green: Build and test `35604132889` and Native library scale smoke `35604132898` completed successfully.
-- Active development: draft PR #71, branch `feat/m4-self-contained-witness-package`. Earlier exact head `bd3131c9bdb1beee7bb41f1e0d981799df3e842f` passed all three pull-request workflows: Native library scale smoke `35604773637`, M4 witness tool `35604773640` and Build and test `35604773488`.
-- This run tightened the M4 witness evidence boundary: `scripts/m4_library_witness.ps1` now requires exact property sets at every object level, type-checks schema/Windows-build integers and identity strings, retains strict booleans, and rejects unexpected free-form/private fields while still binding evidence to the exact selected `BrokeDJ.exe` filename/version/SHA-256.
-- `.github/workflows/m4-witness-tool.yml` adds negative cases for string-typed schema/build values plus unexpected private and top-level fields, in addition to incomplete, boolean-spoofed, privacy-unsafe and executable-fingerprint mismatch cases.
-- The first closed-schema attempt exposed a real PowerShell 7 compatibility regression in run `35610932444`: `ConvertFrom-Json` can materialize an ISO-8601 timestamp as `DateTime` instead of leaving it as a string. The branch was not merged. Functional fix head `e72702a0ddbb46c25fd32aa2d432963f89c0ffa9` accepts PowerShell's timestamp materialization while preserving strict validation for security/privacy-relevant fields.
-- On functional fix head `e72702a0ddbb46c25fd32aa2d432963f89c0ffa9`, M4 witness-tool run `35611079000` completed successfully. Build and test `35611079025` and Native library scale smoke `35611079798` were still in progress at this checkpoint.
-- This checkpoint commit changes the PR head again, so fresh exact-final-head checks are required before integration even if the functional-head checks later finish green.
-- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 remains open until the documented Windows 11 connected-library/session witness is actually run and reviewed.
+- Default branch baseline: `main` at `334eac1168b67ae193dcc556a6ba4a2f22febef2`, the merge commit for PR #71 (`M4: ship self-contained M4 witness package`).
+- PR #71 exact-final-head `1e85dd01e81857515da75d40294cda597fc13287` passed all required pull-request workflows before merge: M4 witness tool `35611432465`, Build and test `35611431863` and Native library scale smoke `35611431959`.
+- Merged-main Native library scale smoke `35616709284` passed for `334eac1168b67ae193dcc556a6ba4a2f22febef2`; merged-main Build and test `35616709229` was still running at this checkpoint and must not be assumed green.
+- Active development: draft PR #72, branch `feat/m1-self-contained-hardware-witness`. Functional head before this checkpoint documentation commit: `298f9c618c378283a1cba930f6709106c77a5a21`.
+- PR #72 adds a privacy-minimized Windows 11 x64 M1 hardware witness recorder that binds evidence to the exact `BrokeDJ.exe` and exact `BrokeDJ-device-probe.json` by SHA-256, revalidates the silent probe safety contract, and requires a real four-output candidate before a complete M1 record can be accepted.
+- The recorder never automates playback, device switching, cue routing or volume changes. Actual launch/resize/import/device-switch/four-output-cue checks remain explicit user-controlled booleans and therefore cannot be fabricated by CI.
+- The M1 evidence schema excludes device names, track names/paths and source music. Validation rejects extra/free-form fields, type-spoofed values, app/probe fingerprint mismatches, unsafe probes and zero four-output candidates.
+- Windows development packaging now stages `M1-HARDWARE-WITNESS.ps1` and `M1-HARDWARE-WITNESS.md` beside the exact staged EXE inside the existing package manifest/checksum contract; downloaded-artifact smoke requires both files.
+- Dedicated `M1 hardware witness tool` CI parses the PowerShell recorder and exercises one accepted fixture plus incomplete, type-spoofed, privacy-unsafe, unexpected-field, executable/probe mismatch, unsafe-probe and zero-four-output negative fixtures. Semantic probe failures use canonical `BrokeDJ-device-probe.json` filenames in isolated directories so rejection is not accidentally satisfied by the filename guard alone.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). Neither M1 nor M4 is complete without the documented real Windows 11 manual evidence.
 - GitHub Releases remains empty; no public BrokeDJ alpha/beta/stable release is qualified by this checkpoint.
 
-## Integrated M4 foundations on main
+## Integrated foundations on main
 
-- Local SQLite schema/migrations, bounded search, native tag editing, ordered playlist membership editing/browsing, playback history, duplicate/missing-file review, moved-file rebinding and backup/restore UI are integrated without modifying original music files.
-- Readable imports receive streaming SHA-256 identity outside the realtime callback; relocation refreshes identity and bounded/cancellable maintenance backfills eligible legacy rows.
-- Real playback-start edges are recorded on a background worker into local SQLite history and the native PL/EN history view is bounded.
-- Windows-native no-audio qualification exercises a deterministic 5,000-track / 12,000-history production-schema fixture, playlist/tag queries, native backup, controlled mutation, native restore and post-restore integrity against both the development and staged EXE.
-- Four-deck plus mixer session snapshots are bounded/versioned/checksummed, support explicit verified `.bak` recovery, restore asynchronously while paused, resolve moved sources through the library and have a realtime-safe empty-deck eject path.
-- Persistent waveform previews and musical-analysis metadata are source-identity-bound, bounded, generated off the audio thread and fail closed to regeneration when stale or corrupt.
-- Library backup validates both live and produced SQLite snapshots. Restore rejects unsupported/future inputs, stages and migrates privately, validates semantic schema/foreign keys and keeps a validated rollback snapshot if live installation fails.
-- The Windows 11 M4 witness recorder is bound to the exact selected `BrokeDJ.exe`: validation recomputes filename, file version and SHA-256, requires Windows 11 x64 evidence, strict JSON booleans for all eight workflow checks and privacy flags that remain false.
-
-## M4 manual witness package
-
-- `scripts/m4_library_witness.ps1` requires Windows 11 and records eight user-controlled workflow checks: launch/resize, import/search, tags/playlists, history, duplicate/missing review, relocate, library backup/restore and session save/load.
-- The script never starts playback automatically and does not inspect or serialize source-music names/paths. The DJ remains in control of any audible playback.
-- The development branch validates a closed evidence schema: no extra properties are accepted in the evidence/environment/app/checks/privacy objects, schema/build and identity fields are type-checked, and the exact EXE fingerprint remains mandatory. Timestamp validation accounts for PowerShell 7 materialization without relaxing other field types.
-- `docs/M4_LIBRARY_WITNESS.md` defines disposable-test-media guidance, commands, the closed evidence boundary, acceptance boundaries and the rule that failed checks remain real blockers rather than being edited into success.
-- `.github/workflows/m4-witness-tool.yml` validates the evidence contract on `windows-latest`, including incomplete, type-spoofed, privacy-unsafe, unexpected-field and executable-fingerprint-mismatched negative cases. This workflow is evidence for the recorder contract, not a substitute for the real manual witness.
-- PR #71 places the recorder and guide beside the staged EXE and adds downloaded-artifact presence checks so the user can run the witness from one integrity-covered directory.
+- M4 library/session behavior is internally implemented and automated at scale: SQLite migrations, bounded search/tags/playlists/history, duplicate/missing/relocate workflows, source-bound waveform/analysis cache, four-deck session persistence, fail-safe backup/restore and native 5k-track/12k-history staged-EXE recovery.
+- The M4 witness recorder/guide is now shipped beside the staged EXE and covered by package integrity checks. It remains a recorder/validator only; the real connected Windows 11 library/session workflow must still be performed.
+- M1 already has Windows x64 CI compilation, no-audio GUI resize smoke, deterministic cue-routing tests and a silent schema-versioned device capability probe. None of those substitutes for real hardware switching or physical outputs 3/4 cue isolation.
 
 ## Gates still open
 
-- Fresh exact-final-head CI is required for PR #71 after this checkpoint commit. Fix any regression before merge; do not reuse an earlier green head as final-head evidence.
-- M4 still needs the user-controlled Windows 11 connected workflow witness from the exact EXE being qualified. Automated native fixtures and CI tooling do not substitute for that manual UX/recovery evidence.
-- M1 hardware/device switching and four-output cue, M2 representative-music/key-lock/listening, M3 physical microphone/booth/recording/listening, controller profiles and long live soak remain separate gates and do not become satisfied by the M4 witness.
+- PR #72 requires fresh exact-final-head Build and test, Native library scale smoke and M1 hardware witness-tool results after this checkpoint commit. Fix any regression before considering integration.
+- M1 still requires the real Windows 11 clean launch/resize/import/playback/device-switch/four-output-cue witness on actual hardware.
+- M4 still requires the real Windows 11 connected-library/session witness from the exact staged executable.
+- M2 representative-music/key-lock/listening, M3 physical microphone/booth/recording/listening, controller profiles and long live soak remain separate release gates.
 
 ## Next largest step
 
-Require fresh exact-final-head Build and test, Native library scale smoke and M4 witness-tool CI for PR #71. Repair any regression before integration. Keep #71 draft under the normal integration cadence; this branch removes source-checkout friction and rejects schema drift/private free-form evidence while the externally controlled Windows 11 M4 witness remains outstanding. Do not advance `docs/progress.json` until that witness is real and reviewed.
+Wait for the exact-final-head PR #72 checks, repair any regression, and keep the package on the development branch until green. Do not advance `docs/progress.json` from 1/10 until real acceptance evidence closes a milestone. Once the witness tooling is green, the remaining M1/M4 blockers are external/manual Windows 11 hardware and workflow evidence rather than missing recorder/package plumbing.

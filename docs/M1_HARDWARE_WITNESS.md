@@ -1,6 +1,8 @@
 # M1 Windows hardware qualification witness
 
-This document is a **manual evidence procedure**, not a claim that M1 has passed. It is designed to make the remaining Windows 11 audio-device gate reproducible without running loud tests automatically.
+This document is a **manual evidence procedure**, not a claim that M1 has passed. It makes the remaining Windows 11 audio-device gate reproducible without automating loud tests or claiming hardware behavior that has not been observed.
+
+Current Windows development artifacts place `M1-HARDWARE-WITNESS.ps1` and this guide beside `BrokeDJ.exe`, and the package manifest/checksum contract covers both files. The recorder binds accepted evidence to the exact staged executable and the exact silent device-probe JSON used for the qualification attempt.
 
 ## Scope
 
@@ -11,13 +13,43 @@ M1 still requires all of the following on a real Windows 11 x64 machine:
 - local-file import and playback through a real output device;
 - device switching and recovery without a crash or stale private cue route;
 - independent master 1/2 and cue 3/4 on hardware that genuinely exposes four output channels;
-- observation of device/runtime errors or xruns when the backend reports them.
+- review of device/runtime errors or xruns when the backend reports them.
 
 CI compilation, no-audio GUI smoke, offline routing tests and the silent probe below are prerequisites only. They do not close M1.
 
+## Recommended staged-artifact workflow
+
+Extract the Windows development artifact, open PowerShell in the `BrokeDJ` directory and run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\M1-HARDWARE-WITNESS.ps1 -AppPath ".\BrokeDJ.exe"
+```
+
+The recorder first runs BrokeDJ's **silent** `--device-probe` mode in the current directory. That mode does not call `AudioIODevice::open`, start an audio callback or play audio. The script then validates the probe's schema/safety invariants and requires at least one output device plus at least one descriptor that advertises four output channels before it will accept a complete M1 record.
+
+The recorder does **not** automate playback, device switching, cue routing or volume changes. It prompts the tester only after the silent probe has passed. Keep monitor/headphone volume low and perform each audible/manual step yourself.
+
+It writes two local files:
+
+- `BrokeDJ-device-probe.json` — detailed local capability inventory; this can include backend/device names and should be treated as private until reviewed;
+- `BrokeDJ-M1-Hardware-Witness.json` — closed-schema witness data containing only Windows/app identity, probe filename/hash/counts, pass/fail booleans and explicit privacy flags.
+
+The accepted witness JSON deliberately does not contain device names, track names, track paths, screenshots or source music. Validation rejects unknown/free-form fields so private notes cannot silently become part of accepted evidence.
+
+When working from a source checkout instead of the staged artifact:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\m1_hardware_witness.ps1 `
+  -AppPath ".\build\windows\BrokeDJ_artefacts\Release\BrokeDJ.exe"
+```
+
+A `no` answer is a real M1 blocker. Fix the product/hardware setup or repeat the witness after the issue is understood; do not edit failed checks into success.
+
 ## 1. Silent capability inventory
 
-Before connecting headphones or raising monitor volume, run from the folder containing the built executable:
+The recorder runs the equivalent of:
 
 ```powershell
 .\BrokeDJ.exe --device-probe
@@ -26,25 +58,24 @@ $probe = Get-Content .\BrokeDJ-device-probe.json -Raw | ConvertFrom-Json
 $probe | Format-List schema_version,mode,backend_count,output_device_count,four_output_candidate_count,safety_invariants_ok
 ```
 
-The command writes a human-readable TXT report and a schema-versioned JSON report in the current working directory. The probe does **not** call `AudioIODevice::open`, start an audio callback or emit audio. The full local mode constructs JUCE device descriptors only to query their advertised capability lists.
+The command writes a human-readable TXT report and a schema-versioned JSON report in the working directory. The full local mode constructs JUCE device descriptors only to query their advertised capability lists.
 
-Before using the report as evidence, verify:
+Before using the report as evidence, the recorder verifies:
 
-- `schema_version` matches the documented probe contract;
+- `schema_version=2`;
+- `mode=silent-capability`;
+- `plays_audio=false`;
 - `calls_device_open=false`;
 - `starts_audio_callback=false`;
+- `creates_device_descriptors=true`;
 - `unexpected_open_state_count=0`;
-- `safety_invariants_ok=true`.
+- `safety_invariants_ok=true`;
+- at least one output device is reported;
+- at least one `four_output_candidate` is reported.
 
-The probe checks `AudioIODevice::isOpen()` before and after capability queries and returns non-zero if an unexpectedly open descriptor is observed. This is a guard on the diagnostic path, not a qualification of the driver.
+A `four_output_candidate` merely advertises at least four output channels through a driver descriptor. It does **not** prove that outputs 3/4 are physically independent, that device switching works, or that the driver is stable under load. Those remain manual M1 checks.
 
-A device marked `four_output_candidate=true` in JSON (`four_output_candidate=yes` in TXT) merely advertises at least four output channels through the driver descriptor. It does not prove that outputs 3/4 are physically independent or that the selected driver works correctly under load.
-
-Review both reports before sharing them because device names may identify the local hardware setup. A useful private witness record can include the SHA-256 of the JSON file instead of publishing the full hardware inventory:
-
-```powershell
-Get-FileHash .\BrokeDJ-device-probe.json -Algorithm SHA256
-```
+The witness JSON stores the SHA-256 of the exact probe JSON. Revalidation therefore fails if the detailed local probe is changed or swapped after the witness was recorded.
 
 ## 2. Clean launch and resize witness
 
@@ -52,10 +83,10 @@ Get-FileHash .\BrokeDJ-device-probe.json -Algorithm SHA256
 2. Start `BrokeDJ.exe` normally.
 3. Verify the icon/window title and that all four decks are visible without controls overlapping.
 4. Resize to the minimum supported window (`1050 × 800`), then to a normal desktop size such as `1440 × 900` or larger.
-5. Repeat at the Windows display scale(s) that are actually being qualified, recording the scale and resolution.
+5. Repeat at the Windows display scale(s) that are actually being qualified.
 6. Verify the denser Beat Loop / Hot Cue / Beat Jump / MASTER-SYNC rows remain usable.
 
-Record only what was actually observed. A successful CI smoke launch is not a substitute for this step.
+The recorder's `cleanLaunch` and `resizeAndHiDpi` answers must reflect what was actually observed. A successful CI smoke launch is not a substitute.
 
 ## 3. Import and ordinary playback witness
 
@@ -66,7 +97,9 @@ Use a local track that you have the right to test. Start with low hardware volum
 3. Exercise play/pause, waveform seek and CUE 0.
 4. Exercise whole-track loop separately from reviewed-grid Beat Loop.
 5. If a reviewed grid is available, exercise Hot Cue, Beat Jump and one-shot MASTER/SYNC while confirming failed/out-of-range actions do not destabilize playback.
-6. Note codec, sample rate, device/backend and buffer size in the private test record; do not publish copyrighted audio or private file paths.
+6. Keep any codec/sample-rate/backend/buffer-size notes private unless explicitly reviewed for sharing.
+
+The recorder stores only the boolean `importAndPlayback` result, not source-file metadata.
 
 ## 4. Device switching witness
 
@@ -77,7 +110,7 @@ With monitor/headphone volume low:
 3. Stop playback before changing a driver/backend when the device requires it.
 4. Switch to the second intended device and confirm BrokeDJ remains responsive and playback can be restarted.
 5. Switch back once and repeat a seek/play/pause sequence.
-6. If a device disappears or the switch fails, record the exact backend/device state and whether BrokeDJ recovered without a crash.
+6. If a device disappears or the switch fails, record the issue privately and answer the witness check `no` until recovery is understood.
 
 This step is intentionally manual because OS/driver behavior cannot be established by a hosted CI runner.
 
@@ -92,24 +125,39 @@ Only perform this on an interface that genuinely exposes two independent stereo 
 5. Raise the channel/master path and verify the master remains on 1/2 while CUE stays independently available on 3/4.
 6. Repeat for at least two decks and after one device-settings reopen/switch cycle.
 
-Do not claim this gate from a two-output device; BrokeDJ deliberately does not fold private cue into the master.
+Do not claim this gate from a two-output device. BrokeDJ deliberately does not fold private cue into the master. The recorder requires both a four-output candidate in the silent probe and an affirmative manual `fourOutputCueIsolation` check; the candidate alone is never treated as proof.
 
-## Evidence record
+## 6. Runtime/driver error review
 
-A useful private witness note contains:
+Review any driver/runtime/xrun information that the selected backend actually exposes during the witness. The recorder does not invent a zero-xrun claim when the backend does not provide that metric. Answer `runtimeErrorReview=yes` only when no unresolved M1-blocking device/runtime error remains from the observed workflow.
 
-- BrokeDJ commit SHA and artifact/checksum;
-- Windows 11 build and display scale;
-- backend and device name from the local probe;
-- device-probe JSON schema version and SHA-256;
-- advertised and actually verified output-channel count;
-- selected sample rate and buffer size;
-- clean-launch, resize, import, switching and 4-output cue results;
-- any xrun/driver error evidence actually exposed by the backend;
-- tester date and concise known issues.
+## Validate saved evidence
 
-Do not commit local music, private paths, personal machine identifiers or a device report that has not been reviewed for sensitive information.
+For a staged artifact:
+
+```powershell
+.\M1-HARDWARE-WITNESS.ps1 `
+  -AppPath ".\BrokeDJ.exe" `
+  -ProbePath ".\BrokeDJ-device-probe.json" `
+  -EvidencePath ".\BrokeDJ-M1-Hardware-Witness.json" `
+  -ValidateExisting
+```
+
+For a source checkout use `scripts\m1_hardware_witness.ps1` with the same parameters.
+
+Validation recomputes the executable filename/version/SHA-256 and the exact probe SHA-256, type-checks the closed evidence schema, confirms Windows 11 x64 evidence, revalidates the silent probe safety contract and requires every M1 manual check to remain a real JSON boolean `true`. It rejects extra evidence fields, wrong app/probe fingerprints, privacy flags that claim private data was captured, zero four-output candidates and unsafe/malformed probe data.
+
+## Evidence handling
+
+A useful **private** qualification package can retain:
+
+- `BrokeDJ-M1-Hardware-Witness.json`;
+- `BrokeDJ-device-probe.json` and its SHA-256;
+- BrokeDJ package manifest/checksums and `SOURCE-COMMIT.txt`;
+- private notes for display scale, backend/device identity, selected sample rate/buffer size and any runtime/xrun diagnostics actually exposed by the driver.
+
+Do not commit local music, private file paths, screenshots with personal information or an unreviewed detailed device probe. The small witness JSON is privacy-minimized, but the detailed probe can identify the local hardware setup.
 
 ## Pass rule
 
-M1 may be marked complete only after the repository's stated acceptance criteria are satisfied with real Windows 11 evidence. A successful silent probe, green Windows CI, or a four-channel capability descriptor alone is **not** sufficient.
+M1 may be marked complete only after the repository's stated acceptance criteria are satisfied with real Windows 11 evidence. A successful silent probe, green Windows CI, a four-channel capability descriptor or a generated witness file alone is **not** sufficient. The actual launch/resize/import/device-switch/four-output-cue workflow must be performed and reviewed on real hardware.

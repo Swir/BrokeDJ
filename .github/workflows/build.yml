@@ -133,6 +133,8 @@ jobs:
           Copy-Item build/windows/diagnostics/gui-smoke.json dist/BrokeDJ/GUI-SMOKE.json
           Copy-Item build/windows/diagnostics/device-probe-ci.txt dist/BrokeDJ/DEVICE-PROBE-CI.txt
           Copy-Item build/windows/diagnostics/device-probe-ci.json dist/BrokeDJ/DEVICE-PROBE-CI.json
+          Copy-Item scripts/m1_hardware_witness.ps1 dist/BrokeDJ/M1-HARDWARE-WITNESS.ps1
+          Copy-Item docs/M1_HARDWARE_WITNESS.md dist/BrokeDJ/M1-HARDWARE-WITNESS.md
           Copy-Item scripts/m4_library_witness.ps1 dist/BrokeDJ/M4-LIBRARY-WITNESS.ps1
           Copy-Item docs/M4_LIBRARY_WITNESS.md dist/BrokeDJ/M4-LIBRARY-WITNESS.md
           Set-Content -Path dist/BrokeDJ/SOURCE-COMMIT.txt -Value '${{ github.event.pull_request.head.sha || github.sha }}' -NoNewline -Encoding utf8
@@ -164,6 +166,8 @@ jobs:
         run: |
           python package/VERIFY-PACKAGE.py verify --root package --expected-commit '${{ github.event.pull_request.head.sha || github.sha }}'
           if ($LASTEXITCODE -ne 0) { throw 'Downloaded package verification failed' }
+          if (-not (Test-Path 'package/BrokeDJ/M1-HARDWARE-WITNESS.ps1')) { throw 'Packaged M1 witness script missing' }
+          if (-not (Test-Path 'package/BrokeDJ/M1-HARDWARE-WITNESS.md')) { throw 'Packaged M1 witness guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.ps1')) { throw 'Packaged M4 witness script missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.md')) { throw 'Packaged M4 witness guide missing' }
       - name: Run staged no-audio lifecycle and device-probe smoke
