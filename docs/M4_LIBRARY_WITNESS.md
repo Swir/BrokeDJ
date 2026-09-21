@@ -10,7 +10,14 @@ The witness recorder stores only Windows build/architecture, BrokeDJ executable 
 
 ## Prepare
 
-Use the exact Windows x64 development/staged executable you want to qualify. From PowerShell:
+Use the exact Windows x64 development/staged executable you want to qualify. Current CI development artifacts place the witness recorder and this guide beside the staged executable and include both in the package manifest/checksums. From the extracted `BrokeDJ` directory, the shortest path is:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\M4-LIBRARY-WITNESS.ps1 -AppPath ".\BrokeDJ.exe"
+```
+
+When working from a source checkout instead, use:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -33,6 +40,17 @@ The script first verifies Windows 11 and fingerprints the exact `BrokeDJ.exe`. I
 A failed check is a real M4 blocker. Fix the product or repeat the witness after the fix; do not edit the JSON from `false` to `true` manually and treat it as evidence.
 
 ## Validate saved evidence
+
+For a staged development artifact:
+
+```powershell
+.\M4-LIBRARY-WITNESS.ps1 `
+  -AppPath ".\BrokeDJ.exe" `
+  -EvidencePath ".\BrokeDJ-M4-Library-Witness.json" `
+  -ValidateExisting
+```
+
+From a source checkout:
 
 ```powershell
 .\scripts\m4_library_witness.ps1 `
