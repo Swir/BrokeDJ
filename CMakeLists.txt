@@ -328,6 +328,11 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_library_database_tests PRIVATE brokedj_library)
         add_test(NAME library_database COMMAND brokedj_library_database_tests)
         set_tests_properties(library_database PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_library_runtime_store_tests tests/LibraryRuntimeStoreTests.cpp)
+        target_link_libraries(brokedj_library_runtime_store_tests PRIVATE brokedj_library)
+        add_test(NAME library_runtime_store COMMAND brokedj_library_runtime_store_tests)
+        set_tests_properties(library_runtime_store PROPERTIES TIMEOUT 60)
     endif()
 
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"

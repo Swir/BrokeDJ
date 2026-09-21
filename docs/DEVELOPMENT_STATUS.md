@@ -4,36 +4,38 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `0a950c4db4498fd8a4098314e1a54177de3fe1a6`. The merged M4 waveform-cache package passed main workflow `35557872571` across Linux sanitizer/CTest and Windows x64 build/full CTest/no-audio GUI/device/package checks.
-- Active development: PR #63, branch `feat/m4-content-hash-review`. Functional package head before this checkpoint-only documentation commit: `3966efcd1d75d3ce3a18a3153e144432aaa13026`. Exact-head CI for the resulting PR head is required before merge; no run had been assigned when this checkpoint text was written.
-- This package populates content hashes for readable local imports, refreshes hashes on relocation, exposes non-destructive duplicate/missing review through the native library search, and adds deterministic synthetic-library qualification.
+- Default branch baseline: `main` at `0552cbb6d32aa00ba05720791e6188ae2df1584e`. PR #63 (`M4: populate library content identity and duplicate review`) is integrated; its post-merge main workflow `35565846275` completed successfully.
+- Active development: PR #64, branch `feat/m4-runtime-history-backfill`. Functional package head before this checkpoint-only documentation commit: `ca4a7747cd6ce7c101ba519884ab38704bb7f2f7`. Exact-head workflow `35568563402` was in progress when this checkpoint text was written, so this package is not merged or release-qualified.
+- This package wires real playback-start history outside the realtime callback, adds a native PL/EN history review window, and performs a cancellable bounded legacy content-hash backfill of at most 64 empty-hash rows per application start.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 is materially advancing but is not complete.
 - GitHub Releases remains empty; no public BrokeDJ release is qualified by this checkpoint.
 
 ## Integrated M4 foundations on main
 
 - Local SQLite schema/migrations, bounded search, native tag editing, ordered playlist membership editing, play-history storage, duplicate grouping, missing/moved-file rebinding, integrity checking and backup/restore are integrated without modifying original music files.
+- Readable local imports receive streaming SHA-256 content identity outside the realtime callback; relocation refreshes that identity, while `is:duplicate` and `is:missing` remain non-destructive review filters.
 - Four-deck plus mixer session snapshots are bounded/versioned/checksummed, support verified backup recovery, and keep session I/O outside the realtime callback.
 - The native PL/EN local-library workflow provides bounded type-ahead search, multi-file import, explicit target-deck loading and moved-file relocation on background workers.
 - Native Save Session / Load Session / verified `.bak` recovery pauses transports, uses the normal asynchronous decoder, reconnects moved library records when possible and does not auto-resume saved playback.
 - Empty saved session slots use the realtime-safe deck-eject mailbox: the audio callback never deletes the retired clip and deterministic realtime tests require zero heap allocations/deallocations during clear adoption.
 - Persistent waveform previews cache only bounded normalized peak data with source size/mtime validation. Cache I/O stays in decoder/background work and stale/corrupt entries fail closed to regeneration.
 
-## Active M4 content-identity package
+## Active M4 runtime-history/backfill package
 
-- `LibraryDatabase::upsertTrack()` now fills an empty `content_hash` from the readable local file using a streaming SHA-256 implementation. Callers that already supply a content identity keep their supplied value, preserving migration/test compatibility.
-- Relocation recomputes the selected file's hash before publishing the new path, preventing stale duplicate identity after a user reconnects a moved record to different content.
-- The existing native library search accepts `is:duplicate` for non-missing tracks that share a populated content hash and `is:missing` for disconnected records. These are review filters only: BrokeDJ does not delete, merge or overwrite source music.
-- Deterministic coverage adds the SHA-256 `abc` reference vector, automatic duplicate discovery, relocation rehash invalidation, missing-track filtering and a synthetic 1,500-row database/query diagnostic. Shared-runner timing is diagnostic only, not a performance guarantee.
-- Local host compilation of the database package with GCC 14 and system SQLite passed the focused content-hash/duplicate/relocation fixture before publication. Repository CI remains the authoritative cross-platform gate for this branch.
+- The application observes deck playback-state edges on the message thread and queues SQLite history writes to a dedicated worker; no database or filesystem work is added to `Engine::process()` or the audio callback.
+- Tracks played from outside the library are adopted into the local database on the history worker before the history event is written. Existing rows are resolved by exact normalized path without re-hashing the file on every play.
+- A native `HISTORY` window displays the newest 250 local history rows with track metadata and timestamps, with PL/EN labels and bounded refresh work off the message thread.
+- `LibraryRuntimeStore` scans at most 64 legacy non-missing rows with an empty content hash per launch. Files are hashed in 64 KiB chunks on a cancellable maintenance worker; disconnected paths are marked missing, and source music is never changed or deleted.
+- Focused deterministic tests cover joined/repeated history ordering, exact path resolution, bounded SHA-256 backfill using the `abc` reference vector, missing-source handling, cancellation and a later resumed pass.
 
 ## Gates still open
 
-- This branch is development-only until exact-final-head GitHub Actions is green. Automated checks do not replace physical Windows 11 audio-device qualification or reviewed listening.
-- M4 still needs real playback-history wiring/review UX and broader large-library/import UX qualification before the milestone can close. Existing pre-v2 records with an empty hash are not silently walked from the UI thread; re-import or an explicit bounded background backfill is required before they can participate in duplicate review.
+- PR #64 remains development-only until exact-final-head GitHub Actions is green. The checkpoint documentation commit changes the PR head, so a fresh exact-head run is required even if the functional code head was already building.
+- Automated build/tests do not replace physical Windows 11 audio-device qualification, reviewed listening, controller input or master/cue/booth verification.
+- M4 still needs broader real-library/import UX qualification and an explicit large-library interactive pass before the milestone can close. The bounded backfill intentionally does not attempt an unbounded startup scan.
 - M1 still requires real Windows 11 clean-machine/manual HiDPI/import/device-switching checks and physical master/cue/booth verification.
 - Representative music-domain BPM/key/grid evidence, production key-lock listening/latency, controller profiles, long-session soak and physical recording/microphone evidence remain separate gates.
 
 ## Next largest step
 
-Get this exact PR head green on Linux and Windows first. Then finish M4 with bounded background hash backfill for legacy rows plus real playback-history wiring/review, rather than widening optional DSP scope.
+Fix any PR #64 regression first and require a green exact-final-head Linux/Windows run. Keep the package on the development branch until that gate is satisfied; after integration, continue M4 FINISH FIRST with large-library/import UX qualification rather than widening optional DSP scope.
