@@ -70,3 +70,5 @@ jobs:
             -AppPath .\unused.exe -EvidencePath .\incomplete.json -ValidateExisting
           if ($LASTEXITCODE -eq 0) { throw 'Incomplete witness fixture was accepted.' }
           Write-Host 'Evidence contract: complete accepted, incomplete rejected.'
+          $global:LASTEXITCODE = 0
+          exit 0
