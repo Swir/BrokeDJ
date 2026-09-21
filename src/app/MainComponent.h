@@ -251,9 +251,9 @@ public:
     }
 
     // Session restore arms this marker only after the async decoder has
-    // published the expected source. Engine::process() adopts a pending clip
-    // before it consumes Controls::seek, so observing the marker consumed proves
-    // the audio thread has passed the adoption point for that publication.
+    // published the expected source. Engine::process() adopts a pending clip or
+    // pending clear before it consumes Controls::seek, so a consumed marker plus
+    // the expected duration proves the callback crossed that ownership boundary.
     void armSessionDeckAdoptionMarker(std::size_t deck) noexcept {
         if (deck < broke::deckCount)
             engine.control(deck).seek.store(0.0, std::memory_order_release);
@@ -268,6 +268,67 @@ public:
         if (deck >= broke::deckCount) return 0.0;
         const double duration = engine.meter(deck).duration.load(std::memory_order_acquire);
         return std::isfinite(duration) && duration > 0.0 ? duration : 0.0;
+    }
+
+    // Begin exact empty-slot restore without touching the active Clip on the
+    // message thread. In-flight analysis is cancelled and optional source owners
+    // are disarmed, while Engine transfers the active Clip to its retired slot in
+    // the callback. A concurrent decode is rejected fail-closed instead of being
+    // allowed to repopulate a slot after the clear request.
+    [[nodiscard]] bool beginSessionDeckEject(std::size_t deck) {
+        if (deck >= broke::deckCount || loading[deck]) return false;
+        if (analysisCancelled[deck]) {
+            analysisCancelled[deck]->store(true, std::memory_order_release);
+            analysisCancelled[deck].reset();
+        }
+        closeTempoSegmentEditorForDeck(deck);
+        gridEditGeneration[deck].fetch_add(1, std::memory_order_acq_rel);
+        hotCueGeneration[deck].fetch_add(1, std::memory_order_acq_rel);
+        if (syncMasterDeck && *syncMasterDeck == deck) {
+            syncMasterDeck.reset();
+            clearSyncFollowers();
+        } else {
+            syncFollowers[deck] = false;
+        }
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+        if (keyLockResearchEnabled) keyLockLifecycle.noteClipSubmitted(deck, nullptr);
+#endif
+        return engine.eject(deck);
+    }
+
+    // Finalize only after the callback has consumed the adoption marker and the
+    // deck meter confirms zero duration. This prevents the UI/session metadata
+    // from claiming an empty slot while stale audio is still active.
+    [[nodiscard]] bool completeSessionDeckEject(std::size_t deck,
+                                                const broke::session::DeckState& state) {
+        if (deck >= broke::deckCount || sessionDeckDuration(deck) > 0.0) return false;
+        deckFiles[deck] = {};
+        detectedBeatGrids[deck] = {};
+        beatGrids[deck] = {};
+        gridIsManual[deck] = false;
+        if (performanceDecks[deck]) performanceDecks[deck]->resetForClip();
+        decks[deck]->setTrack(text("No track loaded", "Nie wczytano utworu"), {});
+        decks[deck]->setRhythmAnalysis(TrackRhythmAnalysis{}, broke::BeatGrid{}, false);
+
+        auto& control = engine.control(deck);
+        control.playing.store(false, std::memory_order_release);
+        control.reverse.store(false, std::memory_order_release);
+        control.slip.store(false, std::memory_order_release);
+        control.loop.store(state.wholeTrackLoop, std::memory_order_release);
+        control.headphone.store(state.headphoneCue, std::memory_order_release);
+        control.rate.store(std::clamp(state.playbackRate, 0.5f, 1.5f), std::memory_order_release);
+        control.trimDb.store(std::clamp(state.trimDb, broke::minTrimDb, broke::maxTrimDb),
+                             std::memory_order_release);
+        control.gain.store(std::clamp(state.channelGain, 0.0f, 1.5f), std::memory_order_release);
+        control.low.store(std::clamp(state.low, 0.0f, 2.0f), std::memory_order_release);
+        control.mid.store(std::clamp(state.mid, 0.0f, 2.0f), std::memory_order_release);
+        control.high.store(std::clamp(state.high, 0.0f, 2.0f), std::memory_order_release);
+        control.echo.store(std::clamp(state.echo, 0.0f, 0.7f), std::memory_order_release);
+        control.drive.store(std::clamp(state.drive, 0.0f, 6.0f), std::memory_order_release);
+        control.seek.store(-1.0, std::memory_order_release);
+        decks[deck]->syncSessionControls(state);
+        decks[deck]->refresh();
+        return true;
     }
 
     [[nodiscard]] bool applyRestoredDeckState(std::size_t deck,

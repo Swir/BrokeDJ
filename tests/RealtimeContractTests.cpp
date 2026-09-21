@@ -226,6 +226,72 @@ void run() {
               << " trim_fader_meter_stress=1"
               << " timing_is_diagnostic_only=1\n";
 
+    // Exact deck-eject contract: the non-audio owner requests removal, but the
+    // old active Clip transfers to the retired slot in the callback and is
+    // reclaimed only after heap tracking is disabled. This is the core safety
+    // property used by empty-slot session restore.
+    check(!engine.eject(broke::deckCount), "invalid deck eject rejected");
+    check(engine.eject(0), "valid deck eject requested");
+    check(!engine.control(0).playing.load(std::memory_order_acquire),
+          "eject stops transport before callback adoption");
+    check(!engine.control(0).reverse.load(std::memory_order_acquire)
+              && !engine.control(0).slip.load(std::memory_order_acquire),
+          "eject clears reverse and slip controls");
+    check(!engine.loopRegionEnabled(0), "eject clears reviewed beat-loop region");
+
+    allocations.store(0, std::memory_order_relaxed);
+    deallocations.store(0, std::memory_order_relaxed);
+    trackHeap.store(true, std::memory_order_seq_cst);
+    renderBlock(engine, audio, out);
+    trackHeap.store(false, std::memory_order_seq_cst);
+    const auto ejectAllocations = allocations.load(std::memory_order_relaxed);
+    const auto ejectDeallocations = deallocations.load(std::memory_order_relaxed);
+    check(ejectAllocations == 0, "deck-eject adoption callback performs no heap allocation");
+    check(ejectDeallocations == 0, "deck-eject adoption callback performs no heap deallocation");
+    check(engine.meter(0).duration.load(std::memory_order_acquire) == 0.0,
+          "ejected deck publishes zero duration");
+    check(engine.meter(0).position.load(std::memory_order_acquire) == 0.0
+              && engine.meter(0).audiblePosition.load(std::memory_order_acquire) == 0.0,
+          "ejected deck publishes zero transport positions");
+    check(engine.meter(0).preFaderPeak.load(std::memory_order_acquire) == 0.0f
+              && engine.meter(0).peak.load(std::memory_order_acquire) == 0.0f
+              && engine.meter(0).rms.load(std::memory_order_acquire) == 0.0f,
+          "ejected deck publishes silent meters");
+    engine.collectRetired();
+
+    check(engine.submit(0, sineClip()), "deck accepts a new clip after eject");
+    renderBlock(engine, audio, out);
+    check(engine.meter(0).duration.load(std::memory_order_acquire) > 0.0,
+          "deck can be repopulated after eject");
+    engine.collectRetired();
+
+    // A pending-but-never-adopted source is cancelled entirely by the serialized
+    // non-audio publisher. The later callback consumes only the clear command.
+    broke::Engine pendingEngine;
+    pendingEngine.prepare(48000.0);
+    std::array<std::array<float, 256>, 4> pendingAudio{};
+    std::array<float*, 4> pendingOut{};
+    for (std::size_t channel = 0; channel < pendingOut.size(); ++channel)
+        pendingOut[channel] = pendingAudio[channel].data();
+    check(pendingEngine.submit(0, sineClip()), "pending eject fixture accepts clip");
+    check(pendingEngine.eject(0), "pending clip eject requested");
+    allocations.store(0, std::memory_order_relaxed);
+    deallocations.store(0, std::memory_order_relaxed);
+    trackHeap.store(true, std::memory_order_seq_cst);
+    renderBlock(pendingEngine, pendingAudio, pendingOut);
+    trackHeap.store(false, std::memory_order_seq_cst);
+    check(allocations.load(std::memory_order_relaxed) == 0,
+          "pending clear callback performs no heap allocation");
+    check(deallocations.load(std::memory_order_relaxed) == 0,
+          "pending clear callback performs no heap deallocation");
+    check(pendingEngine.meter(0).duration.load(std::memory_order_acquire) == 0.0,
+          "pending source does not reappear after clear");
+
+    std::cout << "METRIC eject_callback_heap_allocations=" << ejectAllocations
+              << " eject_callback_heap_deallocations=" << ejectDeallocations
+              << " eject_zero_duration=1"
+              << " pending_clear_zero_duration=1\n";
+
     // Release-build CI records these timing diagnostics across representative
     // conversion paths. They are intentionally not absolute pass/fail timing
     // gates because shared runners do not model a user's audio hardware or load.
