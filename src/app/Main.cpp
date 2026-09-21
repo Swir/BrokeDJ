@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include <JuceHeader.h>
+#include "LibraryDatabase.h"
 #include "RecordingMainComponent.h"
 
 #include <array>
+#include <filesystem>
+#include <string>
 #include <utility>
 
 namespace {
@@ -42,6 +45,102 @@ juce::Array<juce::var> jsonStrings(const juce::StringArray& values) {
     result.ensureStorageAllocated(values.size());
     for (const auto& value : values) result.add(oneLine(value));
     return result;
+}
+
+std::filesystem::path filesystemPath(const juce::File& file) {
+#if JUCE_WINDOWS
+    return std::filesystem::path(file.getFullPathName().toWideCharPointer());
+#else
+    return std::filesystem::u8path(file.getFullPathName().toStdString());
+#endif
+}
+
+std::filesystem::path libraryDatabasePath() {
+    return filesystemPath(
+        juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("BrokeDJ")
+            .getChildFile("library.sqlite3"));
+}
+
+bool libraryRecoverySmokeAllowed() {
+    const auto actions = juce::SystemStats::getEnvironmentVariable("GITHUB_ACTIONS", {});
+    const auto localOverride = juce::SystemStats::getEnvironmentVariable(
+        "BROKEDJ_ALLOW_LOCAL_LIBRARY_RECOVERY_SMOKE", {});
+    return actions.equalsIgnoreCase("true") || localOverride == "1";
+}
+
+int runLibraryRecoverySmoke(bool restore) {
+    constexpr int reportSchemaVersion = 1;
+    const auto directory = juce::File::getCurrentWorkingDirectory();
+    const auto backupFile = directory.getChildFile("BrokeDJ-library-backup.sqlite3");
+    const auto reportFile = directory.getChildFile(
+        restore ? "BrokeDJ-library-restore-smoke.json" : "BrokeDJ-library-backup-smoke.json");
+    const auto mode = restore ? "native-library-restore" : "native-library-backup";
+
+    auto finish = [&](bool success, int exitCode, int databaseSchemaVersion,
+                      const juce::String& errorText = {}) {
+        auto* root = new juce::DynamicObject();
+        juce::var report(root);
+        root->setProperty("schema_version", reportSchemaVersion);
+        root->setProperty("mode", mode);
+        root->setProperty("plays_audio", false);
+        root->setProperty("opens_audio_device", false);
+        root->setProperty("starts_audio_callback", false);
+        root->setProperty("destructive_fixture_only", true);
+        root->setProperty("database_schema_version", databaseSchemaVersion);
+        root->setProperty("backup_present", backupFile.existsAsFile());
+        root->setProperty("backup_size_bytes",
+                          backupFile.existsAsFile() ? backupFile.getSize() : static_cast<juce::int64>(0));
+        root->setProperty("success", success);
+        root->setProperty("qualification_note",
+                          "CI-fixture recovery evidence only; no audio device is opened and this does not replace an interactive Windows 11 backup/restore review.");
+        if (errorText.isNotEmpty()) root->setProperty("error", oneLine(errorText));
+
+        if (!reportFile.replaceWithText(juce::JSON::toString(report, false) + "\n")) {
+            juce::Logger::writeToLog("Library recovery smoke could not write its JSON report.");
+            return 23;
+        }
+        return exitCode;
+    };
+
+    if (!libraryRecoverySmokeAllowed()) {
+        return finish(false, 20, 0,
+                      "Library recovery smoke is restricted to GitHub Actions or an explicit local fixture override.");
+    }
+
+    broke::library::LibraryDatabase database;
+    std::string error;
+    if (!database.open(libraryDatabasePath(), &error)) {
+        return finish(false, 21, 0, juce::String::fromUTF8(error.c_str()));
+    }
+
+    bool operationOk = false;
+    if (restore) {
+        if (!backupFile.existsAsFile()) {
+            return finish(false, 22, database.schemaVersion(), "Recovery smoke backup is missing.");
+        }
+        operationOk = database.restoreFrom(filesystemPath(backupFile), &error);
+    } else {
+        if (backupFile.existsAsFile() && !backupFile.deleteFile()) {
+            return finish(false, 22, database.schemaVersion(), "Could not clear the previous recovery smoke backup.");
+        }
+        operationOk = database.backupTo(filesystemPath(backupFile), &error);
+    }
+
+    if (!operationOk || !error.empty()) {
+        return finish(false, 22, database.schemaVersion(), juce::String::fromUTF8(error.c_str()));
+    }
+    if (!database.integrityCheck(&error) || !error.empty()) {
+        return finish(false, 22, database.schemaVersion(), juce::String::fromUTF8(error.c_str()));
+    }
+    if (database.schemaVersion() != broke::library::LibraryDatabase::currentSchemaVersion) {
+        return finish(false, 22, database.schemaVersion(), "Recovered library schema is not current.");
+    }
+    if (!backupFile.existsAsFile() || backupFile.getSize() <= 0) {
+        return finish(false, 22, database.schemaVersion(), "Recovery smoke backup is empty or missing.");
+    }
+
+    return finish(true, 0, database.schemaVersion());
 }
 
 int runDeviceProbe(bool ciSmoke) {
@@ -186,7 +285,6 @@ int runDeviceProbe(bool ciSmoke) {
            << "qualification_note=Capability discovery only; this does not prove device switching, "
               "physical outputs 3/4 cue isolation, latency, xrun behavior, or listening quality.\n";
 
-    const auto directory = juce::File::getCurrentWorkingDirectory();
     const auto textOutput = directory.getChildFile("BrokeDJ-device-probe.txt");
     const auto jsonOutput = directory.getChildFile("BrokeDJ-device-probe.json");
     const auto json = juce::JSON::toString(jsonRoot, false) + "\n";
@@ -221,6 +319,17 @@ public:
         const bool deviceProbeCi = arguments.contains("--device-probe-ci");
         if (deviceProbe || deviceProbeCi) {
             setApplicationReturnValue(runDeviceProbe(deviceProbeCi));
+            quit();
+            return;
+        }
+        const bool libraryBackupSmoke = arguments.contains("--library-backup-smoke");
+        const bool libraryRestoreSmoke = arguments.contains("--library-restore-smoke");
+        if (libraryBackupSmoke || libraryRestoreSmoke) {
+            if (libraryBackupSmoke && libraryRestoreSmoke) {
+                setApplicationReturnValue(24);
+            } else {
+                setApplicationReturnValue(runLibraryRecoverySmoke(libraryRestoreSmoke));
+            }
             quit();
             return;
         }
