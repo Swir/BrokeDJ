@@ -77,8 +77,6 @@ public:
 
     [[nodiscard]] std::optional<std::int64_t> createPlaylist(
         std::string_view name, std::string* error = nullptr);
-    [[nodiscard]] std::optional<std::int64_t> findPlaylist(
-        std::string_view name, std::string* error = nullptr) const;
     [[nodiscard]] bool addToPlaylist(std::int64_t playlistId, std::int64_t trackId,
                                      std::string* error = nullptr);
     [[nodiscard]] bool removeFromPlaylist(std::int64_t playlistId, std::int64_t trackId,
