@@ -8,12 +8,13 @@ This file is the durable engineering checkpoint for the current repository state
 - Merged-main verification for that exact commit is green: Build and test `35619027328` and Native library scale smoke `35619027348` both completed successfully.
 - GitHub Releases is still empty. There is no qualified public BrokeDJ alpha, beta or stable release.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M1 and M4 remain open because their documented real Windows 11 manual witnesses have not been performed.
-- Active development: draft PR #73, branch `feat/m2-keylock-listening-witness`. Functional package head before this checkpoint documentation commit: `8eaabc2bc8983cae0a6e97ad9af02678eda4a7e2`.
-- PR #73 adds a privacy-minimized M2 human listening evidence recorder and dedicated negative-fixture CI. The recorder binds evidence to the exact `BrokeDJ.exe`, requires at least three user-owned/licensed representative tracks, requires both slow and fast key-lock reviews plus fallback/error review, and refuses to generate evidence under CI.
-- The M2 witness deliberately does not launch BrokeDJ, select music, change volume or claim that listening occurred. CI may validate schema fixtures only. Production key lock remains blocked on real representative-material listening plus device CPU/callback-deadline/underrun and latency evidence.
-- Functional head `8eaabc2b…` queued Build and test `35624642612`, Native library scale smoke `35624642667`, and M2 key-lock listening witness tool `35624642882`. No result is assumed until GitHub reports completion.
-- The M2 witness tool is not yet staged into the Windows development artifact at this checkpoint; package integration is intentionally deferred until the new script/schema workflow is green on its exact branch head.
-- This checkpoint commit changes the PR head. Fresh exact-final-head checks are required before any integration even if the functional-head runs finish green.
+- Active development: draft PR #73, branch `feat/m2-keylock-listening-witness`. Latest functional/package head before this checkpoint documentation commit: `0165aa4749847861e3f98bbeff776f2c8aeea8ee`.
+- PR #73 adds a privacy-minimized M2 human listening evidence recorder. It binds evidence to the exact `BrokeDJ.exe`, requires at least three user-owned/licensed representative tracks, requires normal plus slow/fast key-lock listening, transport-fallback, pitch-stability, artifact and runtime-error review, and refuses evidence generation under CI.
+- The script/guide are staged beside the Windows development executable, included in the package manifest/checksums and checked by staged-package smoke. CI may validate schema fixtures and prove that the staged tool refuses automated evidence generation; it may never claim that listening occurred.
+- The dedicated witness workflow already passed on functional head `8eaabc2bc8983cae0a6e97ad9af02678eda4a7e2` (`35624642882`), including PowerShell parsing and negative cases for incomplete/spoofed/privacy-unsafe/wrong-identity evidence plus CI-generation refusal.
+- Package head `0165aa47…` queued Build and test `35625068809`, Native library scale smoke `35625068837`, M2 key-lock listening witness tool `35625068845`, and M1 hardware witness tool `35625068833`. No result is assumed until GitHub reports completion.
+- This checkpoint commit changes the PR head. Fresh exact-final-head checks remain mandatory before any merge even if the package-head runs finish green.
+- Production key lock remains blocked on real representative-material listening plus device CPU/callback-deadline/underrun and latency evidence. No milestone progress was advanced for tooling.
 
 ## Integrated foundations on main
 
@@ -32,4 +33,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Wait for the fresh exact-final-head PR #73 checks after this checkpoint commit and fix every regression before package integration. If the witness contract is green, stage the script/guide beside the exact Windows development EXE under the existing manifest/checksum contract. Do not advance `docs/progress.json` until real acceptance evidence closes a full milestone.
+Let the fresh exact-final-head PR #73 checks complete and fix every regression before merge. If all required checks are green on the same head, the branch is eligible for integration as tooling/blocker-removal only; `docs/progress.json` must remain unchanged until real acceptance evidence closes a full milestone.
