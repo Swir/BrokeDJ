@@ -4,13 +4,12 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `951f6bf5c4597cf9826f4f50696761985b08a552`, the merge commit for PR #69 (`M4: qualify native library backup and restore at scale`). PR #69 exact-head runs `35593343651` (Native library scale smoke) and `35593343285` (Build and test) completed successfully before merge; merged-main runs `35598312597` and `35598312518` also completed successfully.
-- Active development: draft PR #70, branch `feat/m4-cache-acceptance-evidence`. Latest functional head before this checkpoint documentation commit: `1ca191638f66c62d5b6ca3daeda4a3b38d293eb8`.
-- The functional head hardens the Windows 11 M4 witness so saved evidence is bound to the exact selected `BrokeDJ.exe`: validation now recomputes filename, file version and SHA-256 from `AppPath`, requires Windows 11 x64 evidence, strict JSON booleans for all eight workflow checks, and privacy flags that explicitly remain false.
-- M4 witness-tool run `35601511221` completed successfully for that functional head, including negative cases for an incomplete witness, string-boolean spoofing, privacy-unsafe evidence and an executable-fingerprint mismatch. Build-and-test run `35601511287` and Native library scale smoke `35601511437` were still running at this checkpoint and must not be assumed green.
-- PR #70 packages the privacy-safe Windows 11 M4 witness recorder plus dedicated Windows CI parsing/evidence-contract checks. It records only OS/app fingerprint data and pass/fail results, never track names, local music paths, screenshots or source music.
-- ROADMAP, library and session-persistence documentation on the development branch reflect the already-integrated M4 behavior instead of listing resolved work as merely planned/open.
-- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 remains open until the documented Windows 11 connected-library workflow witness is actually run and reviewed.
+- Default branch baseline: `main` at `6f8afd22ae998fb1f6db62e96e0f8ddd6262da1b`, the merge commit for PR #70 (`M4: package the Windows library workflow witness`).
+- PR #70 exact-final-head `6f12237c84a68cf1919fac6f224b4726e8d7f56a` passed all three required pull-request workflows before merge: M4 witness tool `35601862448`, Native library scale smoke `35601862697` and Build and test `35601862558`.
+- Merged-main verification for `6f8afd22ae998fb1f6db62e96e0f8ddd6262da1b` started as Build and test `35604132889` and Native library scale smoke `35604132898`; both were still running at this checkpoint and must not be assumed green yet.
+- Active development: branch `feat/m4-self-contained-witness-package`. The package workflow now stages `M4-LIBRARY-WITNESS.ps1` and `M4-LIBRARY-WITNESS.md` directly beside the exact staged `BrokeDJ.exe`, so the remaining user-controlled M4 witness no longer requires a separate source checkout. The existing package manifest/checksum tool covers those files automatically, and the downloaded-artifact smoke rejects a package if either witness file is absent.
+- `docs/M4_LIBRARY_WITNESS.md` now documents the one-directory staged-artifact command while preserving the source-checkout path and the exact-EXE SHA-256 validation boundary.
+- Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 remains open until the documented Windows 11 connected-library/session witness is actually run and reviewed.
 - GitHub Releases remains empty; no public BrokeDJ alpha/beta/stable release is qualified by this checkpoint.
 
 ## Integrated M4 foundations on main
@@ -22,21 +21,22 @@ This file is the durable engineering checkpoint for the current repository state
 - Four-deck plus mixer session snapshots are bounded/versioned/checksummed, support explicit verified `.bak` recovery, restore asynchronously while paused, resolve moved sources through the library and have a realtime-safe empty-deck eject path.
 - Persistent waveform previews and musical-analysis metadata are source-identity-bound, bounded, generated off the audio thread and fail closed to regeneration when stale or corrupt.
 - Library backup validates both live and produced SQLite snapshots. Restore rejects unsupported/future inputs, stages and migrates privately, validates semantic schema/foreign keys and keeps a validated rollback snapshot if live installation fails.
+- The Windows 11 M4 witness recorder is bound to the exact selected `BrokeDJ.exe`: validation recomputes filename, file version and SHA-256, requires Windows 11 x64 evidence, strict JSON booleans for all eight workflow checks and privacy flags that remain false.
 
 ## M4 manual witness package
 
-- `scripts/m4_library_witness.ps1` requires Windows 11, fingerprints the exact BrokeDJ EXE with SHA-256 and records eight user-controlled workflow checks: launch/resize, import/search, tags/playlists, history, duplicate/missing review, relocate, library backup/restore and session save/load.
-- Re-validation is now tied to the selected `BrokeDJ.exe` rather than trusting the fingerprint stored inside editable JSON. The validator also rejects non-boolean check values and any evidence whose privacy flags claim paths, track names or source music were captured.
+- `scripts/m4_library_witness.ps1` requires Windows 11 and records eight user-controlled workflow checks: launch/resize, import/search, tags/playlists, history, duplicate/missing review, relocate, library backup/restore and session save/load.
 - The script never starts playback automatically and does not inspect or serialize source-music names/paths. The DJ remains in control of any audible playback.
 - `docs/M4_LIBRARY_WITNESS.md` defines disposable-test-media guidance, commands, acceptance boundaries and the rule that failed checks remain real blockers rather than being edited into success.
-- `.github/workflows/m4-witness-tool.yml` parses the PowerShell script on `windows-latest`, accepts evidence bound to an exact fixture executable and requires intentionally incomplete, type-spoofed, privacy-unsafe and fingerprint-mismatched contracts to fail. This workflow is evidence for the recorder contract, not a substitute for the real manual witness.
+- `.github/workflows/m4-witness-tool.yml` validates the evidence contract on `windows-latest`, including incomplete, type-spoofed, privacy-unsafe and executable-fingerprint-mismatched negative cases. This workflow is evidence for the recorder contract, not a substitute for the real manual witness.
+- The current development package change places the recorder and guide beside the staged EXE and adds downloaded-artifact presence checks so the user can run the witness from one integrity-covered directory.
 
 ## Gates still open
 
-- PR #70 remains draft until Build and test, Native library scale smoke and M4 witness tool are all green for the same final head. This checkpoint changes the head, so fresh exact-final-head checks are required before integration even when the functional-head checks were already green.
-- M4 still needs the user-controlled Windows 11 connected workflow witness from the exact EXE being qualified. Automated native fixtures do not substitute for that manual UX/recovery evidence.
+- Exact-head CI is required for the current self-contained witness-package branch before it can be considered for integration. Fix any regression before merge.
+- M4 still needs the user-controlled Windows 11 connected workflow witness from the exact EXE being qualified. Automated native fixtures and CI tooling do not substitute for that manual UX/recovery evidence.
 - M1 hardware/device switching and four-output cue, M2 representative-music/key-lock/listening, M3 physical microphone/booth/recording/listening, controller profiles and long live soak remain separate gates and do not become satisfied by the M4 witness.
 
 ## Next largest step
 
-Require fresh exact-final-head CI for PR #70 after this checkpoint commit. Fix any regression before integration. If every required run is green, keep the package ready for the project integration cadence without advancing `docs/progress.json`; the next M4 state change is evidence-driven by the user-controlled Windows 11 library/session witness and any fixes it exposes. Do not widen the current delivery target with unrelated features while that gate is open.
+Open one draft PR for `feat/m4-self-contained-witness-package`, require exact-head Build and test plus the package smoke path, and repair any regression before integration. Because PR #70 has just merged, do not force another default-branch merge merely for hourly cadence; this branch exists to make the externally blocked M4 witness materially easier to run. M4 progress remains unchanged until the real Windows 11 witness is completed and reviewed.
