@@ -35,12 +35,19 @@ public:
         message.setColour(juce::Label::textColourId, muted);
         message.setFont(juce::Font(juce::FontOptions(12.0f)));
 
+        playlistFilter.addItem(uiText("All tracks", "Wszystkie utwory"), 1);
+        playlistFilter.setSelectedId(1, juce::dontSendNotification);
+        playlistFilter.setTooltip(uiText(
+            "Browse one local playlist without loading the whole collection into memory.",
+            "Przeglądaj jedną lokalną playlistę bez wczytywania całej kolekcji do pamięci."));
+        playlistFilter.onChange = [this] { runCurrentSearch(); };
+
         search.setTextToShowWhenEmpty(uiText("Search title, artist, album, tag or path…",
                                              "Szukaj tytułu, artysty, albumu, tagu lub ścieżki…"), muted);
         search.setColour(juce::TextEditor::backgroundColourId, panel);
         search.setColour(juce::TextEditor::textColourId, pale);
         search.setColour(juce::TextEditor::outlineColourId, blue.withAlpha(0.35f));
-        search.onTextChange = [this] { if (onSearchChanged) onSearchChanged(search.getText()); };
+        search.onTextChange = [this] { runCurrentSearch(); };
 
         importButton.setButtonText(uiText("Import files", "Importuj pliki"));
         loadButton.setButtonText(uiText("Load selected", "Wczytaj wybrany"));
@@ -92,8 +99,8 @@ public:
         list.setColour(juce::ListBox::backgroundColourId, background);
         list.setColour(juce::ListBox::outlineColourId, blue.withAlpha(0.22f));
         list.setOutlineThickness(1);
-        for (auto* child : std::array<juce::Component*, 15>{
-                 &heading, &message, &search, &importButton, &loadButton,
+        for (auto* child : std::array<juce::Component*, 16>{
+                 &heading, &message, &playlistFilter, &search, &importButton, &loadButton,
                  &relocateButton, &tagEditor, &addTagButton, &removeTagButton,
                  &playlistEditor, &addPlaylistButton, &removePlaylistButton,
                  &selectionMeta, &targetDeck, &list})
@@ -105,10 +112,13 @@ public:
         organizerDatabasePath = filesystemPath(databaseFile);
         std::string error;
         organizerAvailable = organizerDb.open(organizerDatabasePath, &error);
-        if (!organizerAvailable)
+        if (!organizerAvailable) {
             selectionMeta.setText(uiText("Tag/playlist editing unavailable; library playback still works.",
                                          "Edycja tagów/playlist niedostępna; odtwarzanie biblioteki nadal działa."),
                                   juce::dontSendNotification);
+        } else {
+            refreshPlaylistCatalog();
+        }
         updateButtons();
     }
 
@@ -116,6 +126,7 @@ public:
         organizerCancelled.store(true, std::memory_order_release);
         organizerLifetime.reset();
         metadataWorkers.removeAllJobs(true, -1);
+        browseWorkers.removeAllJobs(true, -1);
         organizerWorkers.removeAllJobs(true, -1);
         organizerDb.close();
     }
@@ -126,32 +137,13 @@ public:
     std::function<void(const broke::library::TrackRecord&)> onRelocateTrack;
 
     void setResults(std::vector<broke::library::TrackRecord> tracks) {
-        const auto* before = selectedTrack();
-        const std::int64_t selectedId = before != nullptr ? before->id : -1;
-        rows = std::move(tracks);
-        list.updateContent();
-        int selectedRow = -1;
-        if (selectedId >= 0) {
-            for (std::size_t i = 0; i < rows.size(); ++i) {
-                if (rows[i].id == selectedId) {
-                    selectedRow = static_cast<int>(i);
-                    break;
-                }
-            }
-        }
-        if (selectedRow >= 0) list.selectRow(selectedRow);
-        else list.deselectAllRows();
-        setBusy(false);
-        setMessage(rows.empty()
-            ? uiText("No matching tracks.", "Brak pasujących utworów.")
-            : uiText("Tracks: ", "Utwory: ") + juce::String(static_cast<int>(rows.size())));
-        refreshSelectionMetadata();
-        updateButtons();
+        applyResults(std::move(tracks), {});
     }
 
     void setBusy(bool nextBusy) {
         busy = nextBusy;
         search.setEnabled(!busy);
+        playlistFilter.setEnabled(!busy && organizerAvailable);
         importButton.setEnabled(!busy);
         if (busy) setMessage(uiText("Working…", "Przetwarzanie…"));
         updateButtons();
@@ -173,7 +165,10 @@ public:
 
         auto searchRow = area.removeFromTop(34);
         const int importWidth = std::clamp(searchRow.getWidth() / 5, 96, 124);
+        const int playlistWidth = std::clamp(searchRow.getWidth() / 4, 150, 220);
         importButton.setBounds(searchRow.removeFromRight(importWidth).reduced(4, 0));
+        playlistFilter.setBounds(searchRow.removeFromLeft(playlistWidth).reduced(0, 1));
+        searchRow.removeFromLeft(6);
         search.setBounds(searchRow.reduced(0, 1));
         area.removeFromTop(8);
 
@@ -213,6 +208,12 @@ public:
     void paint(juce::Graphics& g) override { g.fillAll(background); }
 
 private:
+    struct PlaylistSummary final {
+        std::int64_t id = -1;
+        std::string name;
+        std::int64_t trackCount = 0;
+    };
+
     static juce::String uiText(const char* english, const char* polish) {
         static const bool usePolish = juce::SystemStats::getUserLanguage().startsWithIgnoreCase("pl");
         return juce::String::fromUTF8(usePolish ? polish : english);
@@ -231,6 +232,45 @@ private:
         return std::string(reinterpret_cast<const char*>(value.data()), value.size());
     }
 
+    static std::string columnText(sqlite3_stmt* statement, int column) {
+        const auto* value = sqlite3_column_text(statement, column);
+        if (value == nullptr) return {};
+        const int bytes = sqlite3_column_bytes(statement, column);
+        return std::string(reinterpret_cast<const char*>(value), static_cast<std::size_t>(std::max(0, bytes)));
+    }
+
+    static broke::library::TrackRecord readTrack(sqlite3_stmt* statement) {
+        broke::library::TrackRecord track;
+        track.id = sqlite3_column_int64(statement, 0);
+        track.path = columnText(statement, 1);
+        track.fileSize = sqlite3_column_int64(statement, 2);
+        track.modifiedNs = sqlite3_column_int64(statement, 3);
+        track.title = columnText(statement, 4);
+        track.artist = columnText(statement, 5);
+        track.album = columnText(statement, 6);
+        track.durationSeconds = sqlite3_column_double(statement, 7);
+        if (sqlite3_column_type(statement, 8) != SQLITE_NULL)
+            track.bpm = sqlite3_column_double(statement, 8);
+        track.musicalKey = columnText(statement, 9);
+        track.contentHash = columnText(statement, 10);
+        track.missing = sqlite3_column_int(statement, 11) != 0;
+        return track;
+    }
+
+    static sqlite3* openReadOnly(const std::filesystem::path& databasePath) {
+        if (databasePath.empty()) return nullptr;
+        sqlite3* handle = nullptr;
+        const auto path = pathUtf8(databasePath);
+        if (sqlite3_open_v2(path.c_str(), &handle,
+                            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK
+            || handle == nullptr) {
+            if (handle != nullptr) sqlite3_close_v2(handle);
+            return nullptr;
+        }
+        sqlite3_busy_timeout(handle, 2500);
+        return handle;
+    }
+
     static juce::String displayTitle(const broke::library::TrackRecord& track) {
         juce::String title = juce::String::fromUTF8(track.title.c_str());
         if (title.isEmpty())
@@ -243,16 +283,9 @@ private:
 
     static std::optional<std::int64_t> findPlaylistId(const std::filesystem::path& databasePath,
                                                        std::string_view name) {
-        if (databasePath.empty() || name.empty()) return std::nullopt;
-        sqlite3* handle = nullptr;
-        const auto path = pathUtf8(databasePath);
-        if (sqlite3_open_v2(path.c_str(), &handle,
-                            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK
-            || handle == nullptr) {
-            if (handle != nullptr) sqlite3_close_v2(handle);
-            return std::nullopt;
-        }
-        sqlite3_busy_timeout(handle, 2500);
+        if (name.empty()) return std::nullopt;
+        sqlite3* handle = openReadOnly(databasePath);
+        if (handle == nullptr) return std::nullopt;
         sqlite3_stmt* statement = nullptr;
         const char* sql = "SELECT id FROM playlists WHERE name=?1 COLLATE NOCASE LIMIT 1;";
         std::optional<std::int64_t> result;
@@ -262,6 +295,102 @@ private:
                                  SQLITE_TRANSIENT) == SQLITE_OK
             && sqlite3_step(statement) == SQLITE_ROW) {
             result = sqlite3_column_int64(statement, 0);
+        }
+        if (statement != nullptr) sqlite3_finalize(statement);
+        sqlite3_close_v2(handle);
+        return result;
+    }
+
+    static std::vector<PlaylistSummary> readPlaylistCatalog(const std::filesystem::path& databasePath) {
+        std::vector<PlaylistSummary> result;
+        sqlite3* handle = openReadOnly(databasePath);
+        if (handle == nullptr) return result;
+        sqlite3_stmt* statement = nullptr;
+        constexpr const char* sql =
+            "SELECT p.id,p.name,COUNT(pi.track_id) FROM playlists p "
+            "LEFT JOIN playlist_items pi ON pi.playlist_id=p.id "
+            "GROUP BY p.id,p.name ORDER BY p.name COLLATE NOCASE,p.id LIMIT 256;";
+        if (sqlite3_prepare_v2(handle, sql, -1, &statement, nullptr) == SQLITE_OK
+            && statement != nullptr) {
+            while (sqlite3_step(statement) == SQLITE_ROW) {
+                result.push_back(PlaylistSummary{sqlite3_column_int64(statement, 0),
+                                                 columnText(statement, 1),
+                                                 sqlite3_column_int64(statement, 2)});
+            }
+        }
+        if (statement != nullptr) sqlite3_finalize(statement);
+        sqlite3_close_v2(handle);
+        return result;
+    }
+
+    static std::vector<std::string> readPlaylistNamesForTrack(
+        const std::filesystem::path& databasePath, std::int64_t trackId) {
+        std::vector<std::string> result;
+        sqlite3* handle = openReadOnly(databasePath);
+        if (handle == nullptr) return result;
+        sqlite3_stmt* statement = nullptr;
+        constexpr const char* sql =
+            "SELECT p.name FROM playlists p JOIN playlist_items pi ON pi.playlist_id=p.id "
+            "WHERE pi.track_id=?1 ORDER BY p.name COLLATE NOCASE,p.id LIMIT 64;";
+        if (sqlite3_prepare_v2(handle, sql, -1, &statement, nullptr) == SQLITE_OK
+            && statement != nullptr
+            && sqlite3_bind_int64(statement, 1, trackId) == SQLITE_OK) {
+            while (sqlite3_step(statement) == SQLITE_ROW)
+                result.push_back(columnText(statement, 0));
+        }
+        if (statement != nullptr) sqlite3_finalize(statement);
+        sqlite3_close_v2(handle);
+        return result;
+    }
+
+    static std::vector<broke::library::TrackRecord> readPlaylistTracks(
+        const std::filesystem::path& databasePath, std::int64_t playlistId,
+        std::string_view query, std::size_t limit) {
+        std::vector<broke::library::TrackRecord> result;
+        sqlite3* handle = openReadOnly(databasePath);
+        if (handle == nullptr) return result;
+        limit = std::clamp<std::size_t>(limit, 1, 500);
+
+        const std::string columns =
+            "t.id,t.path,t.file_size,t.modified_ns,t.title,t.artist,t.album,"
+            "t.duration_seconds,t.bpm,t.musical_key,t.content_hash,t.missing";
+        std::string sql = "SELECT DISTINCT " + columns
+            + " FROM playlist_items pi JOIN tracks t ON t.id=pi.track_id WHERE pi.playlist_id=?1 ";
+        const bool duplicateOnly = query == broke::library::LibraryDatabase::duplicateSearchDirective;
+        const bool missingOnly = query == broke::library::LibraryDatabase::missingSearchDirective;
+        if (duplicateOnly) {
+            sql += "AND t.missing=0 AND t.content_hash<>'' "
+                   "AND t.content_hash IN(SELECT content_hash FROM tracks WHERE missing=0 "
+                   "AND content_hash<>'' GROUP BY content_hash HAVING COUNT(*)>1) ";
+        } else if (missingOnly) {
+            sql += "AND t.missing=1 ";
+        } else {
+            sql += "AND (?2='' OR instr(lower(t.title),lower(?2))>0 "
+                   "OR instr(lower(t.artist),lower(?2))>0 "
+                   "OR instr(lower(t.album),lower(?2))>0 "
+                   "OR instr(lower(t.path),lower(?2))>0 "
+                   "OR EXISTS(SELECT 1 FROM track_tags tt JOIN tags g ON g.id=tt.tag_id "
+                   "WHERE tt.track_id=t.id AND instr(lower(g.name),lower(?2))>0)) ";
+        }
+        sql += "ORDER BY pi.position,pi.rowid LIMIT ?3;";
+
+        sqlite3_stmt* statement = nullptr;
+        if (sqlite3_prepare_v2(handle, sql.c_str(), -1, &statement, nullptr) == SQLITE_OK
+            && statement != nullptr
+            && sqlite3_bind_int64(statement, 1, playlistId) == SQLITE_OK) {
+            bool bound = true;
+            if (!duplicateOnly && !missingOnly) {
+                bound = sqlite3_bind_text(statement, 2, query.data(), static_cast<int>(query.size()),
+                                           SQLITE_TRANSIENT) == SQLITE_OK;
+            } else {
+                bound = sqlite3_bind_null(statement, 2) == SQLITE_OK;
+            }
+            bound = bound && sqlite3_bind_int64(statement, 3,
+                static_cast<sqlite3_int64>(limit)) == SQLITE_OK;
+            if (bound) {
+                while (sqlite3_step(statement) == SQLITE_ROW)
+                    result.push_back(readTrack(statement));
+            }
         }
         if (statement != nullptr) sqlite3_finalize(statement);
         sqlite3_close_v2(handle);
@@ -306,12 +435,113 @@ private:
         return &rows[static_cast<std::size_t>(selected)];
     }
 
+    [[nodiscard]] std::optional<std::int64_t> selectedPlaylistId() const noexcept {
+        const int selected = playlistFilter.getSelectedId();
+        if (selected < 2) return std::nullopt;
+        const auto index = static_cast<std::size_t>(selected - 2);
+        if (index >= playlists.size()) return std::nullopt;
+        return playlists[index].id;
+    }
+
     void loadSelected() {
         if (busy) return;
         const auto* selected = selectedTrack();
         const int target = targetDeck.getSelectedId();
         if (selected != nullptr && target >= 1 && target <= 4 && onLoadTrack)
             onLoadTrack(*selected, static_cast<std::size_t>(target - 1));
+    }
+
+    void runCurrentSearch() {
+        if (busy) return;
+        if (const auto playlistId = selectedPlaylistId()) {
+            queuePlaylistBrowse(*playlistId, search.getText());
+        } else if (onSearchChanged) {
+            onSearchChanged(search.getText());
+        }
+    }
+
+    void queuePlaylistBrowse(std::int64_t playlistId, const juce::String& queryText) {
+        if (!organizerAvailable || organizerCancelled.load(std::memory_order_acquire)) return;
+        const auto generation = browseGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        browseWorkers.removeAllJobs(false, 0);
+        const auto databasePath = organizerDatabasePath;
+        const auto queryUtf8 = queryText.toStdString();
+        const auto weak = std::weak_ptr<int>(organizerLifetime);
+        setBusy(true);
+        browseWorkers.addJob([this, weak, generation, playlistId, databasePath, queryUtf8] {
+            if (weak.expired() || organizerCancelled.load(std::memory_order_acquire)) return;
+            auto results = readPlaylistTracks(databasePath, playlistId, queryUtf8, 500);
+            juce::MessageManager::callAsync(
+                [this, weak, generation, playlistId, results = std::move(results)]() mutable {
+                    if (weak.expired() || organizerCancelled.load(std::memory_order_acquire)
+                        || browseGeneration.load(std::memory_order_acquire) != generation)
+                        return;
+                    const auto current = selectedPlaylistId();
+                    if (!current || *current != playlistId) return;
+                    juce::String context = uiText("Playlist tracks: ", "Utwory playlisty: ")
+                        + juce::String(static_cast<int>(results.size()));
+                    applyResults(std::move(results), context);
+                });
+        });
+    }
+
+    void applyResults(std::vector<broke::library::TrackRecord> tracks, const juce::String& context) {
+        const auto* before = selectedTrack();
+        const std::int64_t selectedId = before != nullptr ? before->id : -1;
+        rows = std::move(tracks);
+        list.updateContent();
+        int selectedRow = -1;
+        if (selectedId >= 0) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i].id == selectedId) {
+                    selectedRow = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (selectedRow >= 0) list.selectRow(selectedRow);
+        else list.deselectAllRows();
+        setBusy(false);
+        if (context.isNotEmpty()) {
+            setMessage(context);
+        } else {
+            setMessage(rows.empty()
+                ? uiText("No matching tracks.", "Brak pasujących utworów.")
+                : uiText("Tracks: ", "Utwory: ") + juce::String(static_cast<int>(rows.size())));
+        }
+        refreshSelectionMetadata();
+        updateButtons();
+    }
+
+    void refreshPlaylistCatalog() {
+        if (!organizerAvailable || organizerCancelled.load(std::memory_order_acquire)) return;
+        const auto generation = playlistGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        const auto databasePath = organizerDatabasePath;
+        const auto selectedBefore = selectedPlaylistId();
+        const auto weak = std::weak_ptr<int>(organizerLifetime);
+        browseWorkers.addJob([this, weak, generation, databasePath, selectedBefore] {
+            if (weak.expired() || organizerCancelled.load(std::memory_order_acquire)) return;
+            auto catalog = readPlaylistCatalog(databasePath);
+            juce::MessageManager::callAsync(
+                [this, weak, generation, selectedBefore, catalog = std::move(catalog)]() mutable {
+                    if (weak.expired() || organizerCancelled.load(std::memory_order_acquire)
+                        || playlistGeneration.load(std::memory_order_acquire) != generation)
+                        return;
+                    playlists = std::move(catalog);
+                    playlistFilter.clear(juce::dontSendNotification);
+                    playlistFilter.addItem(uiText("All tracks", "Wszystkie utwory"), 1);
+                    int selectedUiId = 1;
+                    for (std::size_t i = 0; i < playlists.size(); ++i) {
+                        const int uiId = static_cast<int>(i) + 2;
+                        juce::String label = juce::String::fromUTF8(playlists[i].name.c_str());
+                        label += " (" + juce::String(playlists[i].trackCount) + ")";
+                        playlistFilter.addItem(label, uiId);
+                        if (selectedBefore && playlists[i].id == *selectedBefore) selectedUiId = uiId;
+                    }
+                    playlistFilter.setSelectedId(selectedUiId, juce::dontSendNotification);
+                    playlistFilter.setEnabled(!busy && organizerAvailable);
+                });
+        });
     }
 
     void refreshSelectionMetadata() {
@@ -329,12 +559,15 @@ private:
         if (!organizerAvailable) return;
 
         const auto trackId = selected->id;
+        const auto databasePath = organizerDatabasePath;
         const auto weak = std::weak_ptr<int>(organizerLifetime);
-        selectionMeta.setText(uiText("Loading tags…", "Wczytywanie tagów…"), juce::dontSendNotification);
-        metadataWorkers.addJob([this, weak, generation, trackId] {
+        selectionMeta.setText(uiText("Loading tags/playlists…", "Wczytywanie tagów/playlist…"),
+                              juce::dontSendNotification);
+        metadataWorkers.addJob([this, weak, generation, trackId, databasePath] {
             if (weak.expired() || organizerCancelled.load(std::memory_order_acquire)) return;
             std::string error;
             const auto tags = organizerDb.tagsForTrack(trackId, &error);
+            const auto memberships = readPlaylistNamesForTrack(databasePath, trackId);
             juce::String summary;
             if (!error.empty()) {
                 summary = uiText("Tags unavailable", "Tagi niedostępne");
@@ -345,6 +578,15 @@ private:
                 for (std::size_t i = 0; i < tags.size(); ++i) {
                     if (i != 0) summary += ", ";
                     summary += juce::String::fromUTF8(tags[i].c_str());
+                }
+            }
+            summary += uiText("  |  Playlists: ", "  |  Playlisty: ");
+            if (memberships.empty()) {
+                summary += uiText("none", "brak");
+            } else {
+                for (std::size_t i = 0; i < memberships.size(); ++i) {
+                    if (i != 0) summary += ", ";
+                    summary += juce::String::fromUTF8(memberships[i].c_str());
                 }
             }
             juce::MessageManager::callAsync([this, weak, generation, trackId, summary] {
@@ -381,7 +623,7 @@ private:
                     : uiText("Tag edit failed.", "Edycja tagu nie powiodła się."));
                 if (ok) {
                     refreshSelectionMetadata();
-                    if (onSearchChanged) onSearchChanged(search.getText());
+                    runCurrentSearch();
                 }
             });
         });
@@ -423,6 +665,11 @@ private:
                                : uiText("Track removed from playlist.", "Usunięto utwór z playlisty."))
                         : uiText("Playlist edit failed.", "Edycja playlisty nie powiodła się."));
                 }
+                if (ok) {
+                    refreshSelectionMetadata();
+                    refreshPlaylistCatalog();
+                    runCurrentSearch();
+                }
             });
         });
     }
@@ -441,6 +688,7 @@ private:
         const bool hasPlaylist = playlistEditor.getText().trim().isNotEmpty();
         tagEditor.setEnabled(organizerAvailable && !busy && !editBusy);
         playlistEditor.setEnabled(organizerAvailable && !busy && !editBusy);
+        playlistFilter.setEnabled(organizerAvailable && !busy && !editBusy);
         addTagButton.setEnabled(canEdit && hasTag);
         removeTagButton.setEnabled(canEdit && hasTag);
         addPlaylistButton.setEnabled(canEdit && hasPlaylist);
@@ -457,18 +705,22 @@ private:
     juce::TextEditor search, tagEditor, playlistEditor;
     juce::TextButton importButton, loadButton, relocateButton;
     juce::TextButton addTagButton, removeTagButton, addPlaylistButton, removePlaylistButton;
-    juce::ComboBox targetDeck;
+    juce::ComboBox playlistFilter, targetDeck;
     juce::ListBox list;
     std::vector<broke::library::TrackRecord> rows;
+    std::vector<PlaylistSummary> playlists;
     bool busy = false;
     bool editBusy = false;
 
     broke::library::LibraryDatabase organizerDb;
     std::filesystem::path organizerDatabasePath;
     juce::ThreadPool metadataWorkers{1};
+    juce::ThreadPool browseWorkers{1};
     juce::ThreadPool organizerWorkers{1};
     std::atomic<bool> organizerCancelled{false};
     std::atomic<std::uint64_t> metadataGeneration{0};
+    std::atomic<std::uint64_t> browseGeneration{0};
+    std::atomic<std::uint64_t> playlistGeneration{0};
     std::shared_ptr<int> organizerLifetime;
     bool organizerAvailable = false;
 
