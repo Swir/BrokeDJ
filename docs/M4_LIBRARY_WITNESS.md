@@ -41,9 +41,9 @@ A failed check is a real M4 blocker. Fix the product or repeat the witness after
   -ValidateExisting
 ```
 
-`-ValidateExisting` checks that the saved file uses the supported BrokeDJ M4 witness schema/scope and that every required workflow result is complete. `AppPath` remains mandatory for a consistent command contract, but validation reads the executable fingerprint already stored in the evidence rather than rerunning the UI workflow.
+`-ValidateExisting` validates the BrokeDJ M4 schema/scope, Windows 11 x64 environment fields, strict JSON boolean types, privacy flags and every required workflow result. It also recalculates the selected `AppPath` filename, file version and SHA-256 and requires all three to match the saved evidence. This catches accidental review against the wrong executable and rejects simple type-spoofing such as the string `"true"` being substituted for a real JSON boolean.
 
-The JSON is an auditable witness record, not a cryptographic signature. Review it together with the exact EXE/checksum and CI state; manually changing a failed result does not create legitimate qualification evidence.
+The JSON is still an auditable user witness record, not a digital signature or proof that a person performed an action. It remains editable by whoever controls the file. Treat legitimacy as the combination of the user-controlled workflow, exact executable fingerprint, CI state and review history; manually changing a failed result does not create valid qualification evidence.
 
 ## Acceptance boundary
 

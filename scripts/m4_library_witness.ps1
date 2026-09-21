@@ -43,10 +43,38 @@ function Resolve-App([string]$Path) {
     $item = Get-Item -LiteralPath $resolved
     if ($item.PSIsContainer) { throw 'AppPath must point to BrokeDJ.exe, not a directory.' }
     if ($item.Extension -ne '.exe') { throw 'AppPath must point to a Windows executable.' }
+    if ($item.Name -ne 'BrokeDJ.exe') { throw 'AppPath must point to BrokeDJ.exe.' }
     return $item
 }
 
-function Validate-Evidence([string]$Path) {
+function Get-AppFingerprint([System.IO.FileInfo]$App) {
+    $version = $App.VersionInfo.FileVersion
+    if ([string]::IsNullOrWhiteSpace($version)) { $version = 'unknown' }
+    return [ordered]@{
+        fileName = $App.Name
+        fileVersion = $version
+        sha256 = (Get-FileHash -LiteralPath $App.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+function Get-RequiredProperty([object]$Object, [string]$Name, [string]$Context) {
+    if ($null -eq $Object) { throw "Missing $Context object." }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { throw "Missing $Context.$Name." }
+    return $property.Value
+}
+
+function Assert-BooleanProperty([object]$Object, [string]$Name, [bool]$Expected, [string]$Context) {
+    $value = Get-RequiredProperty -Object $Object -Name $Name -Context $Context
+    if ($value -isnot [bool]) {
+        throw "$Context.$Name must be a JSON boolean."
+    }
+    if ($value -ne $Expected) {
+        throw "$Context.$Name must be $($Expected.ToString().ToLowerInvariant())."
+    }
+}
+
+function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $data = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
     if ($data.schema -ne 1) { throw 'Unsupported M4 witness schema.' }
@@ -54,7 +82,30 @@ function Validate-Evidence([string]$Path) {
         throw 'Evidence file is not a BrokeDJ M4 library witness.'
     }
 
-    $required = @(
+    $generatedUtc = Get-RequiredProperty -Object $data -Name 'generatedUtc' -Context 'evidence'
+    $parsedGeneratedUtc = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$generatedUtc, [ref]$parsedGeneratedUtc)) {
+        throw 'evidence.generatedUtc is not a valid timestamp.'
+    }
+
+    $windowsBuild = [int](Get-RequiredProperty -Object $data.environment -Name 'windowsBuild' -Context 'environment')
+    if ($windowsBuild -lt 22000) { throw 'Evidence does not describe a Windows 11 build.' }
+    $architecture = [string](Get-RequiredProperty -Object $data.environment -Name 'architecture' -Context 'environment')
+    $processArchitecture = [string](Get-RequiredProperty -Object $data.environment -Name 'processArchitecture' -Context 'environment')
+    if ($architecture -ne 'X64' -or $processArchitecture -ne 'X64') {
+        throw 'M4 witness evidence must come from an x64 OS and x64 PowerShell process.'
+    }
+
+    $expectedFingerprint = Get-AppFingerprint -App $ExpectedApp
+    $evidenceFileName = [string](Get-RequiredProperty -Object $data.app -Name 'fileName' -Context 'app')
+    $evidenceVersion = [string](Get-RequiredProperty -Object $data.app -Name 'fileVersion' -Context 'app')
+    $evidenceHash = [string](Get-RequiredProperty -Object $data.app -Name 'sha256' -Context 'app')
+    if ($evidenceHash -notmatch '^[0-9a-fA-F]{64}$') { throw 'app.sha256 is not a valid SHA-256 digest.' }
+    if ($evidenceFileName -ne $expectedFingerprint.fileName) { throw 'Evidence executable filename does not match AppPath.' }
+    if ($evidenceVersion -ne $expectedFingerprint.fileVersion) { throw 'Evidence executable version does not match AppPath.' }
+    if ($evidenceHash.ToLowerInvariant() -ne $expectedFingerprint.sha256) { throw 'Evidence executable SHA-256 does not match AppPath.' }
+
+    $requiredChecks = @(
         'launchAndResize',
         'importAndSearch',
         'tagsAndPlaylists',
@@ -65,28 +116,35 @@ function Validate-Evidence([string]$Path) {
         'sessionSaveLoad'
     )
     $failed = @()
-    foreach ($name in $required) {
-        if (-not [bool]$data.checks.$name) { $failed += $name }
+    foreach ($name in $requiredChecks) {
+        try {
+            Assert-BooleanProperty -Object $data.checks -Name $name -Expected $true -Context 'checks'
+        } catch {
+            $failed += $name
+        }
     }
     if ($failed.Count -gt 0) {
-        throw ('Witness is incomplete. Failed checks: ' + ($failed -join ', '))
+        throw ('Witness is incomplete or malformed. Failed checks: ' + ($failed -join ', '))
     }
 
-    Write-Step "Witness is complete: $resolved"
-    Write-Step "App SHA-256: $($data.app.sha256)"
-    Write-Step "Windows build: $($data.environment.windowsBuild)"
+    foreach ($name in @('containsTrackPaths', 'containsTrackNames', 'containsSourceMusic')) {
+        Assert-BooleanProperty -Object $data.privacy -Name $name -Expected $false -Context 'privacy'
+    }
+
+    Write-Step "Witness is complete and bound to AppPath: $resolved"
+    Write-Step "App SHA-256: $($expectedFingerprint.sha256)"
+    Write-Step "Windows build: $windowsBuild"
 }
 
+$app = Resolve-App -Path $AppPath
+
 if ($ValidateExisting) {
-    Validate-Evidence -Path $EvidencePath
+    Validate-Evidence -Path $EvidencePath -ExpectedApp $app
     exit 0
 }
 
 $windowsBuild = Assert-Windows11
-$app = Resolve-App -Path $AppPath
-$appHash = (Get-FileHash -LiteralPath $app.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-$appVersion = $app.VersionInfo.FileVersion
-if ([string]::IsNullOrWhiteSpace($appVersion)) { $appVersion = 'unknown' }
+$appFingerprint = Get-AppFingerprint -App $app
 
 Write-Step 'This witness never asks for track names or paths and does not inspect source music.'
 Write-Step 'Use disposable copies or non-critical local tracks for manual interaction checks.'
@@ -113,11 +171,7 @@ $evidence = [ordered]@{
         architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
         processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
     }
-    app = [ordered]@{
-        fileName = $app.Name
-        fileVersion = $appVersion
-        sha256 = $appHash
-    }
+    app = $appFingerprint
     checks = $checks
     privacy = [ordered]@{
         containsTrackPaths = $false
@@ -134,7 +188,7 @@ $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $EvidencePath -En
 Write-Step "Evidence written to: $EvidencePath"
 
 try {
-    Validate-Evidence -Path $EvidencePath
+    Validate-Evidence -Path $EvidencePath -ExpectedApp $app
 } catch {
     Write-Error $_
     exit 2

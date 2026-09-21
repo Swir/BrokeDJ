@@ -34,16 +34,19 @@ jobs:
           }
           Write-Host 'PowerShell parser: OK'
 
-      - name: Validate complete and incomplete evidence contracts
+      - name: Validate evidence integrity and negative cases
         shell: pwsh
         run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ witness fixture executable' -NoNewline -Encoding ascii
+          $fixtureHash = (Get-FileHash -LiteralPath .\BrokeDJ.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+
           $complete = @{
             schema = 1
             project = 'BrokeDJ'
             scope = 'M4-library-workflow'
             generatedUtc = [DateTime]::UtcNow.ToString('o')
             environment = @{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
-            app = @{ fileName = 'BrokeDJ.exe'; fileVersion = 'fixture'; sha256 = ('a' * 64) }
+            app = @{ fileName = 'BrokeDJ.exe'; fileVersion = 'unknown'; sha256 = $fixtureHash }
             checks = @{
               launchAndResize = $true
               importAndSearch = $true
@@ -58,17 +61,33 @@ jobs:
           }
           $complete | ConvertTo-Json -Depth 6 | Set-Content complete.json -Encoding utf8
           & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -AppPath .\unused.exe -EvidencePath .\complete.json -ValidateExisting
+            -AppPath .\BrokeDJ.exe -EvidencePath .\complete.json -ValidateExisting
           if ($LASTEXITCODE -ne 0) { throw 'Complete witness fixture was rejected.' }
 
-          $incomplete = $complete.Clone()
-          $incomplete.checks = @{}
-          foreach ($property in $complete.checks.Keys) { $incomplete.checks[$property] = $complete.checks[$property] }
+          function Assert-Rejected([object]$Fixture, [string]$Path, [string]$Message) {
+            $Fixture | ConvertTo-Json -Depth 6 | Set-Content $Path -Encoding utf8
+            & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath $Path -ValidateExisting
+            if ($LASTEXITCODE -eq 0) { throw $Message }
+            $global:LASTEXITCODE = 0
+          }
+
+          $incomplete = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
           $incomplete.checks.libraryBackupRestore = $false
-          $incomplete | ConvertTo-Json -Depth 6 | Set-Content incomplete.json -Encoding utf8
-          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -AppPath .\unused.exe -EvidencePath .\incomplete.json -ValidateExisting
-          if ($LASTEXITCODE -eq 0) { throw 'Incomplete witness fixture was accepted.' }
-          Write-Host 'Evidence contract: complete accepted, incomplete rejected.'
+          Assert-Rejected $incomplete '.\incomplete.json' 'Incomplete witness fixture was accepted.'
+
+          $spoofedBoolean = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $spoofedBoolean.checks.history = 'true'
+          Assert-Rejected $spoofedBoolean '.\spoofed-boolean.json' 'String boolean was accepted as evidence.'
+
+          $privacyLeak = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $privacyLeak.privacy.containsTrackPaths = $true
+          Assert-Rejected $privacyLeak '.\privacy-leak.json' 'Privacy-unsafe evidence was accepted.'
+
+          $fingerprintMismatch = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $fingerprintMismatch.app.sha256 = ('b' * 64)
+          Assert-Rejected $fingerprintMismatch '.\fingerprint-mismatch.json' 'Wrong executable fingerprint was accepted.'
+
+          Write-Host 'Evidence contract: exact app accepted; incomplete, type-spoofed, privacy-unsafe and fingerprint-mismatched evidence rejected.'
           $global:LASTEXITCODE = 0
           exit 0
