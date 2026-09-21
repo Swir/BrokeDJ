@@ -6,6 +6,7 @@ on:
       - 'scripts/m2_keylock_listening_witness.ps1'
       - 'docs/M2_KEYLOCK_LISTENING_WITNESS.md'
       - '.github/workflows/m2-keylock-witness-tool.yml'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:

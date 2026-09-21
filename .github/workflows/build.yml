@@ -174,6 +174,25 @@ jobs:
           if (-not (Test-Path 'package/BrokeDJ/M2-KEYLOCK-LISTENING-WITNESS.md')) { throw 'Packaged M2 key-lock listening witness guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.ps1')) { throw 'Packaged M4 witness script missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.md')) { throw 'Packaged M4 witness guide missing' }
+      - name: Confirm staged M2 listening witness cannot generate evidence in CI
+        shell: pwsh
+        run: |
+          Push-Location package/BrokeDJ
+          try {
+            Remove-Item 'BrokeDJ-M2-keylock-listening.json' -ErrorAction SilentlyContinue
+            & pwsh -NoProfile -File .\M2-KEYLOCK-LISTENING-WITNESS.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath .\BrokeDJ-M2-keylock-listening.json `
+              -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+              -NormalBaselineReviewed -SlowKeyLockReviewed -FastKeyLockReviewed `
+              -TransportFallbackReviewed -PitchStabilityAcceptable `
+              -NoCriticalArtifactsObserved -RuntimeErrorReview
+            if ($LASTEXITCODE -eq 0) { throw 'Packaged M2 witness generated listening evidence in CI.' }
+            if (Test-Path 'BrokeDJ-M2-keylock-listening.json') { throw 'Packaged M2 witness wrote evidence in CI.' }
+            $global:LASTEXITCODE = 0
+          }
+          finally {
+            Pop-Location
+          }
       - name: Run staged no-audio lifecycle and device-probe smoke
         shell: pwsh
         run: |

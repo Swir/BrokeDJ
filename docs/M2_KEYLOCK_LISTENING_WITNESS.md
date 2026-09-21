@@ -39,6 +39,8 @@ The executable is:
 build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe
 ```
 
+When using a CI development artifact from this branch, the same witness script and guide are staged beside `BrokeDJ.exe` as `M2-KEYLOCK-LISTENING-WITNESS.ps1` and `M2-KEYLOCK-LISTENING-WITNESS.md`. The package manifest and `SHA256SUMS.txt` cover them together with the exact executable. That staging is convenience and integrity evidence only; CI is still forbidden from minting a listening witness.
+
 Keep hardware volume conservative. The witness script never launches BrokeDJ or produces audio.
 
 ## Manual A/B procedure
@@ -97,6 +99,18 @@ pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
   -PitchStabilityAcceptable `
   -NoCriticalArtifactsObserved `
   -RuntimeErrorReview
+```
+
+For a staged development artifact, run the copy beside the executable instead:
+
+```powershell
+pwsh -NoProfile -File .\M2-KEYLOCK-LISTENING-WITNESS.ps1 `
+  -AppPath .\BrokeDJ.exe `
+  -RepresentativeTrackCount 3 `
+  -UserOwnedOrLicensed `
+  -NormalBaselineReviewed -SlowKeyLockReviewed -FastKeyLockReviewed `
+  -TransportFallbackReviewed -PitchStabilityAcceptable `
+  -NoCriticalArtifactsObserved -RuntimeErrorReview
 ```
 
 The script refuses evidence generation in CI. It does not inspect or hash the test music. The output defaults to `BrokeDJ-M2-keylock-listening.json` and contains only the app fingerprint, coarse Windows build/architecture data, the representative-track count and closed boolean attestations.
