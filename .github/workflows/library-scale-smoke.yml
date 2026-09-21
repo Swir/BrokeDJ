@@ -1,0 +1,107 @@
+name: Native library scale smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-scale-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-library-scale:
+    name: Windows x64 / 5k-track native lifecycle
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Configure Windows x64
+        run: cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
+
+      - name: Build native app
+        run: cmake --build --preset windows-release --parallel 2
+
+      - name: Qualify development EXE against large local library
+        shell: pwsh
+        run: |
+          $appData = Join-Path $env:APPDATA 'BrokeDJ'
+          Remove-Item $appData -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path build/windows/diagnostics/library-scale-dev | Out-Null
+
+          python scripts/library_scale_smoke.py `
+            --exe build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe `
+            --database (Join-Path $appData 'library.sqlite3') `
+            --workdir build/windows/diagnostics/library-scale-dev `
+            --report build/windows/diagnostics/library-scale-development.json
+          if ($LASTEXITCODE -ne 0) { throw 'Development EXE large-library smoke failed' }
+
+          $report = Get-Content build/windows/diagnostics/library-scale-development.json -Raw | ConvertFrom-Json
+          if ($report.schema_version -ne 1 -or
+              $report.mode -ne 'native-large-library-lifecycle' -or
+              $report.plays_audio -ne $false -or
+              $report.opens_audio_device -ne $false -or
+              $report.fixture.tracks -ne 5000 -or
+              $report.fixture.history_rows -ne 12000 -or
+              $report.fixture.synthetic_paths_only -ne $true -or
+              $report.fixture.music_files_created_or_modified -ne $false -or
+              $report.post_smoke_tracks -ne 5000 -or
+              $report.post_smoke_history_rows -ne 12000 -or
+              $report.sqlite_quick_check -ne 'ok' -or
+              $report.gui_contract.success -ne $true -or
+              $report.gui_contract.step_count -ne 4 -or
+              $report.success -ne $true) {
+            throw 'Development EXE large-library smoke JSON contract failed'
+          }
+
+      - name: Stage native development package
+        shell: pwsh
+        run: |
+          cmake --install build/windows --config Release --prefix build/library-scale-package/BrokeDJ
+          if ($LASTEXITCODE -ne 0) { throw 'Large-library package staging failed' }
+          if (-not (Test-Path build/library-scale-package/BrokeDJ/BrokeDJ.exe)) {
+            throw 'Staged BrokeDJ.exe missing'
+          }
+
+      - name: Qualify staged EXE against fresh large local library
+        shell: pwsh
+        run: |
+          $appData = Join-Path $env:APPDATA 'BrokeDJ'
+          Remove-Item $appData -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path build/windows/diagnostics/library-scale-staged | Out-Null
+
+          python scripts/library_scale_smoke.py `
+            --exe build/library-scale-package/BrokeDJ/BrokeDJ.exe `
+            --database (Join-Path $appData 'library.sqlite3') `
+            --workdir build/windows/diagnostics/library-scale-staged `
+            --report build/windows/diagnostics/library-scale-staged.json
+          if ($LASTEXITCODE -ne 0) { throw 'Staged EXE large-library smoke failed' }
+
+          $report = Get-Content build/windows/diagnostics/library-scale-staged.json -Raw | ConvertFrom-Json
+          if ($report.schema_version -ne 1 -or
+              $report.mode -ne 'native-large-library-lifecycle' -or
+              $report.fixture.tracks -ne 5000 -or
+              $report.fixture.history_rows -ne 12000 -or
+              $report.sqlite_quick_check -ne 'ok' -or
+              $report.gui_contract.success -ne $true -or
+              $report.success -ne $true) {
+            throw 'Staged EXE large-library smoke JSON contract failed'
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: BrokeDJ-library-scale-smoke-windows-x64
+          path: |
+            build/windows/diagnostics/library-scale-development.json
+            build/windows/diagnostics/library-scale-staged.json
+            build/windows/diagnostics/library-scale-dev/BrokeDJ-gui-smoke.json
+            build/windows/diagnostics/library-scale-staged/BrokeDJ-gui-smoke.json
+          if-no-files-found: error
+          retention-days: 14
