@@ -127,6 +127,7 @@ public:
         organizerLifetime.reset();
         metadataWorkers.removeAllJobs(true, -1);
         browseWorkers.removeAllJobs(true, -1);
+        catalogWorkers.removeAllJobs(true, -1);
         organizerWorkers.removeAllJobs(true, -1);
         organizerDb.close();
     }
@@ -516,10 +517,13 @@ private:
     void refreshPlaylistCatalog() {
         if (!organizerAvailable || organizerCancelled.load(std::memory_order_acquire)) return;
         const auto generation = playlistGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        catalogWorkers.removeAllJobs(false, 0);
         const auto databasePath = organizerDatabasePath;
         const auto selectedBefore = selectedPlaylistId();
         const auto weak = std::weak_ptr<int>(organizerLifetime);
-        browseWorkers.addJob([this, weak, generation, databasePath, selectedBefore] {
+        // Keep catalog refresh independent from the cancellable playlist-browse queue. An
+        // immediate search after an edit must not be able to cancel the count refresh.
+        catalogWorkers.addJob([this, weak, generation, databasePath, selectedBefore] {
             if (weak.expired() || organizerCancelled.load(std::memory_order_acquire)) return;
             auto catalog = readPlaylistCatalog(databasePath);
             juce::MessageManager::callAsync(
@@ -716,6 +720,7 @@ private:
     std::filesystem::path organizerDatabasePath;
     juce::ThreadPool metadataWorkers{1};
     juce::ThreadPool browseWorkers{1};
+    juce::ThreadPool catalogWorkers{1};
     juce::ThreadPool organizerWorkers{1};
     std::atomic<bool> organizerCancelled{false};
     std::atomic<std::uint64_t> metadataGeneration{0};
