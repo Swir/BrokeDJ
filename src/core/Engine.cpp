@@ -218,13 +218,27 @@ ClipMailbox::~ClipMailbox() {
     delete active;
 }
 void ClipMailbox::publish(std::unique_ptr<Clip> clip) noexcept {
+    // A later publication supersedes an unconsumed clear request. The single
+    // non-audio publisher rule keeps this ordering deterministic without a lock.
+    clearRequested.store(false, std::memory_order_release);
     delete pending.exchange(clip.release(), std::memory_order_acq_rel);
+}
+void ClipMailbox::requestClear() noexcept {
+    // Removing a not-yet-adopted source is non-realtime work and can delete it
+    // here. The active source is never deleted here because it is audio-owned.
+    delete pending.exchange(nullptr, std::memory_order_acq_rel);
+    clearRequested.store(true, std::memory_order_release);
 }
 void ClipMailbox::collect() noexcept {
     delete retired.exchange(nullptr, std::memory_order_acq_rel);
 }
 bool ClipMailbox::adopt() noexcept {
     if (retired.load(std::memory_order_acquire) != nullptr) return false;
+    if (clearRequested.exchange(false, std::memory_order_acq_rel)) {
+        retired.store(active, std::memory_order_release);
+        active = nullptr;
+        return true;
+    }
     auto* next = pending.exchange(nullptr, std::memory_order_acq_rel);
     if (next == nullptr) return false;
     retired.store(active, std::memory_order_release);
@@ -335,6 +349,16 @@ void Engine::prepare(double rate, int maxAudioBlockFrames) {
 bool Engine::submit(std::size_t deck, std::unique_ptr<Clip> clip) {
     if (deck >= deckCount || !clip || !clip->valid()) return false;
     clips[deck].publish(std::move(clip));
+    return true;
+}
+bool Engine::eject(std::size_t deck) noexcept {
+    if (deck >= deckCount) return false;
+    auto& control = controls[deck];
+    control.playing.store(false, std::memory_order_release);
+    control.reverse.store(false, std::memory_order_release);
+    control.slip.store(false, std::memory_order_release);
+    clearLoopRegion(deck);
+    clips[deck].requestClear();
     return true;
 }
 void Engine::collectRetired() noexcept { for (auto& c : clips) c.collect(); }
