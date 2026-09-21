@@ -533,7 +533,7 @@ bool LibraryDatabase::restoreFrom(const std::filesystem::path& source,std::strin
         Statement sourceVersion(input,"PRAGMA user_version;");
         if(!sourceVersion.ready()||sqlite3_step(sourceVersion.get())!=SQLITE_ROW){setError(error,input,"read backup schema version");sqlite3_close_v2(input);return false;}
         const int backupSchemaVersion=sqlite3_column_int(sourceVersion.get(),0);
-        if(backupSchemaVersion<0||backupSchemaVersion>currentSchemaVersion){setError(error,"Backup schema version is unsupported");sqlite3_close_v2(input);return false;}
+        if(backupSchemaVersion<1||backupSchemaVersion>currentSchemaVersion){setError(error,"Backup schema version is unsupported");sqlite3_close_v2(input);return false;}
     }
 
     LibraryDatabase staged;

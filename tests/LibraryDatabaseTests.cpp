@@ -105,6 +105,19 @@ void createMalformedCurrentDatabase(const std::filesystem::path& path) {
     check(sqlite3_close_v2(db) == SQLITE_OK, "close malformed-current fixture");
 }
 
+void createVersionZeroGenericDatabase(const std::filesystem::path& path) {
+    sqlite3* db = nullptr;
+    check(sqlite3_open_v2(path.string().c_str(), &db,
+                          SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) == SQLITE_OK,
+          "create version-zero generic fixture");
+    execFixture(db,
+        "CREATE TABLE unrelated(id INTEGER PRIMARY KEY,payload TEXT NOT NULL);"
+        "INSERT INTO unrelated(payload) VALUES('not-a-brokedj-backup');"
+        "PRAGMA user_version=0;",
+        "create version-zero generic schema");
+    check(sqlite3_close_v2(db) == SQLITE_OK, "close version-zero generic fixture");
+}
+
 void testLibraryWorkflowAndSafeRestore() {
     TempDirectory temp;
     std::string error;
@@ -210,6 +223,17 @@ void testLibraryWorkflowAndSafeRestore() {
     check(db.search("", 100, nullptr).size() == 3,
           "malformed-current restore preserves live snapshot");
     check(db.integrityCheck(&error), "live snapshot remains structurally valid after rejection");
+
+    const auto genericV0 = temp.path / "generic-v0.sqlite3";
+    createVersionZeroGenericDatabase(genericV0);
+    check(!db.restoreFrom(genericV0, &error),
+          "generic version-zero SQLite database rejected as unsupported backup");
+    check(error.find("unsupported") != std::string::npos,
+          "version-zero rejection identifies unsupported backup schema");
+    check(db.search("", 100, nullptr).size() == 3,
+          "version-zero rejection preserves live snapshot");
+    check(db.integrityCheck(&error),
+          "live snapshot remains valid after version-zero rejection");
 
     const auto future = temp.path / "future.sqlite3";
     createFutureDatabase(future);
