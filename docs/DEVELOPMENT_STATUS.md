@@ -16,7 +16,8 @@ This file is the durable engineering checkpoint for the current repository state
 - PR #75 adds `scripts/beta_qualification.ps1`, a human-controlled Windows 11 x64 orchestrator that re-runs the existing M1–M4 witness validators against one exact `BrokeDJ.exe` before it can create a Beta qualification summary.
 - The summary is bound to `SOURCE-COMMIT.txt`, the executable SHA-256, the M1 full device-probe SHA-256 and each M1–M4 evidence SHA-256. It stores no device names, track names/paths, recording paths, source music or microphone audio.
 - Generation refuses CI. Existing summaries can be revalidated and fail closed when the executable, source commit, probe, witness files, gate booleans, hashes, schema or privacy contract changes.
-- Windows staging now includes `BETA-QUALIFICATION.ps1` plus `BETA-QUALIFICATION.md`; the downloaded-package smoke requires both and verifies that CI cannot mint a human Beta qualification file.
+- Windows staging now includes `BETA-QUALIFICATION.ps1`, `BETA-QUALIFICATION.md` and `BETA-PREVIEW.md`; the downloaded-package smoke requires them and verifies that CI cannot mint a human Beta qualification file.
+- Only after the full staged-package smoke succeeds, CI uploads that exact verified package a second time as `BrokeDJ-Beta-Preview-Windows-x64` (7-day workflow artifact) for user testing. This is not a public GitHub Beta Release and gives no milestone credit.
 - The checkpoint commit changes the PR head, so fresh exact-final-head Build/Test and scale-smoke results remain mandatory before any integration.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). The Beta gate tooling does not advance that counter by itself.
 
