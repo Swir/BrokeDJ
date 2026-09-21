@@ -64,6 +64,38 @@ function Get-RequiredProperty([object]$Object, [string]$Name, [string]$Context) 
     return $property.Value
 }
 
+function Assert-ExactProperties([object]$Object, [string[]]$Expected, [string]$Context) {
+    if ($null -eq $Object) { throw "Missing $Context object." }
+    $actual = @($Object.PSObject.Properties | ForEach-Object { $_.Name })
+    foreach ($name in $Expected) {
+        if ($actual -notcontains $name) { throw "Missing $Context.$name." }
+    }
+    $unexpected = @($actual | Where-Object { $Expected -notcontains $_ })
+    if ($unexpected.Count -gt 0) {
+        throw ("Unexpected $Context properties: " + ($unexpected -join ', '))
+    }
+}
+
+function Assert-IntegerProperty([object]$Object, [string]$Name, [long]$Minimum, [string]$Context) {
+    $value = Get-RequiredProperty -Object $Object -Name $Name -Context $Context
+    if ($value -isnot [int] -and $value -isnot [long]) {
+        throw "$Context.$Name must be a JSON integer."
+    }
+    $numeric = [long]$value
+    if ($numeric -lt $Minimum) {
+        throw "$Context.$Name must be at least $Minimum."
+    }
+    return $numeric
+}
+
+function Assert-StringProperty([object]$Object, [string]$Name, [string]$Context) {
+    $value = Get-RequiredProperty -Object $Object -Name $Name -Context $Context
+    if ($value -isnot [string]) {
+        throw "$Context.$Name must be a JSON string."
+    }
+    return [string]$value
+}
+
 function Assert-BooleanProperty([object]$Object, [string]$Name, [bool]$Expected, [string]$Context) {
     $value = Get-RequiredProperty -Object $Object -Name $Name -Context $Context
     if ($value -isnot [bool]) {
@@ -77,29 +109,40 @@ function Assert-BooleanProperty([object]$Object, [string]$Name, [bool]$Expected,
 function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $data = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
-    if ($data.schema -ne 1) { throw 'Unsupported M4 witness schema.' }
-    if ($data.project -ne 'BrokeDJ' -or $data.scope -ne 'M4-library-workflow') {
+
+    Assert-ExactProperties -Object $data -Expected @(
+        'schema', 'project', 'scope', 'generatedUtc', 'environment', 'app', 'checks', 'privacy'
+    ) -Context 'evidence'
+
+    $schema = Assert-IntegerProperty -Object $data -Name 'schema' -Minimum 1 -Context 'evidence'
+    if ($schema -ne 1) { throw 'Unsupported M4 witness schema.' }
+    $project = Assert-StringProperty -Object $data -Name 'project' -Context 'evidence'
+    $scope = Assert-StringProperty -Object $data -Name 'scope' -Context 'evidence'
+    if ($project -ne 'BrokeDJ' -or $scope -ne 'M4-library-workflow') {
         throw 'Evidence file is not a BrokeDJ M4 library witness.'
     }
 
-    $generatedUtc = Get-RequiredProperty -Object $data -Name 'generatedUtc' -Context 'evidence'
+    $generatedUtc = Assert-StringProperty -Object $data -Name 'generatedUtc' -Context 'evidence'
     $parsedGeneratedUtc = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$generatedUtc, [ref]$parsedGeneratedUtc)) {
+    if (-not [DateTimeOffset]::TryParse($generatedUtc, [ref]$parsedGeneratedUtc)) {
         throw 'evidence.generatedUtc is not a valid timestamp.'
     }
 
-    $windowsBuild = [int](Get-RequiredProperty -Object $data.environment -Name 'windowsBuild' -Context 'environment')
-    if ($windowsBuild -lt 22000) { throw 'Evidence does not describe a Windows 11 build.' }
-    $architecture = [string](Get-RequiredProperty -Object $data.environment -Name 'architecture' -Context 'environment')
-    $processArchitecture = [string](Get-RequiredProperty -Object $data.environment -Name 'processArchitecture' -Context 'environment')
+    Assert-ExactProperties -Object $data.environment -Expected @(
+        'windowsBuild', 'architecture', 'processArchitecture'
+    ) -Context 'environment'
+    $windowsBuild = Assert-IntegerProperty -Object $data.environment -Name 'windowsBuild' -Minimum 22000 -Context 'environment'
+    $architecture = Assert-StringProperty -Object $data.environment -Name 'architecture' -Context 'environment'
+    $processArchitecture = Assert-StringProperty -Object $data.environment -Name 'processArchitecture' -Context 'environment'
     if ($architecture -ne 'X64' -or $processArchitecture -ne 'X64') {
         throw 'M4 witness evidence must come from an x64 OS and x64 PowerShell process.'
     }
 
+    Assert-ExactProperties -Object $data.app -Expected @('fileName', 'fileVersion', 'sha256') -Context 'app'
     $expectedFingerprint = Get-AppFingerprint -App $ExpectedApp
-    $evidenceFileName = [string](Get-RequiredProperty -Object $data.app -Name 'fileName' -Context 'app')
-    $evidenceVersion = [string](Get-RequiredProperty -Object $data.app -Name 'fileVersion' -Context 'app')
-    $evidenceHash = [string](Get-RequiredProperty -Object $data.app -Name 'sha256' -Context 'app')
+    $evidenceFileName = Assert-StringProperty -Object $data.app -Name 'fileName' -Context 'app'
+    $evidenceVersion = Assert-StringProperty -Object $data.app -Name 'fileVersion' -Context 'app'
+    $evidenceHash = Assert-StringProperty -Object $data.app -Name 'sha256' -Context 'app'
     if ($evidenceHash -notmatch '^[0-9a-fA-F]{64}$') { throw 'app.sha256 is not a valid SHA-256 digest.' }
     if ($evidenceFileName -ne $expectedFingerprint.fileName) { throw 'Evidence executable filename does not match AppPath.' }
     if ($evidenceVersion -ne $expectedFingerprint.fileVersion) { throw 'Evidence executable version does not match AppPath.' }
@@ -115,6 +158,7 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
         'libraryBackupRestore',
         'sessionSaveLoad'
     )
+    Assert-ExactProperties -Object $data.checks -Expected $requiredChecks -Context 'checks'
     $failed = @()
     foreach ($name in $requiredChecks) {
         try {
@@ -127,7 +171,9 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
         throw ('Witness is incomplete or malformed. Failed checks: ' + ($failed -join ', '))
     }
 
-    foreach ($name in @('containsTrackPaths', 'containsTrackNames', 'containsSourceMusic')) {
+    $privacyProperties = @('containsTrackPaths', 'containsTrackNames', 'containsSourceMusic')
+    Assert-ExactProperties -Object $data.privacy -Expected $privacyProperties -Context 'privacy'
+    foreach ($name in $privacyProperties) {
         Assert-BooleanProperty -Object $data.privacy -Name $name -Expected $false -Context 'privacy'
     }
 
