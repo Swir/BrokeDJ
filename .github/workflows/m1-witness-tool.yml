@@ -142,23 +142,25 @@ jobs:
           $probeMismatch.deviceProbe.sha256 = ('c' * 64)
           Assert-Rejected $probeMismatch '.\probe-mismatch.json' 'Wrong device-probe fingerprint was accepted.'
 
+          New-Item -ItemType Directory -Force -Path .\unsafe | Out-Null
           $unsafeProbe = $probe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
           $unsafeProbe.safety_invariants_ok = $false
-          $unsafeProbe | ConvertTo-Json -Depth 8 | Set-Content .\unsafe-probe.json -Encoding utf8
-          $unsafeHash = (Get-FileHash -LiteralPath .\unsafe-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $unsafeProbe | ConvertTo-Json -Depth 8 | Set-Content .\unsafe\BrokeDJ-device-probe.json -Encoding utf8
+          $unsafeHash = (Get-FileHash -LiteralPath .\unsafe\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
           $unsafeEvidence = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
           $unsafeEvidence.deviceProbe.sha256 = $unsafeHash
-          Assert-Rejected $unsafeEvidence '.\unsafe-probe-evidence.json' 'Unsafe device probe was accepted.' '.\unsafe-probe.json'
+          Assert-Rejected $unsafeEvidence '.\unsafe-probe-evidence.json' 'Unsafe device probe was accepted.' '.\unsafe\BrokeDJ-device-probe.json'
 
+          New-Item -ItemType Directory -Force -Path .\no-four-output | Out-Null
           $noFourOutputProbe = $probe | ConvertTo-Json -Depth 8 | ConvertFrom-Json
           $noFourOutputProbe.four_output_candidate_count = 0
-          $noFourOutputProbe | ConvertTo-Json -Depth 8 | Set-Content .\no-four-output-probe.json -Encoding utf8
-          $noFourOutputHash = (Get-FileHash -LiteralPath .\no-four-output-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $noFourOutputProbe | ConvertTo-Json -Depth 8 | Set-Content .\no-four-output\BrokeDJ-device-probe.json -Encoding utf8
+          $noFourOutputHash = (Get-FileHash -LiteralPath .\no-four-output\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
           $noFourOutputEvidence = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
           $noFourOutputEvidence.deviceProbe.sha256 = $noFourOutputHash
           $noFourOutputEvidence.deviceProbe.fourOutputCandidateCount = 0
-          Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output-probe.json'
+          Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output\BrokeDJ-device-probe.json'
 
-          Write-Host 'M1 evidence contract: complete fixture accepted; incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch and unsafe-probe cases rejected.'
+          Write-Host 'M1 evidence contract: complete fixture accepted; incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases rejected.'
           $global:LASTEXITCODE = 0
           exit 0
