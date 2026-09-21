@@ -44,7 +44,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Development EXE large-library smoke failed' }
 
           $report = Get-Content build/windows/diagnostics/library-scale-development.json -Raw | ConvertFrom-Json
-          if ($report.schema_version -ne 2 -or
+          if ($report.schema_version -ne 3 -or
               $report.mode -ne 'native-large-library-lifecycle' -or
               $report.plays_audio -ne $false -or
               $report.opens_audio_device -ne $false -or
@@ -64,6 +64,18 @@ jobs:
               $report.playlist_browse_contract.tag_matches -ne 157 -or
               $report.playlist_browse_contract.duplicate_matches -ne 2 -or
               $report.playlist_browse_contract.missing_matches -ne 1 -or
+              $report.library_recovery_contract.backup_success -ne $true -or
+              $report.library_recovery_contract.restore_success -ne $true -or
+              $report.library_recovery_contract.backup_schema_version -ne 2 -or
+              $report.library_recovery_contract.restore_schema_version -ne 2 -or
+              $report.library_recovery_contract.backup_present -ne $true -or
+              $report.library_recovery_contract.backup_size_bytes -le 0 -or
+              $report.library_recovery_contract.mutation_title_changed -ne $true -or
+              $report.library_recovery_contract.mutation_history_rows -ne 11999 -or
+              $report.library_recovery_contract.mutation_playlist_items -ne 4999 -or
+              $report.library_recovery_contract.mutation_sqlite_quick_check -ne 'ok' -or
+              $report.library_recovery_contract.restored_sqlite_quick_check -ne 'ok' -or
+              $report.library_recovery_contract.restored_full_fixture -ne $true -or
               $report.post_smoke.tracks -ne 5000 -or
               $report.post_smoke.history -ne 12000 -or
               $report.post_smoke.playlists -ne 8 -or
@@ -108,7 +120,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Staged EXE large-library smoke failed' }
 
           $report = Get-Content build/windows/diagnostics/library-scale-staged.json -Raw | ConvertFrom-Json
-          if ($report.schema_version -ne 2 -or
+          if ($report.schema_version -ne 3 -or
               $report.mode -ne 'native-large-library-lifecycle' -or
               $report.plays_audio -ne $false -or
               $report.opens_audio_device -ne $false -or
@@ -128,6 +140,18 @@ jobs:
               $report.playlist_browse_contract.tag_matches -ne 157 -or
               $report.playlist_browse_contract.duplicate_matches -ne 2 -or
               $report.playlist_browse_contract.missing_matches -ne 1 -or
+              $report.library_recovery_contract.backup_success -ne $true -or
+              $report.library_recovery_contract.restore_success -ne $true -or
+              $report.library_recovery_contract.backup_schema_version -ne 2 -or
+              $report.library_recovery_contract.restore_schema_version -ne 2 -or
+              $report.library_recovery_contract.backup_present -ne $true -or
+              $report.library_recovery_contract.backup_size_bytes -le 0 -or
+              $report.library_recovery_contract.mutation_title_changed -ne $true -or
+              $report.library_recovery_contract.mutation_history_rows -ne 11999 -or
+              $report.library_recovery_contract.mutation_playlist_items -ne 4999 -or
+              $report.library_recovery_contract.mutation_sqlite_quick_check -ne 'ok' -or
+              $report.library_recovery_contract.restored_sqlite_quick_check -ne 'ok' -or
+              $report.library_recovery_contract.restored_full_fixture -ne $true -or
               $report.post_smoke.tracks -ne 5000 -or
               $report.post_smoke.history -ne 12000 -or
               $report.post_smoke.playlists -ne 8 -or
@@ -155,6 +179,10 @@ jobs:
             build/windows/diagnostics/library-scale-development.json
             build/windows/diagnostics/library-scale-staged.json
             build/windows/diagnostics/library-scale-dev/BrokeDJ-gui-smoke.json
+            build/windows/diagnostics/library-scale-dev/BrokeDJ-library-backup-smoke.json
+            build/windows/diagnostics/library-scale-dev/BrokeDJ-library-restore-smoke.json
             build/windows/diagnostics/library-scale-staged/BrokeDJ-gui-smoke.json
+            build/windows/diagnostics/library-scale-staged/BrokeDJ-library-backup-smoke.json
+            build/windows/diagnostics/library-scale-staged/BrokeDJ-library-restore-smoke.json
           if-no-files-found: error
           retention-days: 14
