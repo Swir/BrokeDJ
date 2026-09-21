@@ -2,9 +2,7 @@
 # Copyright (c) 2026 Swir
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$AppPath,
+    [string]$AppPath = '',
 
     [string]$EvidencePath = (Join-Path (Get-Location) 'BrokeDJ-M4-Library-Witness.json'),
 
@@ -28,7 +26,7 @@ function Read-YesNo([string]$Question) {
 }
 
 function Assert-Windows11 {
-    if (-not $IsWindows) {
+    if ($env:OS -ne 'Windows_NT') {
         throw 'This witness must run on Windows.'
     }
     $build = [Environment]::OSVersion.Version.Build
@@ -39,21 +37,70 @@ function Assert-Windows11 {
 }
 
 function Resolve-App([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'AppPath is required when recording a new witness.'
+    }
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $item = Get-Item -LiteralPath $resolved
     if ($item.PSIsContainer) { throw 'AppPath must point to BrokeDJ.exe, not a directory.' }
     if ($item.Extension -ne '.exe') { throw 'AppPath must point to a Windows executable.' }
+    if ($item.Name -ine 'BrokeDJ.exe') { throw 'AppPath must point to BrokeDJ.exe.' }
     return $item
+}
+
+function Require-Property($Object, [string]$Name, [string]$Context) {
+    if ($null -eq $Object -or $null -eq $Object.PSObject.Properties[$Name]) {
+        throw "Evidence is missing $Context.$Name."
+    }
+    return $Object.PSObject.Properties[$Name].Value
 }
 
 function Validate-Evidence([string]$Path) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $data = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
-    if ($data.schema -ne 1) { throw 'Unsupported M4 witness schema.' }
-    if ($data.project -ne 'BrokeDJ' -or $data.scope -ne 'M4-library-workflow') {
+    if ($null -eq $data) { throw 'Evidence JSON is empty.' }
+
+    if ((Require-Property $data 'schema' 'root') -ne 1) {
+        throw 'Unsupported M4 witness schema.'
+    }
+    if ((Require-Property $data 'project' 'root') -ne 'BrokeDJ'
+        -or (Require-Property $data 'scope' 'root') -ne 'M4-library-workflow') {
         throw 'Evidence file is not a BrokeDJ M4 library witness.'
     }
 
+    $generatedUtc = [string](Require-Property $data 'generatedUtc' 'root')
+    $parsedTimestamp = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($generatedUtc, [ref]$parsedTimestamp)) {
+        throw 'Evidence generatedUtc is not a valid timestamp.'
+    }
+
+    $environment = Require-Property $data 'environment' 'root'
+    $windowsBuild = Require-Property $environment 'windowsBuild' 'environment'
+    if ($windowsBuild -isnot [int] -and $windowsBuild -isnot [long]) {
+        throw 'Evidence Windows build must be an integer.'
+    }
+    if ([long]$windowsBuild -lt 22000) {
+        throw 'Evidence was not recorded on Windows 11.'
+    }
+    foreach ($name in @('architecture', 'processArchitecture')) {
+        if ([string]::IsNullOrWhiteSpace([string](Require-Property $environment $name 'environment'))) {
+            throw "Evidence environment.$name is empty."
+        }
+    }
+
+    $app = Require-Property $data 'app' 'root'
+    if ([string](Require-Property $app 'fileName' 'app') -ine 'BrokeDJ.exe') {
+        throw 'Evidence app filename is not BrokeDJ.exe.'
+    }
+    $sha256 = [string](Require-Property $app 'sha256' 'app')
+    if ($sha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'Evidence app SHA-256 is malformed.'
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Require-Property $app 'fileVersion' 'app'))) {
+        throw 'Evidence app file version is empty.'
+    }
+
+    $checks = Require-Property $data 'checks' 'root'
     $required = @(
         'launchAndResize',
         'importAndSearch',
@@ -66,15 +113,27 @@ function Validate-Evidence([string]$Path) {
     )
     $failed = @()
     foreach ($name in $required) {
-        if (-not [bool]$data.checks.$name) { $failed += $name }
+        $value = Require-Property $checks $name 'checks'
+        if ($value -isnot [bool]) {
+            throw "Evidence checks.$name must be a JSON boolean."
+        }
+        if (-not $value) { $failed += $name }
     }
     if ($failed.Count -gt 0) {
         throw ('Witness is incomplete. Failed checks: ' + ($failed -join ', '))
     }
 
+    $privacy = Require-Property $data 'privacy' 'root'
+    foreach ($name in @('containsTrackPaths', 'containsTrackNames', 'containsSourceMusic')) {
+        $value = Require-Property $privacy $name 'privacy'
+        if ($value -isnot [bool] -or $value) {
+            throw "Evidence privacy.$name must be the JSON boolean false."
+        }
+    }
+
     Write-Step "Witness is complete: $resolved"
-    Write-Step "App SHA-256: $($data.app.sha256)"
-    Write-Step "Windows build: $($data.environment.windowsBuild)"
+    Write-Step "App SHA-256: $sha256"
+    Write-Step "Windows build: $windowsBuild"
 }
 
 if ($ValidateExisting) {
@@ -110,8 +169,8 @@ $evidence = [ordered]@{
     generatedUtc = [DateTime]::UtcNow.ToString('o')
     environment = [ordered]@{
         windowsBuild = $windowsBuild
-        architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-        processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
     }
     app = [ordered]@{
         fileName = $app.Name
