@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "Decoder.h"
+#include "WaveformCache.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -66,7 +67,7 @@ bool buildSequentialPeaks(juce::AudioFormatReader& reader, const std::atomic<boo
             const auto frame = offset + static_cast<juce::int64>(i);
             const auto bucket = std::min<std::int64_t>(
                 previewBuckets - 1,
-                frame * static_cast<juce::int64>(previewBuckets) / totalFrames);
+                frame * static_cast<juce::int64_t>(previewBuckets) / totalFrames);
             const float left = std::isfinite(channels[0][i]) ? channels[0][i] : 0.0f;
             const float right = std::isfinite(channels[1][i]) ? channels[1][i] : 0.0f;
             peaks[static_cast<std::size_t>(bucket)] = std::max(
@@ -248,12 +249,28 @@ DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancel
             return result;
         }
 
+        std::unique_ptr<WaveformPreviewCache> waveformCache;
+        if (options.enableWaveformCache) {
+            auto cacheRoot = options.waveformCacheRoot;
+            if (cacheRoot.getFullPathName().isEmpty())
+                cacheRoot = WaveformPreviewCache::defaultRoot();
+            waveformCache = std::make_unique<WaveformPreviewCache>(cacheRoot);
+            result.waveformCacheHit = waveformCache->load(file, result.peaks);
+        }
+        const auto persistWaveform = [&] {
+            if (waveformCache != nullptr && !result.waveformCacheHit
+                && !cancelled.load(std::memory_order_acquire)) {
+                static_cast<void>(waveformCache->store(file, result.peaks));
+            }
+        };
+
         constexpr std::int64_t bytesPerStereoFrame = static_cast<std::int64_t>(sizeof(float) * 2);
         const auto thresholdBytes = std::max<std::int64_t>(1, options.streamingThresholdBytes);
         const bool useStreaming = reader->lengthInSamples > thresholdBytes / bytesPerStereoFrame;
 
         if (useStreaming) {
-            if (!buildSparsePeaks(*reader, cancelled, result.peaks)) {
+            if (!result.waveformCacheHit
+                && !buildSparsePeaks(*reader, cancelled, result.peaks)) {
                 if (cancelled.load()) {
                     result.error = "Import cancelled.";
                     return result;
@@ -276,6 +293,7 @@ DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancel
                 result.error = "Import cancelled.";
                 return result;
             }
+            persistWaveform();
 
             // Preview extraction may leave a compressed decoder at an arbitrary
             // position/state. Playback always gets a fresh reader, isolating cache
@@ -329,14 +347,18 @@ DecodeResult decodeTrack(const juce::File& file, const std::atomic<bool>& cancel
         }
         if (reader->numChannels == 1)
             std::copy(clip->left.begin(), clip->left.end(), clip->right.begin());
-        result.peaks.assign(previewBuckets, 0.0f);
+        if (!result.waveformCacheHit)
+            result.peaks.assign(previewBuckets, 0.0f);
         for (std::size_t i = 0; i < length; ++i) {
             if (!std::isfinite(clip->left[i])) clip->left[i] = 0.0f;
             if (!std::isfinite(clip->right[i])) clip->right[i] = 0.0f;
-            const auto bucket = std::min<std::size_t>(previewBuckets - 1, i * previewBuckets / length);
-            result.peaks[bucket] = std::max(result.peaks[bucket],
-                std::min(1.0f, std::max(std::abs(clip->left[i]), std::abs(clip->right[i]))));
+            if (!result.waveformCacheHit) {
+                const auto bucket = std::min<std::size_t>(previewBuckets - 1, i * previewBuckets / length);
+                result.peaks[bucket] = std::max(result.peaks[bucket],
+                    std::min(1.0f, std::max(std::abs(clip->left[i]), std::abs(clip->right[i]))));
+            }
         }
+        persistWaveform();
         result.clip = std::move(clip);
     } catch (const std::exception& error) {
         result.error = "Import failed: " + juce::String(error.what());
