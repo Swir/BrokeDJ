@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -84,6 +85,21 @@ void clearContentHash(const std::filesystem::path& databaseFile, std::int64_t tr
     check(sqlite3_changes(handle) == 1, "legacy hash reset changed one row");
     sqlite3_finalize(statement);
     check(sqlite3_close_v2(handle) == SQLITE_OK, "close legacy hash reset database");
+}
+
+void testFilesystemMissingClassification() {
+    using broke::library::runtime::detail::filesystemStatusMeansMissing;
+    check(filesystemStatusMeansMissing(std::error_code{}),
+          "non-regular path without inspection error is a confirmed missing source");
+    check(filesystemStatusMeansMissing(
+              std::make_error_code(std::errc::no_such_file_or_directory)),
+          "ENOENT is a confirmed missing source on platforms that report it from status");
+    check(filesystemStatusMeansMissing(std::make_error_code(std::errc::not_a_directory)),
+          "ENOTDIR is a confirmed disconnected source path");
+    check(!filesystemStatusMeansMissing(std::make_error_code(std::errc::permission_denied)),
+          "permission errors must not silently mark a track missing");
+    check(!filesystemStatusMeansMissing(std::make_error_code(std::errc::io_error)),
+          "filesystem I/O errors must remain failures instead of missing-track state");
 }
 
 void execChecked(sqlite3* handle, const char* sql, const char* message) {
@@ -359,6 +375,7 @@ void testLargeLibraryRuntimeBounds() {
 
 int main() {
     try {
+        testFilesystemMissingClassification();
         testJoinedPlaybackHistory();
         testBoundedLegacyContentHashBackfill();
         testLargeLibraryRuntimeBounds();
