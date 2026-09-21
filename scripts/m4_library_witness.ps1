@@ -122,10 +122,21 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
         throw 'Evidence file is not a BrokeDJ M4 library witness.'
     }
 
-    $generatedUtc = Assert-StringProperty -Object $data -Name 'generatedUtc' -Context 'evidence'
+    # PowerShell 7 can materialize ISO-8601 JSON strings as DateTime while
+    # Windows PowerShell commonly leaves them as strings. Accept either
+    # representation but still require a parseable timestamp value.
+    $generatedUtc = Get-RequiredProperty -Object $data -Name 'generatedUtc' -Context 'evidence'
     $parsedGeneratedUtc = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse($generatedUtc, [ref]$parsedGeneratedUtc)) {
-        throw 'evidence.generatedUtc is not a valid timestamp.'
+    if ($generatedUtc -is [DateTime]) {
+        $parsedGeneratedUtc = [DateTimeOffset]$generatedUtc
+    } elseif ($generatedUtc -is [DateTimeOffset]) {
+        $parsedGeneratedUtc = $generatedUtc
+    } elseif ($generatedUtc -is [string]) {
+        if (-not [DateTimeOffset]::TryParse($generatedUtc, [ref]$parsedGeneratedUtc)) {
+            throw 'evidence.generatedUtc is not a valid timestamp.'
+        }
+    } else {
+        throw 'evidence.generatedUtc must be an ISO-8601 timestamp.'
     }
 
     Assert-ExactProperties -Object $data.environment -Expected @(
