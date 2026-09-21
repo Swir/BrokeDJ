@@ -11,6 +11,7 @@ struct DecodeResult {
     std::unique_ptr<broke::Clip> clip;
     std::vector<float> peaks;
     juce::String name, error;
+    bool waveformCacheHit = false;
 };
 
 // Internal decoder policy. Production callers use the defaults. Tests may lower
@@ -19,6 +20,10 @@ struct DecodeResult {
 struct DecodeOptions final {
     std::int64_t streamingThresholdBytes = 64LL * 1024 * 1024;
     int readAheadDelayMs = 0;
+    bool enableWaveformCache = true;
+    // Empty means WaveformPreviewCache::defaultRoot(). Tests can provide an
+    // isolated directory without changing the production cache location.
+    juce::File waveformCacheRoot;
 };
 
 // A worker-only decoder. No file I/O is performed by the audio callback.
