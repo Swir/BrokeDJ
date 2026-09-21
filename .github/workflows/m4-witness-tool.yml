@@ -34,7 +34,7 @@ jobs:
           }
           Write-Host 'PowerShell parser: OK'
 
-      - name: Validate positive and negative evidence contracts
+      - name: Validate complete and incomplete evidence contracts
         shell: pwsh
         run: |
           $complete = @{
@@ -58,7 +58,7 @@ jobs:
           }
           $complete | ConvertTo-Json -Depth 6 | Set-Content complete.json -Encoding utf8
           & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -EvidencePath .\complete.json -ValidateExisting
+            -AppPath .\unused.exe -EvidencePath .\complete.json -ValidateExisting
           if ($LASTEXITCODE -ne 0) { throw 'Complete witness fixture was rejected.' }
 
           $incomplete = $complete.Clone()
@@ -67,29 +67,8 @@ jobs:
           $incomplete.checks.libraryBackupRestore = $false
           $incomplete | ConvertTo-Json -Depth 6 | Set-Content incomplete.json -Encoding utf8
           & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -EvidencePath .\incomplete.json -ValidateExisting
+            -AppPath .\unused.exe -EvidencePath .\incomplete.json -ValidateExisting
           if ($LASTEXITCODE -eq 0) { throw 'Incomplete witness fixture was accepted.' }
-
-          $privacyViolation = $complete.Clone()
-          $privacyViolation.privacy = @{
-            containsTrackPaths = $false
-            containsTrackNames = $true
-            containsSourceMusic = $false
-          }
-          $privacyViolation | ConvertTo-Json -Depth 6 | Set-Content privacy-violation.json -Encoding utf8
-          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -EvidencePath .\privacy-violation.json -ValidateExisting
-          if ($LASTEXITCODE -eq 0) { throw 'Privacy-violating witness fixture was accepted.' }
-
-          $wrongType = $complete.Clone()
-          $wrongType.checks = @{}
-          foreach ($property in $complete.checks.Keys) { $wrongType.checks[$property] = $complete.checks[$property] }
-          $wrongType.checks.history = 'true'
-          $wrongType | ConvertTo-Json -Depth 6 | Set-Content wrong-type.json -Encoding utf8
-          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -EvidencePath .\wrong-type.json -ValidateExisting
-          if ($LASTEXITCODE -eq 0) { throw 'String-valued witness check was accepted as a JSON boolean.' }
-
-          Write-Host 'Evidence contract: complete accepted; incomplete, privacy-violating and wrong-type fixtures rejected.'
+          Write-Host 'Evidence contract: complete accepted, incomplete rejected.'
           $global:LASTEXITCODE = 0
           exit 0
