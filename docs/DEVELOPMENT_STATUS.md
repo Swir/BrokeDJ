@@ -5,10 +5,11 @@ This file is the durable engineering checkpoint for the current repository state
 ## Current checkpoint
 
 - Default branch baseline: `main` at `bd04efadb412bbc506a09b88a541bebeb3275f2d`. PR #66 (`M4: add native large-library lifecycle qualification`) was integrated only after exact-head build/test run `35573083933` and focused native-library run `35573083971` completed successfully. Post-merge main runs `35576169961` (build/test) and `35576169949` (native library scale smoke) also completed successfully.
-- Active development: PR #67, branch `feat/m4-playlist-browse-filter`. Functional package head before this checkpoint documentation commit: `caaefc59a27fd30dc6f1161bba1832ef52cfa6f2`.
-- Exact-head workflows were started for that functional head: normal build/test run `35577343931` and focused native large-library run `35577343856`. This checkpoint commit changes the PR head, so required checks must pass again for the final head before merge.
+- Active development: PR #67, branch `feat/m4-playlist-browse-filter`. Latest functional head before this checkpoint documentation commit: `60d55303306119312a599d360cb902cd470f6d8e`.
+- Self-review blocker fixed on that functional head: playlist-catalog refresh now uses a dedicated background `ThreadPool`, independent from the cancellable playlist-browse queue, so an immediate post-edit search cannot cancel a queued catalog-count refresh. The catalog worker is generation-checked and drained during shutdown.
+- Exact-head workflows started for that functional head: normal build/test run `35578860090` and focused native large-library run `35578860068`. This checkpoint commit changes the PR head, so required checks must pass again for the final head before merge.
 - PR #67 adds a bounded native playlist selector to the local library, playlist-scoped title/artist/album/path/tag search, `is:duplicate` / `is:missing` review inside a playlist, selected-track playlist membership visibility and refreshed playlist counts after membership edits.
-- The focused large-library harness now seeds deterministic playlist/tag relationships in addition to 5,000 tracks and 12,000 history rows and verifies the same 500-row playlist-query bound and review directives used by the native UI contract.
+- The focused large-library harness seeds deterministic playlist/tag relationships in addition to 5,000 tracks and 12,000 history rows and verifies the same 500-row playlist-query bound and review directives used by the native UI contract.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 is materially advancing but is not complete.
 - GitHub Releases remains empty; no public BrokeDJ release is qualified by this checkpoint.
 
@@ -28,8 +29,9 @@ This file is the durable engineering checkpoint for the current repository state
 ## Active M4 playlist-browsing package
 
 - The native PL/EN library panel exposes `All tracks` plus a bounded playlist catalog with per-playlist track counts. Playlist catalog reads use a separate read-only SQLite connection and remain outside the audio callback.
+- Playlist catalog refresh and playlist browsing use independent worker queues. Search cancellation is therefore limited to stale browse jobs and cannot cancel post-edit catalog refreshes.
 - Selecting a playlist executes bounded background reads (maximum 500 rows) in playlist order. Normal search covers title, artist, album, local path and tags; `is:duplicate` and `is:missing` keep their non-destructive review meaning inside the selected playlist.
-- Selection metadata now reports both tags and playlist memberships. Membership edits refresh the selected-track metadata and playlist catalog rather than mutating source music.
+- Selection metadata reports both tags and playlist memberships. Membership edits refresh the selected-track metadata and playlist catalog rather than mutating source music.
 - The native large-library fixture adds eight playlists, 5,000 playlist-item rows, 32 tags and 5,000 track-tag rows. Deterministic checks cover the 500-row bound, title search, tag search, duplicate review and missing-file review before and after the native no-audio lifecycle.
 - The focused Windows workflow applies the fixture to the real development EXE and then to a freshly staged EXE. It never creates or edits music files and does not open an audio device.
 
@@ -42,4 +44,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Require green exact-final-head PR #67 runs and fix any regression before integration. Once the internally automatable playlist package is merged, keep the user-controlled Windows M4 witness as an explicit external gate and move the next autonomous package to a closable roadmap item rather than fabricating manual evidence; the next engineering candidate is M5 built-in DSP/rack infrastructure with deterministic realtime and audio-render tests.
+Require green exact-final-head PR #67 runs and fix any regression before integration. After this internally automatable playlist package is green, keep the user-controlled Windows M4 interaction/recovery witness explicit and finish any remaining internally closable M4 acceptance work before widening scope.
