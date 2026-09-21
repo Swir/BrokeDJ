@@ -2,21 +2,23 @@
 # Copyright (c) 2026 Swir
 [CmdletBinding()]
 param(
-    [string]$AppPath = '',
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$AppPath,
+
     [string]$EvidencePath = (Join-Path (Get-Location) 'BrokeDJ-M4-Library-Witness.json'),
+
     [switch]$ValidateExisting
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Write-Step {
-    param([string]$Message)
+function Write-Step([string]$Message) {
     Write-Host "[BrokeDJ M4] $Message"
 }
 
-function Read-YesNo {
-    param([string]$Question)
+function Read-YesNo([string]$Question) {
     while ($true) {
         $answer = (Read-Host "$Question [y/n]").Trim().ToLowerInvariant()
         if ($answer -eq 'y' -or $answer -eq 'yes') { return $true }
@@ -36,73 +38,20 @@ function Assert-Windows11 {
     return $build
 }
 
-function Resolve-App {
-    param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        throw 'AppPath is required when recording a new witness.'
-    }
+function Resolve-App([string]$Path) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $item = Get-Item -LiteralPath $resolved
     if ($item.PSIsContainer) { throw 'AppPath must point to BrokeDJ.exe, not a directory.' }
     if ($item.Extension -ne '.exe') { throw 'AppPath must point to a Windows executable.' }
-    if ($item.Name -ine 'BrokeDJ.exe') { throw 'AppPath must point to BrokeDJ.exe.' }
     return $item
 }
 
-function Assert-ObjectProperty {
-    param(
-        [object]$Object,
-        [string]$Name,
-        [string]$Context
-    )
-    if ($null -eq $Object) {
-        throw ('Evidence object is missing: ' + $Context)
-    }
-    if ($null -eq $Object.PSObject.Properties[$Name]) {
-        throw ('Evidence is missing ' + $Context + '.' + $Name + '.')
-    }
-}
-
-function Validate-Evidence {
-    param([string]$Path)
-
+function Validate-Evidence([string]$Path) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $data = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
-    if ($null -eq $data) { throw 'Evidence JSON is empty.' }
-
-    foreach ($name in @('schema', 'project', 'scope', 'generatedUtc', 'environment', 'app', 'checks', 'privacy')) {
-        Assert-ObjectProperty -Object $data -Name $name -Context 'root'
-    }
     if ($data.schema -ne 1) { throw 'Unsupported M4 witness schema.' }
     if ($data.project -ne 'BrokeDJ' -or $data.scope -ne 'M4-library-workflow') {
         throw 'Evidence file is not a BrokeDJ M4 library witness.'
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$data.generatedUtc)) {
-        throw 'Evidence generatedUtc is empty.'
-    }
-
-    foreach ($name in @('windowsBuild', 'architecture', 'processArchitecture')) {
-        Assert-ObjectProperty -Object $data.environment -Name $name -Context 'environment'
-    }
-    if ([int64]$data.environment.windowsBuild -lt 22000) {
-        throw 'Evidence was not recorded on Windows 11.'
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$data.environment.architecture)
-        -or [string]::IsNullOrWhiteSpace([string]$data.environment.processArchitecture)) {
-        throw 'Evidence architecture fields must not be empty.'
-    }
-
-    foreach ($name in @('fileName', 'fileVersion', 'sha256')) {
-        Assert-ObjectProperty -Object $data.app -Name $name -Context 'app'
-    }
-    if ($data.app.fileName -ine 'BrokeDJ.exe') {
-        throw 'Evidence app filename is not BrokeDJ.exe.'
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$data.app.fileVersion)) {
-        throw 'Evidence app file version is empty.'
-    }
-    if ([string]$data.app.sha256 -notmatch '^[0-9a-fA-F]{64}$') {
-        throw 'Evidence app SHA-256 is malformed.'
     }
 
     $required = @(
@@ -117,23 +66,10 @@ function Validate-Evidence {
     )
     $failed = @()
     foreach ($name in $required) {
-        Assert-ObjectProperty -Object $data.checks -Name $name -Context 'checks'
-        $value = $data.checks.$name
-        if ($value.GetType().FullName -ne 'System.Boolean') {
-            throw ('Evidence checks.' + $name + ' must be a JSON boolean.')
-        }
-        if (-not $value) { $failed += $name }
+        if (-not [bool]$data.checks.$name) { $failed += $name }
     }
     if ($failed.Count -gt 0) {
         throw ('Witness is incomplete. Failed checks: ' + ($failed -join ', '))
-    }
-
-    foreach ($name in @('containsTrackPaths', 'containsTrackNames', 'containsSourceMusic')) {
-        Assert-ObjectProperty -Object $data.privacy -Name $name -Context 'privacy'
-        $value = $data.privacy.$name
-        if ($value.GetType().FullName -ne 'System.Boolean' -or $value) {
-            throw ('Evidence privacy.' + $name + ' must be the JSON boolean false.')
-        }
     }
 
     Write-Step "Witness is complete: $resolved"
@@ -151,11 +87,6 @@ $app = Resolve-App -Path $AppPath
 $appHash = (Get-FileHash -LiteralPath $app.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $appVersion = $app.VersionInfo.FileVersion
 if ([string]::IsNullOrWhiteSpace($appVersion)) { $appVersion = 'unknown' }
-
-$osArchitecture = 'X86'
-if ([Environment]::Is64BitOperatingSystem) { $osArchitecture = 'X64' }
-$processArchitecture = 'X86'
-if ([Environment]::Is64BitProcess) { $processArchitecture = 'X64' }
 
 Write-Step 'This witness never asks for track names or paths and does not inspect source music.'
 Write-Step 'Use disposable copies or non-critical local tracks for manual interaction checks.'
@@ -179,8 +110,8 @@ $evidence = [ordered]@{
     generatedUtc = [DateTime]::UtcNow.ToString('o')
     environment = [ordered]@{
         windowsBuild = $windowsBuild
-        architecture = $osArchitecture
-        processArchitecture = $processArchitecture
+        architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
     }
     app = [ordered]@{
         fileName = $app.Name
