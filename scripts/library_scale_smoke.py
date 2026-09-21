@@ -27,10 +27,30 @@ TRACK_TAG_COUNT = TRACK_COUNT
 PLAYLIST_BROWSE_LIMIT = 500
 SMOKE_TIMEOUT_SECONDS = 30
 DUPLICATE_HASH = "d" * 64
+BACKUP_FILENAME = "BrokeDJ-library-backup.sqlite3"
+BACKUP_REPORT_FILENAME = "BrokeDJ-library-backup-smoke.json"
+RESTORE_REPORT_FILENAME = "BrokeDJ-library-restore-smoke.json"
 
 
 def fail(message: str) -> NoReturn:
     raise RuntimeError(message)
+
+
+def run_process(command: list[str], workdir: Path, description: str) -> float:
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workdir,
+            check=False,
+            timeout=SMOKE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        fail(f"{description} exceeded {SMOKE_TIMEOUT_SECONDS}s: {exc}")
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if completed.returncode != 0:
+        fail(f"{description} returned {completed.returncode}")
+    return elapsed_ms
 
 
 def run_gui_smoke(executable: Path, workdir: Path) -> tuple[float, dict[str, Any]]:
@@ -38,20 +58,7 @@ def run_gui_smoke(executable: Path, workdir: Path) -> tuple[float, dict[str, Any
     if report_path.exists():
         report_path.unlink()
 
-    started = time.perf_counter()
-    try:
-        completed = subprocess.run(
-            [str(executable), "--smoke-test"],
-            cwd=workdir,
-            check=False,
-            timeout=SMOKE_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        fail(f"native GUI smoke exceeded {SMOKE_TIMEOUT_SECONDS}s: {exc}")
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-
-    if completed.returncode != 0:
-        fail(f"native GUI smoke returned {completed.returncode}")
+    elapsed_ms = run_process([str(executable), "--smoke-test"], workdir, "native GUI smoke")
     if not report_path.is_file():
         fail("native GUI smoke did not produce BrokeDJ-gui-smoke.json")
 
@@ -76,6 +83,37 @@ def run_gui_smoke(executable: Path, workdir: Path) -> tuple[float, dict[str, Any
             fail("native GUI smoke height mismatch")
         if int(step.get("content_width", 0)) <= 0 or int(step.get("content_height", 0)) <= 0:
             fail("native GUI smoke content bounds are invalid")
+    return elapsed_ms, payload
+
+
+def run_recovery_command(
+    executable: Path, workdir: Path, restore: bool, expected_schema: int
+) -> tuple[float, dict[str, Any]]:
+    report_path = workdir / (RESTORE_REPORT_FILENAME if restore else BACKUP_REPORT_FILENAME)
+    if report_path.exists():
+        report_path.unlink()
+    flag = "--library-restore-smoke" if restore else "--library-backup-smoke"
+    description = "native library restore smoke" if restore else "native library backup smoke"
+    elapsed_ms = run_process([str(executable), flag], workdir, description)
+    if not report_path.is_file():
+        fail(f"{description} did not produce {report_path.name}")
+
+    payload = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    expected_mode = "native-library-restore" if restore else "native-library-backup"
+    if payload.get("schema_version") != 1 or payload.get("mode") != expected_mode:
+        fail(f"unexpected {description} JSON contract")
+    if payload.get("plays_audio") is not False or payload.get("opens_audio_device") is not False:
+        fail(f"{description} must remain no-audio and must not open an audio device")
+    if payload.get("starts_audio_callback") is not False:
+        fail(f"{description} unexpectedly started an audio callback")
+    if payload.get("destructive_fixture_only") is not True:
+        fail(f"{description} did not report its destructive-fixture safety guard")
+    if payload.get("database_schema_version") != expected_schema:
+        fail(f"{description} reported an unexpected database schema")
+    if payload.get("backup_present") is not True or int(payload.get("backup_size_bytes", 0)) <= 0:
+        fail(f"{description} did not preserve a non-empty backup artifact")
+    if payload.get("success") is not True:
+        fail(f"{description} did not report success")
     return elapsed_ms, payload
 
 
@@ -298,6 +336,49 @@ def seed_fixture(database: Path) -> tuple[int, dict[str, int]]:
         connection.close()
 
 
+def mutate_fixture_for_restore(database: Path) -> dict[str, Any]:
+    connection = sqlite3.connect(database, timeout=2.5)
+    try:
+        require_production_schema(connection)
+        original_title = str(
+            connection.execute("SELECT title FROM tracks WHERE id=1;").fetchone()[0]
+        )
+        if original_title != "Scale Track 00000":
+            fail(f"unexpected recovery sentinel title before mutation: {original_title}")
+
+        with connection:
+            connection.execute("UPDATE tracks SET title='RECOVERY MUTATION' WHERE id=1;")
+            deleted_playlist = connection.execute(
+                "DELETE FROM playlist_items WHERE playlist_id=1 AND track_id=1;"
+            ).rowcount
+            deleted_history = connection.execute(
+                "DELETE FROM history WHERE id=(SELECT MAX(id) FROM history);"
+            ).rowcount
+        if deleted_playlist != 1 or deleted_history != 1:
+            fail("recovery mutation did not change exactly one playlist and history row")
+
+        mutated_title = str(
+            connection.execute("SELECT title FROM tracks WHERE id=1;").fetchone()[0]
+        )
+        history_rows = int(connection.execute("SELECT COUNT(*) FROM history;").fetchone()[0])
+        playlist_items = int(connection.execute("SELECT COUNT(*) FROM playlist_items;").fetchone()[0])
+        quick_check = str(connection.execute("PRAGMA quick_check;").fetchone()[0])
+        if mutated_title != "RECOVERY MUTATION":
+            fail("recovery title mutation was not persisted")
+        if history_rows != HISTORY_COUNT - 1 or playlist_items != PLAYLIST_ITEM_COUNT - 1:
+            fail("recovery mutation cardinality does not match the expected fixture delta")
+        if quick_check != "ok":
+            fail(f"SQLite quick_check failed after controlled recovery mutation: {quick_check}")
+        return {
+            "title_changed": True,
+            "history_rows_after_mutation": history_rows,
+            "playlist_items_after_mutation": playlist_items,
+            "sqlite_quick_check_after_mutation": quick_check,
+        }
+    finally:
+        connection.close()
+
+
 def verify_fixture(database: Path) -> tuple[int, dict[str, int], str]:
     connection = sqlite3.connect(database, timeout=2.5)
     try:
@@ -365,13 +446,30 @@ def main() -> int:
         )
 
     schema_version, seeded = seed_fixture(database)
+    backup_ms, backup_report = run_recovery_command(
+        executable, workdir, restore=False, expected_schema=schema_version
+    )
+    backup_file = workdir / BACKUP_FILENAME
+    if not backup_file.is_file() or backup_file.stat().st_size <= 0:
+        fail("native backup smoke did not create a non-empty recovery snapshot")
+
+    mutation = mutate_fixture_for_restore(database)
+    restore_ms, restore_report = run_recovery_command(
+        executable, workdir, restore=True, expected_schema=schema_version
+    )
+    restored_schema, restored, restored_quick_check = verify_fixture(database)
+    if restored_schema != schema_version:
+        fail("schema version changed unexpectedly during native recovery smoke")
+
     loaded_ms, loaded = run_gui_smoke(executable, workdir)
     schema_after, after, quick_check = verify_fixture(database)
     if schema_after != schema_version:
         fail("schema version changed unexpectedly during the native lifecycle smoke")
+    if after != restored:
+        fail("native GUI lifecycle changed the recovered fixture unexpectedly")
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "mode": "native-large-library-lifecycle",
         "plays_audio": False,
         "opens_audio_device": False,
@@ -394,7 +492,23 @@ def main() -> int:
             "duplicate_matches": seeded["duplicate_matches"],
             "missing_matches": seeded["missing_matches"],
         },
+        "library_recovery_contract": {
+            "backup_success": backup_report.get("success") is True,
+            "restore_success": restore_report.get("success") is True,
+            "backup_schema_version": backup_report.get("database_schema_version"),
+            "restore_schema_version": restore_report.get("database_schema_version"),
+            "backup_present": backup_file.is_file(),
+            "backup_size_bytes": backup_file.stat().st_size,
+            "mutation_title_changed": mutation["title_changed"],
+            "mutation_history_rows": mutation["history_rows_after_mutation"],
+            "mutation_playlist_items": mutation["playlist_items_after_mutation"],
+            "mutation_sqlite_quick_check": mutation["sqlite_quick_check_after_mutation"],
+            "restored_sqlite_quick_check": restored_quick_check,
+            "restored_full_fixture": restored == seeded,
+        },
         "preflight_gui_elapsed_ms": round(preflight_ms, 3),
+        "backup_elapsed_ms": round(backup_ms, 3),
+        "restore_elapsed_ms": round(restore_ms, 3),
         "large_library_gui_elapsed_ms": round(loaded_ms, 3),
         "post_smoke": after,
         "database_schema_version": schema_version,
@@ -406,11 +520,11 @@ def main() -> int:
         },
         "success": True,
         "qualification_note": (
-            "Automated Windows no-audio startup/resize evidence with a 5,000-track/12,000-history "
-            "local SQLite fixture plus deterministic playlist/tag membership and bounded playlist-query "
-            "semantics. Elapsed time is diagnostic only. This does not replace an interactive Windows 11 "
-            "import/search/tag/playlist review, HiDPI review, physical audio-device qualification, controller "
-            "testing, listening, or live-readiness gates."
+            "Automated Windows no-audio startup/resize plus native backup/mutate/restore evidence with a "
+            "5,000-track/12,000-history local SQLite fixture and deterministic playlist/tag relationships. "
+            "Elapsed time is diagnostic only. This does not replace an interactive Windows 11 "
+            "import/search/tag/playlist/backup/restore review, HiDPI review, physical audio-device "
+            "qualification, controller testing, listening, or live-readiness gates."
         ),
     }
     report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -420,7 +534,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
-    except Exception as exc:  # CI contract: one clear fatal diagnostic and non-zero exit.
-        print(f"library-scale-smoke: {exc}", file=sys.stderr)
-        sys.exit(2)
+        raise SystemExit(main())
+    except Exception as exc:  # keep CI failure concise and actionable
+        print(f"library scale smoke failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
