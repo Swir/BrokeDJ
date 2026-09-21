@@ -164,8 +164,10 @@ struct Meter final {
 };
 
 // Immutable clip ownership: publisher -> pending -> audio -> retired -> publisher.
-// Publishing and garbage collection must happen on ONE non-audio thread.
-// The audio callback never deletes a clip, allocates, or takes a mutex.
+// A clear request uses a separate atomic command so nullptr continues to mean
+// "no pending publication". Publishing, clear requests and garbage collection
+// must happen on ONE non-audio thread. The audio callback only transfers pointer
+// ownership; it never deletes a clip, allocates, or takes a mutex.
 class ClipMailbox final {
 public:
     ~ClipMailbox(); // Audio callback MUST have stopped before destruction.
@@ -173,11 +175,13 @@ public:
     ClipMailbox(const ClipMailbox&) = delete;
     ClipMailbox& operator=(const ClipMailbox&) = delete;
     void publish(std::unique_ptr<Clip> clip) noexcept;
+    void requestClear() noexcept; // serialized non-audio publisher only
     void collect() noexcept;
     [[nodiscard]] bool adopt() noexcept; // audio thread only
     [[nodiscard]] const Clip* current() const noexcept { return active; }
 private:
     std::atomic<Clip*> pending{nullptr}, retired{nullptr};
+    std::atomic<bool> clearRequested{false};
     Clip* active = nullptr; // audio-thread-owned
 };
 
@@ -522,6 +526,10 @@ public:
     // used by the callback.
     void prepare(double outputSampleRate, int maxAudioBlockFrames = defaultMaxAudioBlockFrames);
     [[nodiscard]] bool submit(std::size_t deck, std::unique_ptr<Clip> clip);
+    // Queue source removal from the same serialized non-audio owner used by
+    // submit()/collectRetired(). The callback adopts the clear without deleting
+    // the old Clip; reclamation happens only in collectRetired().
+    [[nodiscard]] bool eject(std::size_t deck) noexcept;
     void collectRetired() noexcept;
     // Non-owning provider lifecycle. Call only while audio is stopped and keep
     // renderer alive until it is cleared after audio has stopped again.
