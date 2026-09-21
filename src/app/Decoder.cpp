@@ -67,7 +67,7 @@ bool buildSequentialPeaks(juce::AudioFormatReader& reader, const std::atomic<boo
             const auto frame = offset + static_cast<juce::int64>(i);
             const auto bucket = std::min<std::int64_t>(
                 previewBuckets - 1,
-                frame * static_cast<juce::int64_t>(previewBuckets) / totalFrames);
+                frame * static_cast<std::int64_t>(previewBuckets) / totalFrames);
             const float left = std::isfinite(channels[0][i]) ? channels[0][i] : 0.0f;
             const float right = std::isfinite(channels[1][i]) ? channels[1][i] : 0.0f;
             peaks[static_cast<std::size_t>(bucket)] = std::max(
