@@ -285,6 +285,7 @@ int runDeviceProbe(bool ciSmoke) {
            << "qualification_note=Capability discovery only; this does not prove device switching, "
               "physical outputs 3/4 cue isolation, latency, xrun behavior, or listening quality.\n";
 
+    const auto directory = juce::File::getCurrentWorkingDirectory();
     const auto textOutput = directory.getChildFile("BrokeDJ-device-probe.txt");
     const auto jsonOutput = directory.getChildFile("BrokeDJ-device-probe.json");
     const auto json = juce::JSON::toString(jsonRoot, false) + "\n";
