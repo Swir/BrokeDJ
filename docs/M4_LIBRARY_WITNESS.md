@@ -17,7 +17,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\m4_library_witness.ps1 -AppPath "C:\path\to\BrokeDJ.exe"
 ```
 
-The script first verifies Windows 11 and fingerprints the exact EXE. It then records the following user-controlled checks without automating or playing loud audio on its own.
+The script first verifies Windows 11 and fingerprints the exact `BrokeDJ.exe`. It then records the following user-controlled checks without automating or playing loud audio on its own.
 
 ## Required checks
 
@@ -36,12 +36,13 @@ A failed check is a real M4 blocker. Fix the product or repeat the witness after
 
 ```powershell
 .\scripts\m4_library_witness.ps1 `
-  -AppPath "C:\path\to\BrokeDJ.exe" `
   -EvidencePath ".\BrokeDJ-M4-Library-Witness.json" `
   -ValidateExisting
 ```
 
-`-ValidateExisting` rejects unsupported evidence schemas and any incomplete required check. The `AppPath` parameter remains mandatory so the command shape stays explicit, although validation reads the fingerprint from the saved evidence rather than re-running the UI witness.
+`-ValidateExisting` does not require the executable again. It validates the saved schema, BrokeDJ scope, timestamp, Windows 11 build, app filename/version/SHA-256 fingerprint, strict JSON boolean types for every required check and the privacy contract. Unsupported, malformed, incomplete or privacy-violating evidence is rejected.
+
+The JSON is an auditable witness record, not a cryptographic signature. Review it together with the exact EXE/checksum and CI state; manually changing a failed result does not create legitimate qualification evidence.
 
 ## Acceptance boundary
 
