@@ -2,390 +2,353 @@
 // Copyright (c) 2026 Swir
 #pragma once
 
-#include "MainComponent.h"
-#include "LibraryWorkflow.h"
-#include "SetRecorder.h"
-#include "core/MasterPathProcessor.h"
+// Keep the established recording/mixer implementation intact while layering
+// M4 runtime library behavior around it. The copied base header is the previous
+// RecordingMainComponent implementation; the public type below remains the app
+// surface consumed by Main.cpp.
+#define RecordingMainComponent RecordingMainComponentBase
+#include "RecordingMainComponentBase.h"
+#undef RecordingMainComponent
+
+#include "LibraryDatabase.h"
+#include "LibraryRuntimeStore.h"
+
+#include <JuceHeader.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
-#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
-// Native post-mix wrapper: records the already-rendered master outputs 1/2,
-// optionally mixes a selected microphone input with bounded ducking, applies
-// a linked-stereo sample-peak safety limiter, and can mirror the protected
-// master to a dedicated booth pair on logical outputs 5/6.
-// MainComponent keeps ownership of playback/device logic; all disk I/O remains
-// inside SetRecorder's background writer. Private cue stays on outputs 3/4.
-class RecordingMainComponent final : public MainComponent {
+class RecordingMainComponent final : public juce::Component, private juce::Timer {
 public:
     explicit RecordingMainComponent(bool openAudio = true, bool enableKeyLockResearch = false)
-        : MainComponent(openAudio, enableKeyLockResearch), libraryWorkflow(*this) {
-        recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
-        recordButton.setTooltip(text(
-            "Record post-limiter master outputs 1/2 to a 24-bit WAV. Disk encoding runs on a background thread; FIFO overflow is counted as a recording dropout instead of blocking playback.",
-            "Nagraj wyjście master 1/2 po limiterze do WAV 24-bit. Zapis na dysku działa w tle; przepełnienie bufora jest liczone jako dropout nagrania zamiast blokować odtwarzanie."));
-        recordButton.onClick = [this] { toggleRecording(); };
-        addAndMakeVisible(recordButton);
+        : base(openAudio, enableKeyLockResearch), databaseFile(libraryDatabaseFile()) {
+        addAndMakeVisible(base);
 
-        limiterButton.setButtonText("LIMIT");
-        limiterButton.setClickingTogglesState(true);
-        limiterButton.setToggleState(true, juce::dontSendNotification);
-        limiterButton.setTooltip(text(
-            "Linked-stereo -1 dBFS sample-peak safety limiter. Zero attack, 120 ms release, no look-ahead or true-peak reconstruction; not presented as a transparent mastering limiter.",
-            "Sprzężony limiter stereo -1 dBFS dla szczytów próbek. Zerowy attack, release 120 ms, bez look-ahead i true-peak; nie jest przedstawiany jako przezroczysty limiter masteringowy."));
-        limiterButton.onClick = [this] {
-            masterPath.setLimiterEnabled(limiterButton.getToggleState());
-        };
-        addAndMakeVisible(limiterButton);
+        historyButton.setButtonText(text("HISTORY", "HISTORIA"));
+        historyButton.setTooltip(text(
+            "Review recent local playback starts. History stays in BrokeDJ's local SQLite library.",
+            "Przeglądaj ostatnie lokalne uruchomienia odtwarzania. Historia zostaje w lokalnej bazie SQLite BrokeDJ."));
+        historyButton.onClick = [this] { showHistory(); };
+        addAndMakeVisible(historyButton);
 
-        micButton.setButtonText("MIC");
-        micButton.setClickingTogglesState(true);
-        micButton.setTooltip(text(
-            "Mix the first active audio input into master 1/2 at 0 dB with up to 12 dB music ducking. Enable an input with MIC I/O first.",
-            "Dodaj pierwsze aktywne wejście audio do master 1/2 przy 0 dB z duckingiem muzyki do 12 dB. Najpierw włącz wejście przez MIC I/O."));
-        micButton.onClick = [this] {
-            const bool requested = micButton.getToggleState();
-            if (requested && !microphoneInputAvailable.load(std::memory_order_acquire)) {
-                micButton.setToggleState(false, juce::dontSendNotification);
-                masterPath.setMicrophoneEnabled(false);
-                juce::AlertWindow::showMessageBoxAsync(
-                    juce::MessageBoxIconType::WarningIcon,
-                    text("Microphone input unavailable", "Wejście mikrofonowe niedostępne"),
-                    text("Open MIC I/O, enable an input channel, then enable MIC again. BrokeDJ does not fold a missing input into the master path.",
-                         "Otwórz MIC I/O, włącz kanał wejściowy, a potem ponownie włącz MIC. BrokeDJ nie dodaje brakującego wejścia do mastera."));
-                return;
-            }
-            masterPath.setMicrophoneEnabled(requested);
-        };
-        addAndMakeVisible(micButton);
+        std::string error;
+        historyDatabaseAvailable = historyDatabase.open(databaseFile, &error);
+        if (historyDatabaseAvailable) {
+            scheduleHashBackfill();
+        } else {
+            historyButton.setEnabled(false);
+            historyButton.setTooltip(text(
+                "Playback history is unavailable because the local library database could not be opened.",
+                "Historia odtwarzania jest niedostępna, ponieważ nie udało się otworzyć lokalnej bazy biblioteki."));
+        }
 
-        boothButton.setButtonText("BOOTH");
-        boothButton.setClickingTogglesState(true);
-        boothButton.setTooltip(text(
-            "Send the protected master to dedicated logical outputs 5/6. Requires six active output channels; cue remains private on 3/4.",
-            "Wyślij zabezpieczony master na osobne wyjścia logiczne 5/6. Wymaga sześciu aktywnych wyjść; odsłuch pozostaje prywatny na 3/4."));
-        boothButton.onClick = [this] {
-            const bool requested = boothButton.getToggleState();
-            if (requested && !boothOutputAvailable.load(std::memory_order_acquire)) {
-                boothButton.setToggleState(false, juce::dontSendNotification);
-                masterPath.setBoothEnabled(false);
-                juce::AlertWindow::showMessageBoxAsync(
-                    juce::MessageBoxIconType::WarningIcon,
-                    text("Booth outputs unavailable", "Wyjścia booth niedostępne"),
-                    text("Open MIC I/O and enable six output channels. Master uses 1/2, private cue uses 3/4 and Booth uses 5/6.",
-                         "Otwórz MIC I/O i włącz sześć kanałów wyjściowych. Master używa 1/2, prywatny odsłuch 3/4, a Booth 5/6."));
-                return;
-            }
-            masterPath.setBoothEnabled(requested);
-        };
-        addAndMakeVisible(boothButton);
-
-        boothLevel.setSliderStyle(juce::Slider::LinearHorizontal);
-        boothLevel.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 22);
-        boothLevel.setRange(-60.0, 0.0, 0.1);
-        boothLevel.setValue(-6.0, juce::dontSendNotification);
-        boothLevel.setDoubleClickReturnValue(true, -6.0);
-        boothLevel.setTextValueSuffix(" dB");
-        boothLevel.setTooltip(text(
-            "Independent Booth attenuation after the master limiter. Range -60..0 dB; it cannot boost above the protected master.",
-            "Niezależne tłumienie Booth po limiterze master. Zakres -60..0 dB; nie może podbić sygnału ponad zabezpieczony master."));
-        boothLevel.onValueChange = [this] {
-            masterPath.setBoothGainDb(static_cast<float>(boothLevel.getValue()));
-        };
-        addAndMakeVisible(boothLevel);
-
-        micIoButton.setButtonText("MIC I/O");
-        micIoButton.setTooltip(text(
-            "Select optional input channels and 2–6 output channels. Master uses 1/2, private cue 3/4 and optional Booth 5/6. The default launch still requests output only.",
-            "Wybierz opcjonalne kanały wejściowe oraz 2–6 kanałów wyjściowych. Master używa 1/2, prywatny odsłuch 3/4, a opcjonalny Booth 5/6. Domyślnie program uruchamia tylko wyjście."));
-        micIoButton.onClick = [this] { showMicIoSettings(); };
-        addAndMakeVisible(micIoButton);
-
-        masterPath.setMicrophoneGainDb(0.0f);
-        masterPath.setDuckDepthDb(12.0f);
-        masterPath.setLimiterCeilingDb(-1.0f);
-        masterPath.setLimiterEnabled(true);
-        masterPath.setBoothGainDb(-6.0f);
-        masterPath.setBoothEnabled(false);
+        setSize(base.getWidth(), base.getHeight());
+        startTimerHz(20);
     }
 
     ~RecordingMainComponent() override {
-        recordChooser.reset();
-        if (micSettings) delete micSettings.getComponent();
-        recorder.stop();
-    }
-
-    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
-        MainComponent::prepareToPlay(samplesPerBlockExpected, sampleRate);
-        preparedSampleRate.store(std::isfinite(sampleRate) ? sampleRate : 0.0,
-                                 std::memory_order_release);
-        masterPath.prepare(sampleRate);
-        microphoneScratch.assign(static_cast<std::size_t>(std::max(1, samplesPerBlockExpected)), 0.0f);
-
-        bool hasInput = false;
-        bool hasBooth = false;
-        if (auto* device = deviceManager.getCurrentAudioDevice()) {
-            hasInput = device->getActiveInputChannels().countNumberOfSetBits() > 0;
-            hasBooth = device->getActiveOutputChannels().countNumberOfSetBits() >= 6;
-        }
-        microphoneInputAvailable.store(hasInput, std::memory_order_release);
-        boothOutputAvailable.store(hasBooth, std::memory_order_release);
-
-        if (!hasInput && masterPath.isMicrophoneEnabled()) {
-            masterPath.setMicrophoneEnabled(false);
-            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
-                if (safe) safe->micButton.setToggleState(false, juce::dontSendNotification);
-            });
-        }
-        if (!hasBooth && masterPath.isBoothEnabled()) {
-            masterPath.setBoothEnabled(false);
-            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
-                if (safe) safe->boothButton.setToggleState(false, juce::dontSendNotification);
-            });
-        }
-    }
-
-    void releaseResources() override {
-        recorder.stop();
-        preparedSampleRate.store(0.0, std::memory_order_release);
-        microphoneInputAvailable.store(false, std::memory_order_release);
-        boothOutputAvailable.store(false, std::memory_order_release);
-        masterPath.setMicrophoneEnabled(false);
-        masterPath.setBoothEnabled(false);
-        masterPath.resetRealtimeState();
-        MainComponent::releaseResources();
-        juce::MessageManager::callAsync([safe = juce::Component::SafePointer<RecordingMainComponent>(this)] {
-            if (!safe) return;
-            safe->recordButton.setToggleState(false, juce::dontSendNotification);
-            safe->recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
-            safe->micButton.setToggleState(false, juce::dontSendNotification);
-            safe->boothButton.setToggleState(false, juce::dontSendNotification);
-        });
-    }
-
-    void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override {
-        const bool copyMic = info.buffer != nullptr && info.numSamples > 0
-            && microphoneInputAvailable.load(std::memory_order_acquire)
-            && masterPath.isMicrophoneEnabled()
-            && info.buffer->getNumChannels() > 0
-            && static_cast<std::size_t>(info.numSamples) <= microphoneScratch.size();
-        if (copyMic) {
-            const auto* input = info.buffer->getReadPointer(0, info.startSample);
-            std::copy_n(input, info.numSamples, microphoneScratch.data());
-        }
-
-        MainComponent::getNextAudioBlock(info);
-        if (info.buffer == nullptr || info.numSamples <= 0) return;
-
-        // Engine owns master 1/2 and private cue 3/4. Dedicated channels above
-        // those buses are cleared before optional Booth generation so stale
-        // device/input samples can never leak to outputs 5/6 or beyond.
-        for (int channel = 4; channel < info.buffer->getNumChannels(); ++channel)
-            info.buffer->clear(channel, info.startSample, info.numSamples);
-
-        if (info.buffer->getNumChannels() >= 2) {
-            auto* left = info.buffer->getWritePointer(0, info.startSample);
-            auto* right = info.buffer->getWritePointer(1, info.startSample);
-            float* boothLeft = nullptr;
-            float* boothRight = nullptr;
-            if (info.buffer->getNumChannels() >= 6) {
-                boothLeft = info.buffer->getWritePointer(4, info.startSample);
-                boothRight = info.buffer->getWritePointer(5, info.startSample);
-            }
-            masterPath.process(copyMic ? microphoneScratch.data() : nullptr,
-                               left, right, info.numSamples, boothLeft, boothRight);
-        }
-
-        if (!recorder.isRecording()) return;
-        if (info.buffer->getNumChannels() < 2) {
-            recorder.capture(nullptr, nullptr, info.numSamples);
-            return;
-        }
-        recorder.capture(info.buffer->getReadPointer(0, info.startSample),
-                         info.buffer->getReadPointer(1, info.startSample),
-                         info.numSamples);
+        stopTimer();
+        cancelled.store(true, std::memory_order_release);
+        if (historyDialog) delete historyDialog.getComponent();
+        historyWorker.removeAllJobs(true, -1);
+        maintenanceWorker.removeAllJobs(true, -1);
+        historyDatabase.close();
     }
 
     void resized() override {
-        MainComponent::resized();
+        base.setBounds(getLocalBounds());
+
+        // Mirror the base top-bar geometry and occupy the reserved gap directly
+        // left of Library. At the app's minimum width this remains clear of the
+        // BrokeDJ title while preserving the existing controls.
         constexpr int settingsWidth = 165;
         constexpr int gap = 6;
         int right = getWidth() - 20 - settingsWidth - 8;
-
-        constexpr int recordWidth = 92;
-        recordButton.setBounds(right - recordWidth, 20, recordWidth, 34);
-        right -= recordWidth + gap;
-
-        constexpr int limiterWidth = 58;
-        limiterButton.setBounds(right - limiterWidth, 20, limiterWidth, 34);
-        right -= limiterWidth + gap;
-
-        constexpr int micWidth = 52;
-        micButton.setBounds(right - micWidth, 20, micWidth, 34);
-        right -= micWidth + gap;
-
-        constexpr int boothWidth = 62;
-        boothButton.setBounds(right - boothWidth, 20, boothWidth, 34);
-        right -= boothWidth + gap;
-
-        constexpr int boothLevelWidth = 130;
-        boothLevel.setBounds(right - boothLevelWidth, 20, boothLevelWidth, 34);
-        right -= boothLevelWidth + gap;
-
-        constexpr int ioWidth = 64;
-        micIoButton.setBounds(right - ioWidth, 20, ioWidth, 34);
-        right -= ioWidth + gap;
-
-        constexpr int libraryWidth = 82;
-        libraryWorkflow.setButtonBounds({right - libraryWidth, 20, libraryWidth, 34});
+        right -= 92 + gap;   // REC SET
+        right -= 58 + gap;   // LIMIT
+        right -= 52 + gap;   // MIC
+        right -= 62 + gap;   // BOOTH
+        right -= 130 + gap;  // Booth level
+        right -= 64 + gap;   // MIC I/O
+        right -= 82 + gap;   // Library
+        constexpr int historyWidth = 82;
+        historyButton.setBounds(std::max(170, right - historyWidth), 20, historyWidth, 34);
+        historyButton.toFront(false);
     }
 
 private:
-    static juce::String dbfs(float linear) {
-        if (!std::isfinite(linear) || linear <= 1.0e-9f) return "— dBFS";
-        return juce::String(20.0f * std::log10(linear), 1) + " dBFS";
+    class HistoryPanel final : public juce::Component, private juce::ListBoxModel {
+    public:
+        HistoryPanel() : list("BrokeDJ playback history", this) {
+            heading.setText(text("PLAYBACK HISTORY", "HISTORIA ODTWARZANIA"),
+                            juce::dontSendNotification);
+            heading.setFont(juce::Font(juce::FontOptions(18.0f).withStyle("Bold")));
+            heading.setColour(juce::Label::textColourId, pale);
+
+            message.setText(text("Recent playback starts stored locally.",
+                                 "Ostatnie uruchomienia odtwarzania zapisane lokalnie."),
+                            juce::dontSendNotification);
+            message.setColour(juce::Label::textColourId, muted);
+
+            refresh.setButtonText(text("Refresh", "Odśwież"));
+            refresh.onClick = [this] { if (onRefresh) onRefresh(); };
+
+            list.setRowHeight(46);
+            list.setColour(juce::ListBox::backgroundColourId, background);
+            list.setColour(juce::ListBox::outlineColourId, blue.withAlpha(0.25f));
+            list.setOutlineThickness(1);
+
+            addAndMakeVisible(heading);
+            addAndMakeVisible(message);
+            addAndMakeVisible(refresh);
+            addAndMakeVisible(list);
+        }
+
+        std::function<void()> onRefresh;
+
+        void setBusy(bool busy) {
+            refresh.setEnabled(!busy);
+            message.setText(busy
+                ? text("Reading local history…", "Odczytywanie lokalnej historii…")
+                : (rows.empty()
+                    ? text("No playback history yet.", "Brak historii odtwarzania.")
+                    : text("History entries: ", "Wpisy historii: ")
+                        + juce::String(static_cast<int>(rows.size()))),
+                juce::dontSendNotification);
+        }
+
+        void setRows(std::vector<broke::library::runtime::PlayedTrackRow> nextRows,
+                     bool ok) {
+            rows = ok ? std::move(nextRows) : std::vector<broke::library::runtime::PlayedTrackRow>{};
+            list.updateContent();
+            refresh.setEnabled(true);
+            message.setText(ok
+                ? (rows.empty()
+                    ? text("No playback history yet.", "Brak historii odtwarzania.")
+                    : text("History entries: ", "Wpisy historii: ")
+                        + juce::String(static_cast<int>(rows.size())))
+                : text("Could not read local playback history.",
+                       "Nie udało się odczytać lokalnej historii odtwarzania."),
+                juce::dontSendNotification);
+        }
+
+        void resized() override {
+            auto area = getLocalBounds().reduced(14);
+            auto header = area.removeFromTop(36);
+            refresh.setBounds(header.removeFromRight(104).reduced(3, 2));
+            heading.setBounds(header.removeFromLeft(std::min(280, header.getWidth() / 2)));
+            message.setBounds(header);
+            area.removeFromTop(8);
+            list.setBounds(area);
+        }
+
+        void paint(juce::Graphics& graphics) override { graphics.fillAll(background); }
+
+    private:
+        int getNumRows() override { return static_cast<int>(rows.size()); }
+
+        static juce::String displayTitle(const broke::library::TrackRecord& track) {
+            juce::String titleText = juce::String::fromUTF8(track.title.c_str());
+            if (titleText.isEmpty()) {
+                titleText = juce::File(juce::String::fromUTF8(track.path.c_str()))
+                                .getFileNameWithoutExtension();
+            }
+            const auto artistText = juce::String::fromUTF8(track.artist.c_str());
+            if (artistText.isNotEmpty()) titleText = artistText + " — " + titleText;
+            if (track.missing) titleText += text("  [MISSING]", "  [BRAK PLIKU]");
+            return titleText;
+        }
+
+        void paintListBoxItem(int rowNumber, juce::Graphics& graphics, int width, int height,
+                              bool rowIsSelected) override {
+            if (rowNumber < 0 || rowNumber >= static_cast<int>(rows.size())) return;
+            const auto& row = rows[static_cast<std::size_t>(rowNumber)];
+            if (rowIsSelected) graphics.fillAll(blue.withAlpha(0.22f));
+            else if ((rowNumber & 1) != 0) graphics.fillAll(panel.withAlpha(0.55f));
+
+            auto bounds = juce::Rectangle<int>(0, 0, width, height).reduced(9, 3);
+            graphics.setColour(row.track.missing ? muted : pale);
+            graphics.setFont(13.0f);
+            graphics.drawFittedText(displayTitle(row.track), bounds.removeFromTop(20),
+                                    juce::Justification::centredLeft, 1);
+
+            const juce::Time when(row.playedAtUnixMs);
+            const auto timestamp = when.toString(true, true, false, true);
+            const auto detail = timestamp + "  ·  " + juce::String::fromUTF8(row.track.path.c_str());
+            graphics.setColour(muted);
+            graphics.setFont(10.5f);
+            graphics.drawFittedText(detail, bounds, juce::Justification::centredLeft, 1);
+        }
+
+        const juce::Colour background{0xff080e1a};
+        const juce::Colour panel{0xff111d30};
+        const juce::Colour blue{0xff3d9bff};
+        const juce::Colour pale{0xffdcecff};
+        const juce::Colour muted{0xff8199b8};
+        juce::Label heading, message;
+        juce::TextButton refresh;
+        juce::ListBox list;
+        std::vector<broke::library::runtime::PlayedTrackRow> rows;
+    };
+
+    static std::filesystem::path libraryDatabaseFile() {
+        const auto file = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                              .getChildFile("BrokeDJ")
+                              .getChildFile("library.sqlite3");
+#if JUCE_WINDOWS
+        return std::filesystem::path(file.getFullPathName().toWideCharPointer());
+#else
+        return std::filesystem::u8path(file.getFullPathName().toStdString());
+#endif
     }
 
-    void showMicIoSettings() {
-        if (micSettings) {
-            micSettings->toFront(true);
+    static std::filesystem::path filesystemPath(const juce::File& file) {
+#if JUCE_WINDOWS
+        return std::filesystem::path(file.getFullPathName().toWideCharPointer());
+#else
+        return std::filesystem::u8path(file.getFullPathName().toStdString());
+#endif
+    }
+
+    static std::string utf8Path(const juce::File& file) {
+        const auto value = filesystemPath(file).lexically_normal().generic_u8string();
+        return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+    }
+
+    static std::int64_t modifiedNs(const juce::File& file) {
+        const auto ms = file.getLastModificationTime().toMilliseconds();
+        return ms > 0 && ms <= std::numeric_limits<std::int64_t>::max() / 1000000
+            ? ms * 1000000 : ms;
+    }
+
+    void timerCallback() override {
+        if (!historyDatabaseAvailable || cancelled.load(std::memory_order_acquire)) return;
+        const auto state = base.captureSessionState();
+        for (std::size_t deck = 0; deck < state.decks.size(); ++deck) {
+            const auto& deckState = state.decks[deck];
+            const bool playing = deckState.wasPlaying && !deckState.path.empty();
+            if (playing && !previousPlaying[deck]) {
+                recordPlaybackStart(juce::File(juce::String::fromUTF8(deckState.path.c_str())));
+            }
+            previousPlaying[deck] = playing;
+        }
+    }
+
+    void recordPlaybackStart(const juce::File& file) {
+        if (!file.existsAsFile()) return;
+        const auto normalizedPath = utf8Path(file);
+        const auto playedAt = juce::Time::currentTimeMillis();
+        juce::Component::SafePointer<RecordingMainComponent> safe(this);
+        historyWorker.addJob([safe, file, normalizedPath, playedAt] {
+            if (!safe || safe->cancelled.load(std::memory_order_acquire)) return;
+            std::string error;
+            auto track = broke::library::runtime::findTrackByPath(
+                safe->databaseFile, normalizedPath, &error);
+            std::optional<std::int64_t> trackId;
+            if (track) {
+                trackId = track->id;
+            } else if (error.empty()) {
+                broke::library::TrackRecord record;
+                record.path = normalizedPath;
+                record.fileSize = std::max<std::int64_t>(0, file.getSize());
+                record.modifiedNs = modifiedNs(file);
+                record.title = file.getFileNameWithoutExtension().toStdString();
+                trackId = safe->historyDatabase.upsertTrack(record, &error);
+            }
+            if (!trackId || !error.empty()) return;
+            if (!safe->historyDatabase.recordPlay(*trackId, playedAt, &error) || !error.empty()) return;
+
+            juce::MessageManager::callAsync([safe] {
+                if (safe && safe->historyPanel) safe->refreshHistory();
+            });
+        });
+    }
+
+    void scheduleHashBackfill() {
+        juce::Component::SafePointer<RecordingMainComponent> safe(this);
+        maintenanceWorker.addJob([safe] {
+            if (!safe || safe->cancelled.load(std::memory_order_acquire)) return;
+            std::string error;
+            const auto result = broke::library::runtime::backfillContentHashes(
+                safe->databaseFile, 64, &safe->cancelled, &error);
+            if (!safe || safe->cancelled.load(std::memory_order_acquire)) return;
+            juce::Logger::writeToLog(
+                "BrokeDJ library identity backfill: scanned=" + juce::String(static_cast<int>(result.scanned))
+                + " hashed=" + juce::String(static_cast<int>(result.hashed))
+                + " missing=" + juce::String(static_cast<int>(result.markedMissing))
+                + " skipped=" + juce::String(static_cast<int>(result.skipped))
+                + " failed=" + juce::String(static_cast<int>(result.failed))
+                + (error.empty() ? juce::String{} : " status=partial"));
+        });
+    }
+
+    void showHistory() {
+        if (!historyDatabaseAvailable) return;
+        if (historyDialog) {
+            historyDialog->toFront(true);
+            refreshHistory();
             return;
         }
+
+        auto* content = new HistoryPanel();
+        juce::Component::SafePointer<RecordingMainComponent> safe(this);
+        content->onRefresh = [safe] { if (safe) safe->refreshHistory(); };
+
         juce::DialogWindow::LaunchOptions options;
-        options.dialogTitle = text("BrokeDJ / Microphone and outputs", "BrokeDJ / Mikrofon i wyjścia");
+        options.dialogTitle = text("BrokeDJ / Playback history", "BrokeDJ / Historia odtwarzania");
         options.dialogBackgroundColour = juce::Colour(0xff080e1a);
         options.useNativeTitleBar = true;
         options.resizable = true;
-        options.content.setOwned(new juce::AudioDeviceSelectorComponent(
-            deviceManager, 0, 2, 2, 6, false, false, true, false));
-        options.content->setSize(620, 500);
+        options.escapeKeyTriggersCloseButton = true;
+        options.content.setOwned(content);
+        options.content->setSize(820, 520);
         options.componentToCentreAround = this;
-        micSettings = options.launchAsync();
+        historyPanel = content;
+        historyDialog = options.launchAsync();
+        refreshHistory();
     }
 
-    void toggleRecording() {
-        if (recorder.isRecording()) {
-            stopRecordingAndReport();
-            return;
-        }
-
-        const double rate = preparedSampleRate.load(std::memory_order_acquire);
-        if (!std::isfinite(rate) || rate < 8000.0) {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::MessageBoxIconType::WarningIcon,
-                text("Recording unavailable", "Nagrywanie niedostępne"),
-                text("Select a working audio device before recording a set.",
-                     "Wybierz działające urządzenie audio przed nagrywaniem setu."));
-            return;
-        }
-
-        if (recordChooser) return;
-        const auto stamp = juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M%S");
-        auto directory = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
-        if (!directory.isDirectory())
-            directory = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
-        const auto suggested = directory.getChildFile("BrokeDJ-set-" + stamp + ".wav");
-        recordChooser = std::make_unique<juce::FileChooser>(
-            text("Record BrokeDJ set", "Nagraj set BrokeDJ"), suggested, "*.wav");
-
+    void refreshHistory() {
+        if (!historyPanel || cancelled.load(std::memory_order_acquire)) return;
+        historyPanel->setBusy(true);
+        const auto generation = historyGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         juce::Component::SafePointer<RecordingMainComponent> safe(this);
-        recordChooser->launchAsync(
-            juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-                | juce::FileBrowserComponent::warnAboutOverwriting,
-            [safe, rate](const juce::FileChooser& chooser) {
-                const auto selected = chooser.getResult();
-                if (!safe) return;
-                safe->recordChooser.reset();
-                if (selected == juce::File{}) return;
-                safe->startRecording(selected, rate);
-            });
+        historyWorker.addJob([safe, generation] {
+            if (!safe || safe->cancelled.load(std::memory_order_acquire)) return;
+            std::string error;
+            auto rows = broke::library::runtime::recentPlayedTracks(
+                safe->databaseFile, 250, &error);
+            const bool ok = error.empty();
+            juce::MessageManager::callAsync(
+                [safe, generation, rows = std::move(rows), ok]() mutable {
+                    if (!safe || safe->cancelled.load(std::memory_order_acquire)
+                        || safe->historyGeneration.load(std::memory_order_acquire) != generation
+                        || !safe->historyPanel) return;
+                    safe->historyPanel->setRows(std::move(rows), ok);
+                });
+        });
     }
 
-    void startRecording(juce::File selected, double rate) {
-        if (selected.getFileExtension().toLowerCase() != ".wav")
-            selected = selected.withFileExtension("wav");
-        if (selected.exists()) selected = selected.getNonexistentSibling(false);
-
-        masterPath.resetMetrics();
-        if (!recorder.start(selected, rate)) {
-            const auto state = recorder.snapshot();
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::MessageBoxIconType::WarningIcon,
-                text("Recording could not start", "Nie można rozpocząć nagrywania"),
-                state.error.isNotEmpty() ? state.error
-                                         : text("The WAV recording path could not be prepared.",
-                                                "Nie udało się przygotować ścieżki nagrania WAV."));
-            return;
-        }
-        const auto state = recorder.snapshot();
-        recordButton.setToggleState(true, juce::dontSendNotification);
-        recordButton.setButtonText(text("STOP REC", "STOP NAGR."));
-        recordButton.setTooltip(text("Recording post-limiter master 1/2 to: ", "Nagrywanie master 1/2 po limiterze do: ")
-                                + state.destination.getFullPathName());
-    }
-
-    void stopRecordingAndReport() {
-        recorder.stop();
-        const auto state = recorder.snapshot();
-        const auto masterState = masterPath.snapshot();
-        recordButton.setToggleState(false, juce::dontSendNotification);
-        recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
-
-        juce::String detail;
-        if (state.finalized) {
-            detail = text("Saved: ", "Zapisano: ") + state.destination.getFullPathName();
-        } else if (state.recoveryFile.existsAsFile()) {
-            detail = text("Finalization failed; recovery file kept: ",
-                          "Finalizacja nie powiodła się; zachowano plik odzyskiwania: ")
-                + state.recoveryFile.getFullPathName();
-        } else {
-            detail = state.error.isNotEmpty() ? state.error
-                                              : text("Recording stopped without a finalized file.",
-                                                     "Nagrywanie zatrzymano bez finalnego pliku.");
-        }
-        detail << text(" | written frames: ", " | zapisane klatki: ")
-               << static_cast<juce::int64>(state.writtenFrames)
-               << text(" | dropped frames: ", " | pominięte klatki: ")
-               << static_cast<juce::int64>(state.droppedFrames)
-               << text(" | dropout events: ", " | zdarzenia dropout: ")
-               << static_cast<juce::int64>(state.dropoutEvents)
-               << text(" | limiter max GR: ", " | limiter max GR: ")
-               << juce::String(masterState.maxGainReductionDb, 1) << " dB"
-               << text(" | max output: ", " | max wyjście: ") << dbfs(masterState.maxOutputPeak);
-        if (masterState.microphoneEnabled)
-            detail << text(" | microphone ducking active", " | ducking mikrofonu aktywny");
-        if (masterState.boothEnabled)
-            detail << text(" | booth max: ", " | booth max: ") << dbfs(masterState.maxBoothPeak);
-        recordButton.setTooltip(detail);
-
-        const auto icon = state.finalized && state.dropoutEvents == 0
-            ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon;
-        juce::AlertWindow::showMessageBoxAsync(
-            icon,
-            state.finalized
-                ? text("Set recording finished", "Nagrywanie setu zakończone")
-                : text("Set recording needs attention", "Nagranie setu wymaga uwagi"),
-            detail);
-    }
-
-    SetRecorder recorder;
-    broke::MasterPathProcessor masterPath;
-    juce::TextButton recordButton;
-    juce::TextButton limiterButton;
-    juce::TextButton micButton;
-    juce::TextButton boothButton;
-    juce::Slider boothLevel;
-    juce::TextButton micIoButton;
-    std::unique_ptr<juce::FileChooser> recordChooser;
-    juce::Component::SafePointer<juce::DialogWindow> micSettings;
-    std::vector<float> microphoneScratch;
-    std::atomic<double> preparedSampleRate{0.0};
-    std::atomic<bool> microphoneInputAvailable{false};
-    std::atomic<bool> boothOutputAvailable{false};
-
-    LibraryWorkflow libraryWorkflow;
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordingMainComponent)
+    RecordingMainComponentBase base;
+    juce::TextButton historyButton;
+    const std::filesystem::path databaseFile;
+    broke::library::LibraryDatabase historyDatabase;
+    juce::ThreadPool historyWorker{1};
+    juce::ThreadPool maintenanceWorker{1};
+    std::atomic<bool> cancelled{false};
+    std::atomic<std::uint64_t> historyGeneration{0};
+    std::array<bool, broke::session::SessionState::deckCount> previousPlaying{};
+    juce::Component::SafePointer<juce::DialogWindow> historyDialog;
+    juce::Component::SafePointer<HistoryPanel> historyPanel;
+    bool historyDatabaseAvailable = false;
 };
