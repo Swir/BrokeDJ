@@ -5,7 +5,8 @@ This file is the durable engineering checkpoint for the current repository state
 ## Current checkpoint
 
 - Default branch baseline: `main` at `0a950c4db4498fd8a4098314e1a54177de3fe1a6`. The merged M4 waveform-cache package passed main workflow `35557872571` across Linux sanitizer/CTest and Windows x64 build/full CTest/no-audio GUI/device/package checks.
-- Active development branch: `feat/m4-content-hash-review`. This package populates content hashes for readable local imports, refreshes hashes on relocation, exposes non-destructive duplicate/missing review through the native library search, and adds deterministic synthetic-library qualification.
+- Active development: PR #63, branch `feat/m4-content-hash-review`. Functional package head before this checkpoint-only documentation commit: `3966efcd1d75d3ce3a18a3153e144432aaa13026`. Exact-head CI for the resulting PR head is required before merge; no run had been assigned when this checkpoint text was written.
+- This package populates content hashes for readable local imports, refreshes hashes on relocation, exposes non-destructive duplicate/missing review through the native library search, and adds deterministic synthetic-library qualification.
 - Roadmap source of truth remains `docs/progress.json`: 1/10 equal-weight milestones complete (10.0%, PRE-ALPHA). M4 is materially advancing but is not complete.
 - GitHub Releases remains empty; no public BrokeDJ release is qualified by this checkpoint.
 
@@ -35,4 +36,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Get this exact branch head green on Linux and Windows first. Then finish M4 with bounded background hash backfill for legacy rows plus real playback-history wiring/review, rather than widening optional DSP scope.
+Get this exact PR head green on Linux and Windows first. Then finish M4 with bounded background hash backfill for legacy rows plus real playback-history wiring/review, rather than widening optional DSP scope.
