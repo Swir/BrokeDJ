@@ -80,14 +80,30 @@ jobs:
           $spoofedBoolean.checks.history = 'true'
           Assert-Rejected $spoofedBoolean '.\spoofed-boolean.json' 'String boolean was accepted as evidence.'
 
+          $spoofedSchema = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $spoofedSchema.schema = '1'
+          Assert-Rejected $spoofedSchema '.\spoofed-schema.json' 'String schema version was accepted as evidence.'
+
+          $spoofedBuild = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $spoofedBuild.environment.windowsBuild = '26100'
+          Assert-Rejected $spoofedBuild '.\spoofed-build.json' 'String Windows build was accepted as evidence.'
+
           $privacyLeak = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
           $privacyLeak.privacy.containsTrackPaths = $true
           Assert-Rejected $privacyLeak '.\privacy-leak.json' 'Privacy-unsafe evidence was accepted.'
+
+          $extraPrivateField = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $extraPrivateField.privacy | Add-Member -NotePropertyName localTrackPath -NotePropertyValue 'C:\private\fixture.wav'
+          Assert-Rejected $extraPrivateField '.\extra-private-field.json' 'Unexpected private evidence field was accepted.'
+
+          $extraTopLevelField = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+          $extraTopLevelField | Add-Member -NotePropertyName notes -NotePropertyValue 'free-form fields are not part of the evidence contract'
+          Assert-Rejected $extraTopLevelField '.\extra-top-level-field.json' 'Unexpected top-level evidence field was accepted.'
 
           $fingerprintMismatch = $complete | ConvertTo-Json -Depth 6 | ConvertFrom-Json
           $fingerprintMismatch.app.sha256 = ('b' * 64)
           Assert-Rejected $fingerprintMismatch '.\fingerprint-mismatch.json' 'Wrong executable fingerprint was accepted.'
 
-          Write-Host 'Evidence contract: exact app accepted; incomplete, type-spoofed, privacy-unsafe and fingerprint-mismatched evidence rejected.'
+          Write-Host 'Evidence contract: exact app accepted; incomplete, type-spoofed, privacy-unsafe, extra-field and fingerprint-mismatched evidence rejected.'
           $global:LASTEXITCODE = 0
           exit 0
