@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 #include <JuceHeader.h>
+#include "BrokeLookAndFeel.h"
 #include "core/Engine.h"
 #include "core/PerformanceDeckOwner.h"
 #include "core/TempoSegmentEditor.h"
@@ -390,7 +391,7 @@ private:
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     void serviceKeyLockDeck(std::size_t deck, bool playing);
 #endif
-    juce::LookAndFeel_V4 theme;
+    BrokeLookAndFeel theme;
     broke::Engine engine;
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     broke::KeyLockDeckLifecycle keyLockLifecycle{engine};

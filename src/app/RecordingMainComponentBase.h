@@ -209,6 +209,21 @@ public:
                          info.numSamples);
     }
 
+    void paint(juce::Graphics& graphics) override {
+        MainComponent::paint(graphics);
+
+        // Visually group the operational controls into one instrument-like strip
+        // without changing their ownership, hit targets or realtime behavior.
+        const int toolbarLeft = std::max(164, getWidth() - 900);
+        auto toolbar = juce::Rectangle<float>(static_cast<float>(toolbarLeft), 12.0f,
+                                              static_cast<float>(std::max(1, getWidth() - toolbarLeft - 14)),
+                                              50.0f);
+        graphics.setColour(BrokeLookAndFeel::surface().withAlpha(0.94f));
+        graphics.fillRoundedRectangle(toolbar, 9.0f);
+        graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.14f));
+        graphics.drawRoundedRectangle(toolbar, 9.0f, 1.0f);
+    }
+
     void resized() override {
         MainComponent::resized();
         constexpr int settingsWidth = 165;
@@ -256,7 +271,7 @@ private:
         }
         juce::DialogWindow::LaunchOptions options;
         options.dialogTitle = text("BrokeDJ / Microphone and outputs", "BrokeDJ / Mikrofon i wyjścia");
-        options.dialogBackgroundColour = juce::Colour(0xff080e1a);
+        options.dialogBackgroundColour = BrokeLookAndFeel::background();
         options.useNativeTitleBar = true;
         options.resizable = true;
         options.content.setOwned(new juce::AudioDeviceSelectorComponent(
