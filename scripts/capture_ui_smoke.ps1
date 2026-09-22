@@ -178,6 +178,18 @@ try {
         $smoke.success -ne $true -or $smoke.step_count -ne 4) {
         throw 'GUI smoke JSON contract failed while collecting visual witness.'
     }
+    if ($smoke.workstation_step_count -lt 1) {
+        throw 'GUI smoke did not exercise workstation layout.'
+    }
+    foreach ($step in @($smoke.steps)) {
+        if ($step.geometry_sane -ne $true) {
+            throw "GUI smoke geometry contract failed at resize step $($step.step)."
+        }
+    }
+    $workstationGeometrySteps = @($smoke.steps | Where-Object { $_.workstation_layout -eq $true })
+    if ($workstationGeometrySteps.Count -lt 1) {
+        throw 'GUI smoke report did not record a workstation-layout geometry step.'
+    }
 
     $requestedSizes = @($smoke.steps | ForEach-Object { "$($_.requested_width)x$($_.requested_height)" })
     if ($requestedSizes -notcontains '1050x800' -or $requestedSizes -notcontains '1600x900') {
@@ -214,6 +226,7 @@ try {
         opens_audio_device = $false
         smoke_success = $true
         smoke_exercised_requested_1600x900 = $true
+        smoke_workstation_geometry_steps = [int]$smoke.workstation_step_count
         compact = [ordered]@{
             file = [System.IO.Path]::GetFileName($compact.path)
             width = $compact.width
@@ -230,7 +243,7 @@ try {
             capture_class = $workstationCaptureClass
         }
         observed_window_sizes = @($observations)
-        qualification_note = 'Windows Server runner pixel witness for layout regression review only. The smoke also requests 1600x900 even when the hosted display clamps native window bounds. This does not certify Windows 11 HiDPI quality, manual usability, audio behavior, controller behavior, or live readiness.'
+        qualification_note = 'Windows Server runner pixel and native component-geometry witness for layout regression review only. The smoke also requests 1600x900 even when the hosted display clamps native window bounds. This does not certify Windows 11 HiDPI quality, manual usability, audio behavior, controller behavior, or live readiness.'
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
