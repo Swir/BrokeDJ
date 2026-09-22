@@ -201,7 +201,8 @@ if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
         add_executable(brokedj_engine_keylock_source_realtime_tests
             tests/EngineKeyLockSourceRealtimeTests.cpp)
         target_link_libraries(brokedj_engine_keylock_source_realtime_tests PRIVATE brokedj_timestretch)
-        add_test(NAME engine_keylock_source_realtime COMMAND brokedj_engine_keylock_source_realtime_tests)
+        add_test(NAME engine_keylock_source_realtime
+            COMMAND brokedj_engine_keylock_source_realtime_tests)
         set_tests_properties(engine_keylock_source_realtime PROPERTIES TIMEOUT 90)
 
         add_executable(brokedj_keylock_deck_lifecycle_tests
@@ -364,4 +365,33 @@ if(BROKEDJ_BUILD_APP)
     set(CPACK_GENERATOR ZIP)
     set(CPACK_PACKAGE_FILE_NAME "BrokeDJ-${PROJECT_VERSION}-development-${CMAKE_SYSTEM_NAME}")
     include(CPack)
+endif()
+
+if(BROKEDJ_BUILD_APP AND BUILD_TESTING)
+    # Exercise the real MainComponent asynchronous import boundary with audio
+    # initialization disabled. This covers message-thread publication/session
+    # state and failed-replacement retention without pretending to qualify a
+    # physical audio device or manual drag/drop/file-chooser usability.
+    juce_add_console_app(brokedj_native_import_smoke
+        PRODUCT_NAME "BrokeDJ native import smoke"
+        COMPANY_NAME "Swir")
+    juce_generate_juce_header(brokedj_native_import_smoke)
+    target_sources(brokedj_native_import_smoke PRIVATE
+        tests/NativeImportSmoke.cpp
+        src/app/MainComponent.cpp)
+    target_include_directories(brokedj_native_import_smoke PRIVATE src)
+    target_compile_definitions(brokedj_native_import_smoke PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1)
+    if(MSVC)
+        target_compile_options(brokedj_native_import_smoke PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(brokedj_native_import_smoke PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    endif()
+    target_link_libraries(brokedj_native_import_smoke PRIVATE
+        brokedj_decoder
+        brokedj_library
+        juce::juce_audio_utils
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    add_test(NAME native_import_smoke COMMAND brokedj_native_import_smoke)
+    set_tests_properties(native_import_smoke PROPERTIES TIMEOUT 30)
 endif()
