@@ -8,6 +8,8 @@ Use disposable copies or non-critical local tracks. BrokeDJ must not delete or o
 
 The witness recorder stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. Review any evidence before publishing it. The evidence schema is closed: validation rejects unrecognized top-level, environment, app, check or privacy fields so free-form notes or accidental path/name fields cannot silently become part of an accepted witness record.
 
+Evidence generation is deliberately rejected in GitHub Actions or another environment that sets `CI=true`. `-ValidateExisting` remains usable in CI so the schema/fingerprint validator can be regression-tested without fabricating a human witness.
+
 ## Prepare
 
 Use the exact Windows x64 development/staged executable you want to qualify. Current CI development artifacts place the witness recorder and this guide beside the staged executable and include both in the package manifest/checksums. From the extracted `BrokeDJ` directory, the shortest path is:
@@ -24,7 +26,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\m4_library_witness.ps1 -AppPath "C:\path\to\BrokeDJ.exe"
 ```
 
-The script first verifies Windows 11 and fingerprints the exact `BrokeDJ.exe`. It then records the following user-controlled checks without automating or playing loud audio on its own.
+Before asking any manual questions, the recorder now performs a fail-closed preflight:
+
+1. confirms Windows 11 build 22000+ on an x64 OS from an x64 PowerShell process;
+2. resolves exactly `BrokeDJ.exe` and fingerprints its version plus SHA-256;
+3. rejects unattended CI evidence generation;
+4. runs the selected executable with `--smoke-test` in a disposable temporary directory;
+5. requires the generated GUI-smoke report to confirm success, no audio playback, no audio-device open and at least one workstation-layout resize step.
+
+The temporary GUI-smoke report is removed after preflight and is not inserted into M4 evidence. This automatic no-audio check catches a broken executable or deterministic resize/geometry regression before the longer manual workflow, but it **does not replace** the first human launch/resize check below: hosted or scripted geometry cannot establish real Windows usability, HiDPI appearance or interaction quality.
+
+The script then records the following user-controlled checks without automating music playback or playing loud audio on its own.
 
 ## Required checks
 
@@ -65,6 +77,6 @@ The JSON is still an auditable user witness record, not a digital signature or p
 
 ## Acceptance boundary
 
-Automated CI already covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, moved-file rebinding, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. This manual witness exists to prove the connected Windows 11 **user workflow** rather than re-count those automated checks.
+Automated CI already covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, moved-file rebinding, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. The new preflight additionally proves that the exact selected executable passes its no-audio native GUI resize/geometry contract before the human workflow begins. Neither automated layer replaces the connected Windows 11 **user workflow**.
 
 M4 may be marked complete only after the evidence is reviewed against the exact app build and there is no unresolved critical library/session regression. The milestone counter in `docs/progress.json` must remain unchanged until that review is real.

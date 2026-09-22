@@ -34,6 +34,23 @@ jobs:
           }
           Write-Host 'PowerShell parser: OK'
 
+      - name: Reject unattended CI evidence generation
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ witness fixture executable' -NoNewline -Encoding ascii
+          Remove-Item -LiteralPath .\ci-generated.json -Force -ErrorAction SilentlyContinue
+          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -EvidencePath .\ci-generated.json 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw 'The M4 witness incorrectly allowed human evidence generation in CI.'
+          }
+          if (Test-Path -LiteralPath .\ci-generated.json) {
+            throw 'The M4 witness wrote evidence before rejecting CI generation.'
+          }
+          Write-Host 'CI generation guard: OK'
+          $global:LASTEXITCODE = 0
+          exit 0
+
       - name: Validate evidence integrity and negative cases
         shell: pwsh
         run: |
