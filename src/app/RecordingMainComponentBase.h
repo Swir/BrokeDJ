@@ -156,6 +156,38 @@ public:
                     || !mixerBounds.contains(control.label->getBounds())) return false;
             }
         }
+
+        // All deck-owned interactive controls must stay inside their deck and
+        // must not overlap one another in workstation mode. This deliberately
+        // covers all eight Hot Cues plus the real Reset grid / Tempo map buttons,
+        // preventing stale compact bounds from silently surviving a layout pass.
+        for (const auto& deck : deckUi) {
+            const auto deckBounds = deck.deck->getLocalBounds();
+            if (deck.waveform == nullptr || deck.waveform->getParentComponent() != deck.deck
+                || deck.waveform->getWidth() <= 0 || deck.waveform->getHeight() <= 0
+                || !deckBounds.contains(deck.waveform->getBounds())) return false;
+
+            for (const auto* button : deck.buttons) {
+                if (button == nullptr || button->getParentComponent() != deck.deck
+                    || button->getWidth() <= 0 || button->getHeight() <= 0
+                    || !deckBounds.contains(button->getBounds())) return false;
+            }
+            for (const auto* combo : deck.combos) {
+                if (combo == nullptr || combo->getParentComponent() != deck.deck
+                    || combo->getWidth() <= 0 || combo->getHeight() <= 0
+                    || !deckBounds.contains(combo->getBounds())) return false;
+            }
+            for (std::size_t first = 0; first < deck.buttons.size(); ++first) {
+                for (std::size_t second = first + 1; second < deck.buttons.size(); ++second) {
+                    if (deck.buttons[first]->getBounds().intersects(deck.buttons[second]->getBounds()))
+                        return false;
+                }
+                for (const auto* combo : deck.combos) {
+                    if (deck.buttons[first]->getBounds().intersects(combo->getBounds())) return false;
+                }
+            }
+            if (deck.combos[0]->getBounds().intersects(deck.combos[1]->getBounds())) return false;
+        }
         return true;
     }
 
@@ -327,11 +359,17 @@ private:
         juce::Label* label = nullptr;
     };
 
+    static constexpr std::size_t deckButtonCount = 22;
+    static constexpr std::size_t hotCueFirstButton = 12;
+    static constexpr std::size_t hotCueButtonCount = 8;
+    static constexpr std::size_t gridResetButton = 20;
+    static constexpr std::size_t tempoMapButton = 21;
+
     struct DeckUi {
         DeckPanel* deck = nullptr;
         Waveform* waveform = nullptr;
         std::array<juce::Label*, 14> labels{};
-        std::array<juce::TextButton*, 18> buttons{};
+        std::array<juce::TextButton*, deckButtonCount> buttons{};
         std::array<juce::Slider*, 10> sliders{};
         std::array<juce::ComboBox*, 2> combos{};
         int labelCount = 0;
@@ -399,26 +437,30 @@ private:
                 auto* child = ui.deck->getChildComponent(i);
                 if (auto* label = dynamic_cast<juce::Label*>(child)) {
                     if (ui.labelCount < static_cast<int>(ui.labels.size()))
-                        ui.labels[static_cast<std::size_t>(ui.labelCount++)] = label;
+                        ui.labels[static_cast<std::size_t>(ui.labelCount)] = label;
+                    ++ui.labelCount;
                 } else if (auto* button = dynamic_cast<juce::TextButton*>(child)) {
                     if (ui.buttonCount < static_cast<int>(ui.buttons.size()))
-                        ui.buttons[static_cast<std::size_t>(ui.buttonCount++)] = button;
+                        ui.buttons[static_cast<std::size_t>(ui.buttonCount)] = button;
+                    ++ui.buttonCount;
                 } else if (auto* slider = dynamic_cast<juce::Slider*>(child)) {
                     if (ui.sliderCount < static_cast<int>(ui.sliders.size()))
-                        ui.sliders[static_cast<std::size_t>(ui.sliderCount++)] = slider;
+                        ui.sliders[static_cast<std::size_t>(ui.sliderCount)] = slider;
+                    ++ui.sliderCount;
                 } else if (auto* combo = dynamic_cast<juce::ComboBox*>(child)) {
                     if (ui.comboCount < static_cast<int>(ui.combos.size()))
-                        ui.combos[static_cast<std::size_t>(ui.comboCount++)] = combo;
+                        ui.combos[static_cast<std::size_t>(ui.comboCount)] = combo;
+                    ++ui.comboCount;
                 } else if (auto* waveform = dynamic_cast<Waveform*>(child)) {
                     ui.waveform = waveform;
                 }
             }
 
             complete = ui.waveform != nullptr
-                && ui.labelCount >= static_cast<int>(ui.labels.size())
-                && ui.buttonCount >= static_cast<int>(ui.buttons.size())
-                && ui.sliderCount >= static_cast<int>(ui.sliders.size())
-                && ui.comboCount >= static_cast<int>(ui.combos.size());
+                && ui.labelCount == static_cast<int>(ui.labels.size())
+                && ui.buttonCount == static_cast<int>(ui.buttons.size())
+                && ui.sliderCount == static_cast<int>(ui.sliders.size())
+                && ui.comboCount == static_cast<int>(ui.combos.size());
             if (!complete) break;
 
             channelUi[deckIndex].deck = ui.deck;
@@ -561,7 +603,13 @@ private:
         area.removeFromTop(std::min(3, area.getHeight()));
 
         auto hotCues = area.removeFromTop(std::min(hotCueHeight, area.getHeight()));
-        layoutEqualRow(hotCues, {ui.buttons[12], ui.buttons[13], ui.buttons[14], ui.buttons[15]});
+        layoutEqualRow(hotCues, {
+            ui.buttons[hotCueFirstButton + 0], ui.buttons[hotCueFirstButton + 1],
+            ui.buttons[hotCueFirstButton + 2], ui.buttons[hotCueFirstButton + 3],
+            ui.buttons[hotCueFirstButton + 4], ui.buttons[hotCueFirstButton + 5],
+            ui.buttons[hotCueFirstButton + 6], ui.buttons[hotCueFirstButton + 7]
+        });
+        static_assert(hotCueButtonCount == 8);
         area.removeFromTop(std::min(3, area.getHeight()));
 
         auto performance = area.removeFromTop(std::min(performanceHeight, area.getHeight()));
@@ -573,8 +621,8 @@ private:
         const int actionsWidth = std::min(compact ? 128 : 148, grid.getWidth() / 3);
         auto actions = grid.removeFromRight(actionsWidth);
         const int actionWidth = std::max(1, actions.getWidth() / 2);
-        ui.buttons[17]->setBounds(actions.removeFromLeft(actionWidth).reduced(2, 4));
-        ui.buttons[16]->setBounds(actions.reduced(2, 4));
+        ui.buttons[tempoMapButton]->setBounds(actions.removeFromLeft(actionWidth).reduced(2, 4));
+        ui.buttons[gridResetButton]->setBounds(actions.reduced(2, 4));
         auto zero = grid.removeFromLeft(grid.getWidth() / 2);
         ui.labels[12]->setBounds(zero.removeFromTop(13));
         ui.sliders[8]->setBounds(zero);

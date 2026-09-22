@@ -339,6 +339,7 @@ public:
         window = std::make_unique<Window>(!smokeTest, keyLockResearch);
         if (smokeTest) {
             guiSmokeSteps.clear();
+            guiSmokeWorkstationSteps = 0;
             juce::Timer::callAfterDelay(100, [this] { runGuiSmokeStep(0); });
         }
     }
@@ -366,9 +367,10 @@ private:
         root->setProperty("opens_audio_device", false);
         root->setProperty("success", success);
         root->setProperty("step_count", guiSmokeSteps.size());
+        root->setProperty("workstation_step_count", guiSmokeWorkstationSteps);
         root->setProperty("steps", guiSmokeSteps);
         root->setProperty("qualification_note",
-                          "No-audio GUI lifecycle/resize evidence only; this does not certify manual usability, HiDPI appearance, audio-device switching, controller input, or live readiness.");
+                          "No-audio GUI lifecycle/resize and component-geometry evidence only; this does not certify manual usability, HiDPI appearance, audio-device switching, controller input, or live readiness.");
         if (error.isNotEmpty()) root->setProperty("error", oneLine(error));
 
         const auto output = juce::File::getCurrentWorkingDirectory().getChildFile("BrokeDJ-gui-smoke.json");
@@ -394,6 +396,10 @@ private:
             return;
         }
         if (step >= smokeSizes.size()) {
+            if (guiSmokeWorkstationSteps <= 0) {
+                finishGuiSmoke(false, "The deterministic resize sequence never exercised workstation layout.");
+                return;
+            }
             finishGuiSmoke(true);
             return;
         }
@@ -401,6 +407,13 @@ private:
         const auto [requestedWidth, requestedHeight] = smokeSizes[step];
         window->setSize(requestedWidth, requestedHeight);
         auto* content = window->getContentComponent();
+        auto* wrapper = dynamic_cast<RecordingMainComponent*>(content);
+        auto* workstation = wrapper != nullptr
+            ? dynamic_cast<RecordingMainComponentBase*>(wrapper->getChildComponent(0))
+            : nullptr;
+        const bool workstationLayout = workstation != nullptr && workstation->usingWorkstationLayout();
+        const bool geometrySane = workstation != nullptr && workstation->uiGeometrySane();
+        if (workstationLayout) ++guiSmokeWorkstationSteps;
 
         auto* row = new juce::DynamicObject();
         row->setProperty("step", static_cast<int>(step));
@@ -410,12 +423,17 @@ private:
         row->setProperty("window_height", window->getHeight());
         row->setProperty("content_width", content != nullptr ? content->getWidth() : 0);
         row->setProperty("content_height", content != nullptr ? content->getHeight() : 0);
+        row->setProperty("workstation_layout", workstationLayout);
+        row->setProperty("geometry_sane", geometrySane);
         guiSmokeSteps.add(juce::var(row));
 
         const bool acceptedSize = window->getWidth() == requestedWidth && window->getHeight() == requestedHeight;
         const bool contentSane = content != nullptr && content->getWidth() > 0 && content->getHeight() > 0;
-        if (!acceptedSize || !contentSane) {
-            finishGuiSmoke(false, "Native window/content did not accept a deterministic resize target.");
+        if (!acceptedSize || !contentSane || !geometrySane) {
+            finishGuiSmoke(false,
+                           geometrySane
+                               ? "Native window/content did not accept a deterministic resize target."
+                               : "Native workstation component geometry failed containment/overlap validation.");
             return;
         }
 
@@ -423,6 +441,7 @@ private:
     }
 
     juce::Array<juce::var> guiSmokeSteps;
+    int guiSmokeWorkstationSteps = 0;
     std::unique_ptr<juce::FileLogger> logger;
     std::unique_ptr<Window> window;
 };
