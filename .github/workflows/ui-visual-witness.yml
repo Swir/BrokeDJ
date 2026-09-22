@@ -43,18 +43,22 @@ jobs:
         run: |
           $root = 'build/windows/ui-visual-witness'
           $manifest = Get-Content "$root/BrokeDJ-ui-visual-witness.json" -Raw | ConvertFrom-Json
-          if ($manifest.schema_version -ne 1 -or
+          if ($manifest.schema_version -ne 2 -or
               $manifest.mode -ne 'windows-ui-visual-witness' -or
               $manifest.plays_audio -ne $false -or
               $manifest.opens_audio_device -ne $false -or
-              $manifest.smoke_success -ne $true) {
+              $manifest.smoke_success -ne $true -or
+              $manifest.smoke_exercised_requested_1600x900 -ne $true) {
             throw 'UI visual witness manifest failed schema/safety validation.'
           }
-          if ($manifest.compact.width -lt 1040 -or $manifest.compact.height -lt 780 -or $manifest.compact.bytes -lt 4096) {
+          if ($manifest.compact.width -lt 1040 -or $manifest.compact.height -lt 760 -or $manifest.compact.bytes -lt 4096) {
             throw 'Compact UI witness dimensions/payload are invalid.'
           }
-          if ($manifest.workstation.width -lt 1500 -or $manifest.workstation.height -lt 860 -or $manifest.workstation.bytes -lt 4096) {
+          if ($manifest.workstation.width -lt 1240 -or $manifest.workstation.height -lt 760 -or $manifest.workstation.bytes -lt 4096) {
             throw 'Workstation UI witness dimensions/payload are invalid.'
+          }
+          if ($manifest.workstation.capture_class -notin @('requested-1600-class', 'largest-observed-window-fallback')) {
+            throw 'Workstation UI witness capture class is invalid.'
           }
           foreach ($file in @($manifest.compact.file, $manifest.workstation.file)) {
             if (-not (Test-Path "$root/$file")) { throw "UI witness image missing: $file" }

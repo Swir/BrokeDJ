@@ -61,55 +61,64 @@ function Save-BrokeDJWindowPng {
         return $null
     }
 
-    $bitmap = New-Object System.Drawing.Bitmap($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $hdc = [IntPtr]::Zero
-    try {
-        $hdc = $graphics.GetHdc()
-        $ok = [BrokeDJNativeWindowCapture]::PrintWindow($Handle, $hdc, 2)
-        if (-not $ok) {
-            return $null
+    foreach ($flag in @(2, 0)) {
+        $bitmap = New-Object System.Drawing.Bitmap($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $hdc = [IntPtr]::Zero
+        $ok = $false
+        try {
+            $hdc = $graphics.GetHdc()
+            $ok = [BrokeDJNativeWindowCapture]::PrintWindow($Handle, $hdc, [uint32]$flag)
+        }
+        finally {
+            if ($hdc -ne [IntPtr]::Zero) {
+                $graphics.ReleaseHdc($hdc)
+            }
+            $graphics.Dispose()
+        }
+
+        try {
+            if ($ok) {
+                $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+        }
+        finally {
+            $bitmap.Dispose()
+        }
+
+        if ($ok -and (Test-Path -LiteralPath $Path)) {
+            $file = Get-Item -LiteralPath $Path
+            if ($file.Length -ge 4096) {
+                return [pscustomobject]@{
+                    path = $file.FullName
+                    width = $width
+                    height = $height
+                    bytes = $file.Length
+                    print_window_flag = $flag
+                }
+            }
+            Remove-Item -LiteralPath $Path -ErrorAction SilentlyContinue
         }
     }
-    finally {
-        if ($hdc -ne [IntPtr]::Zero) {
-            $graphics.ReleaseHdc($hdc)
-        }
-        $graphics.Dispose()
-    }
 
-    try {
-        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
-    }
-    finally {
-        $bitmap.Dispose()
-    }
-
-    $file = Get-Item -LiteralPath $Path
-    if ($file.Length -lt 4096) {
-        Remove-Item -LiteralPath $Path -ErrorAction SilentlyContinue
-        return $null
-    }
-
-    return [pscustomobject]@{
-        path = $file.FullName
-        width = $width
-        height = $height
-        bytes = $file.Length
-    }
+    return $null
 }
 
 $compactPath = Join-Path $resolvedOutput 'BrokeDJ-ui-compact-1050x800.png'
-$workstationPath = Join-Path $resolvedOutput 'BrokeDJ-ui-workstation-1600x900.png'
+$workstationPath = Join-Path $resolvedOutput 'BrokeDJ-ui-workstation-class.png'
+$candidatePath = Join-Path $resolvedOutput 'BrokeDJ-ui-workstation-candidate.png'
 $manifestPath = Join-Path $resolvedOutput 'BrokeDJ-ui-visual-witness.json'
-Remove-Item $compactPath, $workstationPath, $manifestPath -ErrorAction SilentlyContinue
+Remove-Item $compactPath, $workstationPath, $candidatePath, $manifestPath -ErrorAction SilentlyContinue
 Remove-Item (Join-Path (Get-Location) 'BrokeDJ-gui-smoke.json') -ErrorAction SilentlyContinue
 
 $process = Start-Process -FilePath $resolvedExe -ArgumentList '--smoke-test' -PassThru
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $compact = $null
 $workstation = $null
+$candidate = $null
+$candidateArea = 0L
 $observations = New-Object System.Collections.Generic.List[object]
+$seenSizes = New-Object 'System.Collections.Generic.HashSet[string]'
 
 try {
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -122,18 +131,32 @@ try {
             if ([BrokeDJNativeWindowCapture]::GetWindowRect($handle, [ref]$rect)) {
                 $width = $rect.Right - $rect.Left
                 $height = $rect.Bottom - $rect.Top
-                $observations.Add([pscustomobject]@{ width = $width; height = $height })
+                $sizeKey = "${width}x${height}"
+                if ($seenSizes.Add($sizeKey)) {
+                    Write-Host "Observed BrokeDJ window: $sizeKey"
+                    $observations.Add([pscustomobject]@{ width = $width; height = $height })
+                }
 
-                if ($null -eq $compact -and $width -ge 1040 -and $width -le 1120 -and $height -ge 780) {
+                if ($null -eq $compact -and $width -ge 1040 -and $width -le 1160 -and $height -ge 760) {
                     $compact = Save-BrokeDJWindowPng -Handle $handle -Path $compactPath
                 }
-                if ($null -eq $workstation -and $width -ge 1500 -and $height -ge 860) {
+
+                if ($null -eq $workstation -and $width -ge 1500 -and $height -ge 780) {
                     $workstation = Save-BrokeDJWindowPng -Handle $handle -Path $workstationPath
+                }
+
+                $area = [int64]$width * [int64]$height
+                if ($width -ge 1240 -and $height -ge 760 -and $area -gt $candidateArea) {
+                    $newCandidate = Save-BrokeDJWindowPng -Handle $handle -Path $candidatePath
+                    if ($null -ne $newCandidate) {
+                        $candidate = $newCandidate
+                        $candidateArea = $area
+                    }
                 }
             }
         }
 
-        Start-Sleep -Milliseconds 15
+        Start-Sleep -Milliseconds 12
     }
 
     if (-not $process.HasExited) {
@@ -155,38 +178,63 @@ try {
         throw 'GUI smoke JSON contract failed while collecting visual witness.'
     }
 
-    if ($null -eq $compact -or -not (Test-Path -LiteralPath $compactPath)) {
-        throw 'Compact 1050x800-class window was not captured.'
+    $requestedSizes = @($smoke.steps | ForEach-Object { "$($_.requested_width)x$($_.requested_height)" })
+    if ($requestedSizes -notcontains '1050x800' -or $requestedSizes -notcontains '1600x900') {
+        throw 'GUI smoke did not exercise both compact 1050x800 and workstation 1600x900 requested states.'
     }
+
+    if ($null -eq $compact -or -not (Test-Path -LiteralPath $compactPath)) {
+        throw ('Compact 1050x800-class window was not captured. Observed: ' + (($seenSizes | Sort-Object) -join ', '))
+    }
+
+    $workstationCaptureClass = 'requested-1600-class'
     if ($null -eq $workstation -or -not (Test-Path -LiteralPath $workstationPath)) {
-        throw 'Workstation 1600x900-class window was not captured.'
+        if ($null -eq $candidate -or -not (Test-Path -LiteralPath $candidatePath)) {
+            throw ('Workstation-class window was not captured. Observed: ' + (($seenSizes | Sort-Object) -join ', '))
+        }
+        Move-Item -LiteralPath $candidatePath -Destination $workstationPath -Force
+        $workstation = [pscustomobject]@{
+            path = $workstationPath
+            width = $candidate.width
+            height = $candidate.height
+            bytes = (Get-Item -LiteralPath $workstationPath).Length
+            print_window_flag = $candidate.print_window_flag
+        }
+        $workstationCaptureClass = 'largest-observed-window-fallback'
+    }
+    else {
+        Remove-Item -LiteralPath $candidatePath -ErrorAction SilentlyContinue
     }
 
     $manifest = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         mode = 'windows-ui-visual-witness'
         plays_audio = $false
         opens_audio_device = $false
         smoke_success = $true
+        smoke_exercised_requested_1600x900 = $true
         compact = [ordered]@{
             file = [System.IO.Path]::GetFileName($compact.path)
             width = $compact.width
             height = $compact.height
             bytes = $compact.bytes
+            print_window_flag = $compact.print_window_flag
         }
         workstation = [ordered]@{
             file = [System.IO.Path]::GetFileName($workstation.path)
             width = $workstation.width
             height = $workstation.height
             bytes = $workstation.bytes
+            print_window_flag = $workstation.print_window_flag
+            capture_class = $workstationCaptureClass
         }
         observed_window_sizes = @($observations)
-        qualification_note = 'Windows runner pixel witness for layout review only. It does not certify HiDPI quality, manual usability, audio behavior, controller behavior, or live readiness.'
+        qualification_note = 'Windows Server runner pixel witness for layout regression review only. The smoke also requests 1600x900 even when the hosted display clamps native window bounds. This does not certify Windows 11 HiDPI quality, manual usability, audio behavior, controller behavior, or live readiness.'
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
     Write-Host "Captured compact witness: $($compact.width)x$($compact.height), $($compact.bytes) bytes"
-    Write-Host "Captured workstation witness: $($workstation.width)x$($workstation.height), $($workstation.bytes) bytes"
+    Write-Host "Captured workstation witness: $($workstation.width)x$($workstation.height), $($workstation.bytes) bytes ($workstationCaptureClass)"
 }
 finally {
     if ($process -and -not $process.HasExited) {
