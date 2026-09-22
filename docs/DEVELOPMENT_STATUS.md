@@ -9,10 +9,10 @@ This file is the durable engineering checkpoint for the current repository state
 ## Current checkpoint
 
 - Default branch baseline: `main` at `07647cbcabb8a64c0112a202fb8cac9076c5bde3`, the merge of PR #81 (`Package deterministic portable Beta Preview candidate`). PR #81 integrated only after its exact-head Build and test plus Native library scale smoke both completed successfully. The portable candidate contract now lives on `main`; GitHub Releases remains empty.
-- Active development: draft PR #82 on `feat/native-import-smoke` (this committed checkpoint is the branch HEAD). The branch adds `native_import_smoke`, a Windows-native CTest around the real `MainComponent` asynchronous load boundary with audio-device initialization disabled. The fixture is original synthetic stereo WAV data created in a temporary directory; the test verifies source publication into deck/session state, rejects a concurrent replacement while loading and then proves a deliberately invalid replacement preserves the previous working source.
-- Exact-head Build and test run #419 for prior checkpoint `f571f4465afa4489178f39afe2e2523a7065afe2` compiled the application and smoke target successfully and passed the first 34/35 CTests, but `native_import_smoke` timed out waiting for the valid asynchronous import. Native library scale smoke run #89 passed on that same head. Diagnosis showed the console test slept when JUCE modal dispatch was unavailable, so the worker's `MessageManager::callAsync()` publication could not reach the message thread. This checkpoint repairs the test harness by explicitly draining the Win32 message queue inside the Windows-only wait loop; production import/audio code is unchanged. New exact-head CI is required before merge.
+- Active development: draft PR #82 on `feat/native-import-smoke` (this committed checkpoint is the branch HEAD). The branch now exercises the real `MainComponent` asynchronous import boundary with audio-device initialization disabled across all four decks: parallel initial imports, same-deck serialization, missing/out-of-range rejection, failed replacement retention, successful replacement isolation and exact four-deck session-source capture. Fixtures are original synthetic stereo WAV data created in a temporary directory.
+- Prior exact-head branch head `a12b8f600c21a373dc8b4c260e6ac28d46d094f5` passed Build and test run #420 and Native library scale smoke run #90 after the Windows console harness was repaired to drain the Win32 queue used by `MessageManager::callAsync()`. This checkpoint extends that same import slice and therefore requires fresh exact-head CI before merge.
 - This remains stronger automated M1 import-regression evidence only. It does not open hardware, play audio or substitute for real Windows 11 file-picker/drag-drop/manual playback qualification.
-- Roadmap source of truth remains `docs/progress.json`: **1/10 equal-weight milestones complete (10.0%, PRE-ALPHA)**. An automated import smoke does not close M1 or change live-readiness.
+- Roadmap source of truth remains `docs/progress.json`: **1/10 equal-weight milestones complete (10.0%, PRE-ALPHA)**. Import automation does not close M1 or change live-readiness.
 - GitHub Releases is still empty; no public Beta/Release is authorized.
 
 ## Integrated foundations on main
@@ -26,7 +26,7 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Gates still open before first Beta qualification
 
-- M1: real Windows 11 clean launch/resize/import/playback/device-switch/four-output-cue witness on actual hardware. PR #82 only strengthens the automated async-import regression boundary.
+- M1: real Windows 11 clean launch/resize/import/playback/device-switch/four-output-cue witness on actual hardware. PR #82 strengthens automated four-deck async-import and replacement isolation only.
 - M2: representative music-domain BPM/key evidence, real key-lock listening evidence, device CPU/callback-deadline/underrun and latency qualification, plus controller/wider scratch qualification required by the current milestone wording.
 - M3: real Windows 11 reviewed EQ/mixer listening plus physical microphone/ducking/Booth/recording/dropout qualification and long-session evidence required by the witness.
 - M4: privacy-safe connected Windows 11 library/session witness from the exact staged executable; the automated preflight is only a prerequisite and cannot close the milestone.
@@ -34,4 +34,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Require exact-head Windows Build and test plus the existing package/library gates on the repaired PR #82 branch. Fix any remaining real import regression without weakening the checks; only after the final head is green may this slice integrate. Then return immediately to the frozen Windows 11 M4 connected-library/session witness and the remaining M1–M3 hardware/listening qualification instead of widening product scope.
+Require fresh exact-head Windows Build and test plus the existing package/library gates on PR #82 after the four-deck import/replacement expansion. Fix any real regression without weakening the checks; merge only under the normal BrokeDJ integration cadence with the final head still green. Then return immediately to the frozen Windows 11 M4 connected-library/session witness and the remaining M1–M3 hardware/listening qualification instead of widening product scope.

@@ -9,6 +9,7 @@
 #include <windows.h>
 #endif
 
+#include <array>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -36,7 +37,7 @@ struct TempDirectory final {
     juce::File directory;
 };
 
-void writeStereoWav(const juce::File& target) {
+void writeStereoWav(const juce::File& target, double leftFrequency, double rightFrequency) {
     constexpr double sampleRate = 48000.0;
     constexpr int frames = 12000;
     constexpr double twoPi = 6.283185307179586476925286766559;
@@ -44,8 +45,10 @@ void writeStereoWav(const juce::File& target) {
     juce::AudioBuffer<float> audio(2, frames);
     for (int frame = 0; frame < frames; ++frame) {
         const double time = static_cast<double>(frame) / sampleRate;
-        audio.setSample(0, frame, static_cast<float>(0.30 * std::sin(twoPi * 440.0 * time)));
-        audio.setSample(1, frame, static_cast<float>(0.22 * std::sin(twoPi * 660.0 * time + 0.2)));
+        audio.setSample(0, frame,
+                        static_cast<float>(0.30 * std::sin(twoPi * leftFrequency * time)));
+        audio.setSample(1, frame,
+                        static_cast<float>(0.22 * std::sin(twoPi * rightFrequency * time + 0.2)));
     }
 
     auto stream = target.createOutputStream();
@@ -85,10 +88,10 @@ bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs) {
     while (juce::Time::getMillisecondCounterHiRes() < deadline) {
         if (predicate()) return true;
 #if defined(_WIN32)
-        // JUCE's callAsync() publishes the decoder result back to the Windows
+        // JUCE's callAsync() publishes decoder results back to the Windows
         // message thread. Console CTest targets do not run JUCEApplication's
         // normal dispatch loop, so explicitly drain this test process' native
-        // queue instead of sleeping until the asynchronous import times out.
+        // queue instead of sleeping until asynchronous imports time out.
         if (!dispatchNativeMessages()) return predicate();
         juce::Thread::sleep(1);
 #elif JUCE_MODAL_LOOPS_PERMITTED
@@ -103,37 +106,89 @@ bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs) {
     return predicate();
 }
 
+bool allDecksIdle(const MainComponent& component) noexcept {
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        if (component.sessionDeckLoading(deck)) return false;
+    }
+    return true;
+}
+
 void runNativeImportSmoke() {
     TempDirectory temp;
-    const auto good = temp.directory.getChildFile("BrokeDJ integrated import fixture.wav");
+
+    std::array<juce::File, broke::deckCount> tracks;
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        tracks[deck] = temp.directory.getChildFile(
+            "BrokeDJ integrated import deck " + juce::String(static_cast<int>(deck + 1)) + ".wav");
+        const double base = 220.0 + static_cast<double>(deck) * 73.0;
+        writeStereoWav(tracks[deck], base, base * 1.5);
+    }
+
+    const auto replacement = temp.directory.getChildFile("BrokeDJ valid replacement.wav");
     const auto broken = temp.directory.getChildFile("BrokeDJ invalid import fixture.wav");
-    writeStereoWav(good);
+    const auto missing = temp.directory.getChildFile("BrokeDJ missing import fixture.wav");
+    writeStereoWav(replacement, 997.0, 1495.5);
     check(broken.replaceWithText("not a valid audio file\n"), "invalid fixture written");
+    check(!missing.existsAsFile(), "missing fixture starts absent");
 
     MainComponent component(false, false);
-    check(!component.loadFileIntoDeck(broke::deckCount, good), "out-of-range deck rejected");
-    check(component.loadFileIntoDeck(0, good), "valid native import accepted");
-    check(!component.loadFileIntoDeck(0, broken), "concurrent import rejected while deck is loading");
+    check(!component.loadFileIntoDeck(broke::deckCount, tracks[0]),
+          "out-of-range deck rejected");
+    check(!component.loadFileIntoDeck(0, missing), "missing file rejected before async decode");
 
-    check(pumpUntil([&] { return !component.sessionDeckLoading(0); }, 10000),
-          "valid native import completed within deadline");
-    check(component.sessionDeckMatches(0, good), "valid import published exact source to deck state");
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        check(component.loadFileIntoDeck(deck, tracks[deck]),
+              "parallel native deck import accepted");
+    }
+    check(!component.loadFileIntoDeck(0, broken),
+          "same-deck replacement rejected while initial import is loading");
+
+    check(pumpUntil([&] { return allDecksIdle(component); }, 10000),
+          "parallel native imports completed within deadline");
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        check(component.sessionDeckMatches(deck, tracks[deck]),
+              "parallel import published exact source to deck state");
+    }
 
     const auto firstSession = component.captureSessionState();
-    check(firstSession.decks[0].path == good.getFullPathName().toStdString(),
-          "session snapshot captures imported source");
-    for (std::size_t deck = 1; deck < broke::deckCount; ++deck)
-        check(firstSession.decks[deck].path.empty(), "unused deck remains empty");
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        check(firstSession.decks[deck].path == tracks[deck].getFullPathName().toStdString(),
+              "session snapshot captures every imported deck source");
+    }
 
-    check(component.loadFileIntoDeck(0, broken), "invalid replacement reaches async decoder");
-    check(pumpUntil([&] { return !component.sessionDeckLoading(0); }, 10000),
+    check(component.loadFileIntoDeck(2, broken), "invalid replacement reaches async decoder");
+    check(pumpUntil([&] { return !component.sessionDeckLoading(2); }, 10000),
           "invalid replacement completed within deadline");
-    check(component.sessionDeckMatches(0, good),
-          "failed replacement preserves previous working deck source");
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        check(component.sessionDeckMatches(deck, tracks[deck]),
+              "failed replacement preserves all working deck sources");
+    }
 
-    const auto secondSession = component.captureSessionState();
-    check(secondSession.decks[0].path == firstSession.decks[0].path,
-          "failed replacement preserves session source identity");
+    const auto afterFailedReplacement = component.captureSessionState();
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        check(afterFailedReplacement.decks[deck].path == firstSession.decks[deck].path,
+              "failed replacement leaves session source identity unchanged");
+    }
+
+    check(component.loadFileIntoDeck(1, replacement), "valid replacement accepted");
+    check(!component.loadFileIntoDeck(1, broken),
+          "same-deck replacement remains serialized during valid replacement");
+    check(pumpUntil([&] { return !component.sessionDeckLoading(1); }, 10000),
+          "valid replacement completed within deadline");
+    check(component.sessionDeckMatches(1, replacement),
+          "valid replacement publishes the new source to the target deck");
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        if (deck == 1) continue;
+        check(component.sessionDeckMatches(deck, tracks[deck]),
+              "valid replacement does not disturb another deck source");
+    }
+
+    const auto finalSession = component.captureSessionState();
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        const auto& expected = deck == 1 ? replacement : tracks[deck];
+        check(finalSession.decks[deck].path == expected.getFullPathName().toStdString(),
+              "final session snapshot matches isolated deck replacement state");
+    }
 }
 
 } // namespace
