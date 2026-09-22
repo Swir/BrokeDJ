@@ -27,15 +27,15 @@ function New-BrokeDJSyntheticWitness {
     try {
         $graphics.Clear([System.Drawing.Color]::FromArgb(255, 2, 5, 10))
         if (-not $Blank) {
-            # Deterministic dark workstation fixture with enough genuine colour and
-            # luminance variation to exercise every success threshold. It is not a
-            # screenshot mock and is never used as product evidence.
+            # Deterministic synthetic fixture used only to test the validator. Keep
+            # accent coverage well below the production upper bound while adding
+            # independent colour swatches so the diversity check is meaningful.
             $stripeCount = 64
-            $stripeWidth = [Math]::Max(2, [int]($Width / ($stripeCount * 2)))
+            $stripeWidth = [Math]::Max(2, [int]($Width / ($stripeCount * 6)))
             for ($i = 0; $i -lt $stripeCount; ++$i) {
                 $r = 4 + ($i % 10)
-                $g = [Math]::Min(210, 42 + $i * 3)
-                $b = [Math]::Min(245, 92 + $i * 3)
+                $g = [Math]::Min(190, 38 + $i * 2)
+                $b = [Math]::Min(230, 88 + $i * 2)
                 $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, $r, $g, $b))
                 try {
                     $x = 18 + $i * [Math]::Max(5, [int](($Width - 36) / $stripeCount))
@@ -44,23 +44,33 @@ function New-BrokeDJSyntheticWitness {
                 finally { $brush.Dispose() }
             }
 
-            $panelBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 7, 17, 28))
+            for ($i = 0; $i -lt 48; ++$i) {
+                $r = 20 + (($i * 37) % 140)
+                $g = 18 + (($i * 53) % 130)
+                $b = 16 + (($i * 71) % 120)
+                $swatch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, $r, $g, $b))
+                try {
+                    $x = 24 + ($i % 16) * [Math]::Max(20, [int](($Width - 48) / 16))
+                    $y = 45 + [int]($i / 16) * 22
+                    $graphics.FillRectangle($swatch, $x, $y, 18, 14)
+                }
+                finally { $swatch.Dispose() }
+            }
+
             $linePen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 98, 229, 255), 2.0)
             $brightBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 244, 250, 255))
             try {
                 for ($row = 0; $row -lt 6; ++$row) {
-                    $y = 52 + $row * [Math]::Max(72, [int](($Height - 120) / 6))
-                    $graphics.FillRectangle($panelBrush, 34, $y, $Width - 68, 46)
-                    $graphics.DrawRectangle($linePen, 34, $y, $Width - 68, 46)
+                    $y = 130 + $row * [Math]::Max(72, [int](($Height - 190) / 6))
+                    $graphics.DrawRectangle($linePen, 34, $y, $Width - 68, 40)
                 }
                 for ($i = 0; $i -lt 18; ++$i) {
                     $x = 42 + ($i % 9) * [Math]::Max(70, [int](($Width - 96) / 9))
-                    $y = 64 + [int]($i / 9) * 300
+                    $y = 150 + [int]($i / 9) * 300
                     $graphics.FillRectangle($brightBrush, $x, $y, 26, 10)
                 }
             }
             finally {
-                $panelBrush.Dispose()
                 $linePen.Dispose()
                 $brightBrush.Dispose()
             }
