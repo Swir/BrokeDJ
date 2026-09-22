@@ -1,0 +1,277 @@
+name: Beta qualification tool
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/beta_qualification.ps1'
+      - 'docs/BETA_QUALIFICATION.md'
+      - 'scripts/m1_hardware_witness.ps1'
+      - 'scripts/m2_keylock_listening_witness.ps1'
+      - 'scripts/m3_mixer_recording_witness.ps1'
+      - 'scripts/m4_library_witness.ps1'
+      - '.github/workflows/beta-qualification-tool.yml'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-beta-gate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Parse Beta qualification script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\scripts\beta_qualification.ps1').Path,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          Write-Host 'PowerShell parser: OK'
+
+      - name: Validate exact-executable M1-M4 composition and negative cases
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ Beta qualification fixture executable' -NoNewline -Encoding ascii
+          Set-Content -LiteralPath .\SOURCE-COMMIT.txt -Value '${{ github.event.pull_request.head.sha || github.sha }}' -NoNewline -Encoding ascii
+          $appFile = Get-Item -LiteralPath .\BrokeDJ.exe
+          $appHash = (Get-FileHash -LiteralPath .\BrokeDJ.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $appVersion = $appFile.VersionInfo.FileVersion
+          if ([string]::IsNullOrWhiteSpace($appVersion)) { $appVersion = 'unknown' }
+
+          $probe = [ordered]@{
+            schema_version = 2
+            mode = 'silent-capability'
+            plays_audio = $false
+            calls_device_open = $false
+            starts_audio_callback = $false
+            creates_device_descriptors = $true
+            backend_count = 1
+            output_device_count = 1
+            four_output_candidate_count = 1
+            unexpected_open_state_count = 0
+            safety_invariants_ok = $true
+            qualification_note = 'Synthetic contract fixture only; no hardware qualification claim.'
+            backends = @(
+              [ordered]@{
+                index = 0
+                name = 'fixture-backend'
+                output_count = 1
+                default_output_index = 0
+                descriptor_details_skipped = $false
+                devices = @()
+              }
+            )
+          }
+          $probe | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-device-probe.json -Encoding utf8
+          $probeHash = (Get-FileHash -LiteralPath .\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $m1 = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M1-windows-hardware'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
+            app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = [string]$appVersion; sha256 = $appHash }
+            deviceProbe = [ordered]@{
+              fileName = 'BrokeDJ-device-probe.json'
+              schemaVersion = 2
+              sha256 = $probeHash
+              outputDeviceCount = 1
+              fourOutputCandidateCount = 1
+              safetyInvariantsOk = $true
+            }
+            checks = [ordered]@{
+              cleanLaunch = $true
+              resizeAndHiDpi = $true
+              importAndPlayback = $true
+              deviceSwitchRecovery = $true
+              fourOutputCueIsolation = $true
+              runtimeErrorReview = $true
+            }
+            privacy = [ordered]@{
+              containsDeviceNames = $false
+              containsTrackPaths = $false
+              containsTrackNames = $false
+              containsSourceMusic = $false
+            }
+          }
+          $m1 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M1-Hardware-Witness.json -Encoding utf8
+
+          $m2 = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M2-key-lock-listening'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
+            app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = [string]$appVersion; sha256 = $appHash }
+            material = [ordered]@{ representativeTrackCount = 3; userOwnedOrLicensed = $true }
+            checks = [ordered]@{
+              normalBaselineReviewed = $true
+              slowKeyLockReviewed = $true
+              fastKeyLockReviewed = $true
+              transportFallbackReviewed = $true
+              pitchStabilityAcceptable = $true
+              noCriticalArtifactsObserved = $true
+              runtimeErrorReview = $true
+            }
+            privacy = [ordered]@{
+              containsDeviceNames = $false
+              containsTrackPaths = $false
+              containsTrackNames = $false
+              containsSourceMusic = $false
+            }
+          }
+          $m2 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M2-keylock-listening.json -Encoding utf8
+
+          $m3 = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M3-mixer-recording'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
+            app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = [string]$appVersion; sha256 = $appHash }
+            session = [ordered]@{ continuousMinutes = 60; representativeTrackCount = 3; userOwnedOrLicensed = $true }
+            checks = [ordered]@{
+              eqListeningReviewed = $true
+              gainStagingReviewed = $true
+              crossfaderLawsReviewed = $true
+              limiterBehaviorReviewed = $true
+              microphoneInputReviewed = $true
+              duckingReviewed = $true
+              boothRoutingReviewed = $true
+              cueIsolationPreserved = $true
+              recordingCreated = $true
+              recordingPlaybackReviewed = $true
+              zeroRecordingDropoutsObserved = $true
+              runtimeErrorReview = $true
+            }
+            privacy = [ordered]@{
+              containsDeviceNames = $false
+              containsTrackPaths = $false
+              containsTrackNames = $false
+              containsRecordingPaths = $false
+              containsSourceMusic = $false
+              containsMicrophoneAudio = $false
+            }
+          }
+          $m3 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M3-mixer-recording.json -Encoding utf8
+
+          $m4 = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            scope = 'M4-library-workflow'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
+            app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = [string]$appVersion; sha256 = $appHash }
+            checks = [ordered]@{
+              launchAndResize = $true
+              importAndSearch = $true
+              tagsAndPlaylists = $true
+              history = $true
+              duplicateAndMissingReview = $true
+              relocate = $true
+              libraryBackupRestore = $true
+              sessionSaveLoad = $true
+            }
+            privacy = [ordered]@{
+              containsTrackPaths = $false
+              containsTrackNames = $false
+              containsSourceMusic = $false
+            }
+          }
+          $m4 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M4-Library-Witness.json -Encoding utf8
+
+          function Get-Hash([string]$Path) {
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+
+          $complete = [ordered]@{
+            schema = 1
+            project = 'BrokeDJ'
+            channel = 'beta'
+            generatedUtc = [DateTime]::UtcNow.ToString('o')
+            sourceCommit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = [string]$appVersion; sha256 = $appHash }
+            gates = [ordered]@{ m1 = $true; m2 = $true; m3 = $true; m4 = $true }
+            evidence = [ordered]@{
+              deviceProbe = [ordered]@{ fileName = 'BrokeDJ-device-probe.json'; sha256 = Get-Hash '.\BrokeDJ-device-probe.json' }
+              m1 = [ordered]@{ fileName = 'BrokeDJ-M1-Hardware-Witness.json'; sha256 = Get-Hash '.\BrokeDJ-M1-Hardware-Witness.json' }
+              m2 = [ordered]@{ fileName = 'BrokeDJ-M2-keylock-listening.json'; sha256 = Get-Hash '.\BrokeDJ-M2-keylock-listening.json' }
+              m3 = [ordered]@{ fileName = 'BrokeDJ-M3-mixer-recording.json'; sha256 = Get-Hash '.\BrokeDJ-M3-mixer-recording.json' }
+              m4 = [ordered]@{ fileName = 'BrokeDJ-M4-Library-Witness.json'; sha256 = Get-Hash '.\BrokeDJ-M4-Library-Witness.json' }
+            }
+            privacy = [ordered]@{
+              containsDeviceNames = $false
+              containsTrackNames = $false
+              containsTrackPaths = $false
+              containsRecordingPaths = $false
+              containsSourceMusic = $false
+              containsMicrophoneAudio = $false
+            }
+          }
+
+          $complete | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-Beta-Qualification.json -Encoding utf8
+          & pwsh -NoProfile -File .\scripts\beta_qualification.ps1 `
+            -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+            -M1EvidencePath .\BrokeDJ-M1-Hardware-Witness.json `
+            -M2EvidencePath .\BrokeDJ-M2-keylock-listening.json `
+            -M3EvidencePath .\BrokeDJ-M3-mixer-recording.json `
+            -M4EvidencePath .\BrokeDJ-M4-Library-Witness.json `
+            -QualificationPath .\BrokeDJ-Beta-Qualification.json -ValidateExisting
+          if ($LASTEXITCODE -ne 0) { throw 'Complete Beta qualification fixture was rejected.' }
+
+          function Assert-QualificationRejected([object]$Fixture, [string]$Path, [string]$Message) {
+            $Fixture | ConvertTo-Json -Depth 8 | Set-Content $Path -Encoding utf8
+            & pwsh -NoProfile -File .\scripts\beta_qualification.ps1 `
+              -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+              -M1EvidencePath .\BrokeDJ-M1-Hardware-Witness.json `
+              -M2EvidencePath .\BrokeDJ-M2-keylock-listening.json `
+              -M3EvidencePath .\BrokeDJ-M3-mixer-recording.json `
+              -M4EvidencePath .\BrokeDJ-M4-Library-Witness.json `
+              -QualificationPath $Path -ValidateExisting
+            if ($LASTEXITCODE -eq 0) { throw $Message }
+            $global:LASTEXITCODE = 0
+          }
+
+          $failedGate = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $failedGate.gates.m3 = $false
+          Assert-QualificationRejected $failedGate '.\failed-gate.json' 'False Beta gate was accepted.'
+
+          $privacyLeak = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $privacyLeak.privacy.containsDeviceNames = $true
+          Assert-QualificationRejected $privacyLeak '.\privacy-leak.json' 'Privacy-unsafe Beta summary was accepted.'
+
+          $wrongApp = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $wrongApp.app.sha256 = ('b' * 64)
+          Assert-QualificationRejected $wrongApp '.\wrong-app.json' 'Wrong application fingerprint was accepted.'
+
+          $wrongEvidence = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $wrongEvidence.evidence.m4.sha256 = ('c' * 64)
+          Assert-QualificationRejected $wrongEvidence '.\wrong-evidence.json' 'Wrong witness fingerprint was accepted.'
+
+          $extraField = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $extraField | Add-Member -NotePropertyName notes -NotePropertyValue 'not allowed'
+          Assert-QualificationRejected $extraField '.\extra-field.json' 'Unexpected Beta summary field was accepted.'
+
+          Remove-Item .\must-not-exist.json -ErrorAction SilentlyContinue
+          & pwsh -NoProfile -File .\scripts\beta_qualification.ps1 `
+            -AppPath .\BrokeDJ.exe -QualificationPath .\must-not-exist.json
+          if ($LASTEXITCODE -eq 0) { throw 'CI was allowed to generate a human Beta qualification.' }
+          if (Test-Path .\must-not-exist.json) { throw 'CI generation wrote a Beta qualification file.' }
+          $global:LASTEXITCODE = 0
+
+          Write-Host 'Beta qualification contract: composed M1-M4 fixture accepted; failed-gate, privacy, identity, tamper, extra-field and CI-generation cases rejected.'
+          exit 0

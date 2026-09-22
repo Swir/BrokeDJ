@@ -141,6 +141,9 @@ jobs:
           Copy-Item docs/M3_MIXER_RECORDING_WITNESS.md dist/BrokeDJ/M3-MIXER-RECORDING-WITNESS.md
           Copy-Item scripts/m4_library_witness.ps1 dist/BrokeDJ/M4-LIBRARY-WITNESS.ps1
           Copy-Item docs/M4_LIBRARY_WITNESS.md dist/BrokeDJ/M4-LIBRARY-WITNESS.md
+          Copy-Item scripts/beta_qualification.ps1 dist/BrokeDJ/BETA-QUALIFICATION.ps1
+          Copy-Item docs/BETA_QUALIFICATION.md dist/BrokeDJ/BETA-QUALIFICATION.md
+          Copy-Item docs/BETA_PREVIEW.md dist/BrokeDJ/BETA-PREVIEW.md
           Set-Content -Path dist/BrokeDJ/SOURCE-COMMIT.txt -Value '${{ github.event.pull_request.head.sha || github.sha }}' -NoNewline -Encoding utf8
           Copy-Item scripts/package_contract.py dist/VERIFY-PACKAGE.py
           python scripts/package_contract.py create --root dist --commit '${{ github.event.pull_request.head.sha || github.sha }}' --cmake CMakeLists.txt
@@ -178,6 +181,9 @@ jobs:
           if (-not (Test-Path 'package/BrokeDJ/M3-MIXER-RECORDING-WITNESS.md')) { throw 'Packaged M3 mixer/recording witness guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.ps1')) { throw 'Packaged M4 witness script missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.md')) { throw 'Packaged M4 witness guide missing' }
+          if (-not (Test-Path 'package/BrokeDJ/BETA-QUALIFICATION.ps1')) { throw 'Packaged Beta qualification script missing' }
+          if (-not (Test-Path 'package/BrokeDJ/BETA-QUALIFICATION.md')) { throw 'Packaged Beta qualification guide missing' }
+          if (-not (Test-Path 'package/BrokeDJ/BETA-PREVIEW.md')) { throw 'Packaged Beta Preview guide missing' }
       - name: Confirm staged M2 listening witness cannot generate evidence in CI
         shell: pwsh
         run: |
@@ -212,6 +218,21 @@ jobs:
               -RecordingPlaybackReviewed -ZeroRecordingDropoutsObserved -RuntimeErrorReview
             if ($LASTEXITCODE -eq 0) { throw 'Packaged M3 witness generated qualification evidence in CI.' }
             if (Test-Path 'BrokeDJ-M3-mixer-recording.json') { throw 'Packaged M3 witness wrote evidence in CI.' }
+            $global:LASTEXITCODE = 0
+          }
+          finally {
+            Pop-Location
+          }
+      - name: Confirm staged Beta qualification cannot generate evidence in CI
+        shell: pwsh
+        run: |
+          Push-Location package/BrokeDJ
+          try {
+            Remove-Item 'BrokeDJ-Beta-Qualification.json' -ErrorAction SilentlyContinue
+            & pwsh -NoProfile -File .\BETA-QUALIFICATION.ps1 `
+              -AppPath .\BrokeDJ.exe -QualificationPath .\BrokeDJ-Beta-Qualification.json
+            if ($LASTEXITCODE -eq 0) { throw 'Packaged Beta qualifier generated human qualification evidence in CI.' }
+            if (Test-Path 'BrokeDJ-Beta-Qualification.json') { throw 'Packaged Beta qualifier wrote evidence in CI.' }
             $global:LASTEXITCODE = 0
           }
           finally {
@@ -256,3 +277,11 @@ jobs:
           finally {
             Pop-Location
           }
+      - name: Publish smoke-qualified Beta Preview artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: BrokeDJ-Beta-Preview-Windows-x64
+          path: package/
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: true
