@@ -106,6 +106,36 @@ jobs:
             -EvidencePath .\complete.json -ValidateExisting
           if ($LASTEXITCODE -ne 0) { throw 'Complete M1 witness fixture was rejected.' }
 
+          function Assert-CiGenerationRejected([string]$Variable, [string]$Value) {
+            $savedGithubActions = $env:GITHUB_ACTIONS
+            $savedCi = $env:CI
+            try {
+              $env:GITHUB_ACTIONS = ''
+              $env:CI = ''
+              if ($Variable -eq 'GITHUB_ACTIONS') { $env:GITHUB_ACTIONS = $Value }
+              if ($Variable -eq 'CI') { $env:CI = $Value }
+              Remove-Item .\must-not-exist.json -ErrorAction SilentlyContinue
+              $output = & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
+                -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+                -EvidencePath .\must-not-exist.json 2>&1
+              $exitCode = $LASTEXITCODE
+              if ($exitCode -eq 0) { throw "$Variable=$Value was allowed to generate M1 evidence." }
+              if (($output | Out-String) -notmatch 'cannot be generated in CI') {
+                throw "$Variable=$Value did not fail at the CI guard. Output: $($output | Out-String)"
+              }
+              if (Test-Path .\must-not-exist.json) { throw "$Variable=$Value wrote an M1 evidence file." }
+            } finally {
+              $env:GITHUB_ACTIONS = $savedGithubActions
+              $env:CI = $savedCi
+              $global:LASTEXITCODE = 0
+            }
+          }
+
+          foreach ($value in @('true', 'TRUE', '1', 'yes', 'ON')) {
+            Assert-CiGenerationRejected 'CI' $value
+          }
+          Assert-CiGenerationRejected 'GITHUB_ACTIONS' 'TRUE'
+
           function Assert-Rejected([object]$Fixture, [string]$Path, [string]$Message, [string]$Probe = '.\BrokeDJ-device-probe.json') {
             $Fixture | ConvertTo-Json -Depth 8 | Set-Content $Path -Encoding utf8
             & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
@@ -161,6 +191,6 @@ jobs:
           $noFourOutputEvidence.deviceProbe.fourOutputCandidateCount = 0
           Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output\BrokeDJ-device-probe.json'
 
-          Write-Host 'M1 evidence contract: complete fixture accepted; incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases rejected.'
+          Write-Host 'M1 evidence contract: complete fixture accepted; CI-generation, incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases rejected.'
           $global:LASTEXITCODE = 0
           exit 0

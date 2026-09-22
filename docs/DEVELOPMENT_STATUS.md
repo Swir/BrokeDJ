@@ -8,11 +8,10 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline: `main` at `c7412076ba9d685b449c3a241409aaa605e0f1c1`, the squash merge of PR #83 (`Exercise native session restore through the audio ownership boundary`).
-- PR #83 final head `9234a7aacdeffe3ed130ed4adc4e96f73fa076b0` passed exact-head Build and test run #424 and Native library scale smoke run #94 before integration. Build #424 included Linux ASan/UBSan/core checks, Windows x64 build/full CTest, native no-audio GUI resize/geometry smoke, silent device enumeration, staged package verification and staged executable smoke. Run #94 passed the native and staged 5k-track/12k-history library lifecycle qualification.
-- The integrated native session regression saves/checksum-loads a four-deck snapshot, explicitly verifies `.bak` recovery after primary corruption, restores three sources through the real async decoder and `Engine` adoption boundary, clears one saved empty deck through the audio-owned eject path, restores controls/paused seek positions only after adoption and proves saved `wasPlaying=true` never auto-resumes.
-- That regression is offline and synthetic: it opens no physical audio device and emits no audible output. It strengthens automated M4 prerequisite evidence but does not replace the connected Windows 11 library/session witness.
-- There is no active BrokeDJ feature PR at this checkpoint. The current internally implemented Beta slice is held against its manual/hardware qualification gates rather than widened into M5+ feature work.
+- Default branch baseline: `main` at `8026efc16773a5ad81dd6988ce13de0e6b75f901`. Its post-merge exact-head Build and test run #426 and Native library scale smoke run #96 both completed successfully.
+- Active development branch: `feat/m1-ci-evidence-guard`, draft PR #84. The package closes an evidence-integrity gap in the M1 human hardware witness: generation now fails before any Windows/device interaction when `CI` or `GITHUB_ACTIONS` is truthy, including common case/boolean forms (`true`, `TRUE`, `1`, `yes`, `ON`). `-ValidateExisting` remains CI-usable.
+- PR #84 also extends the dedicated M1 witness-tool workflow with negative generation tests that require the failure to come specifically from the CI guard and verify that no M1 evidence JSON is written. The initial code head was `0eab89dc44ad1cd03594ec37280792c50162315e`; exact-head workflows were queued when this checkpoint was written and must be green on the final PR head before integration.
+- No audio DSP, GUI, routing, device-open behavior or roadmap acceptance criterion changes in PR #84. The package hardens trust in future manual evidence; it does not itself satisfy the physical M1 witness.
 - Roadmap source of truth remains `docs/progress.json`: **1/10 equal-weight milestones complete (10.0%, PRE-ALPHA)**. M1–M4 remain open until their documented acceptance evidence exists.
 - GitHub Releases is still empty; no public Beta/Release is authorized.
 
@@ -27,7 +26,7 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Gates still open before first Beta qualification
 
-- M1: real Windows 11 clean launch/resize/import/playback/device-switch/four-output-cue witness on actual hardware.
+- M1: real Windows 11 clean launch/resize/import/playback/device-switch/four-output-cue witness on actual hardware. PR #84 must also pass exact-head CI before its evidence-integrity hardening can be integrated.
 - M2: representative music-domain BPM/key evidence, real key-lock listening evidence, device CPU/callback-deadline/underrun and latency qualification, plus controller/wider scratch qualification required by the current milestone wording.
 - M3: real Windows 11 reviewed EQ/mixer listening plus physical microphone/ducking/Booth/recording/dropout qualification and long-session evidence required by the witness.
 - M4: privacy-safe connected Windows 11 library/session witness from the exact staged executable.
@@ -35,4 +34,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Run and review the documented privacy-safe M4 connected-library/session witness on Windows 11 x64 against one exact staged executable. Fix any real regression it exposes before changing M4 status. Then complete the frozen M1–M3 hardware/listening evidence. Do not widen the current Beta target into M5+ feature work merely to keep the automation busy; the remaining blockers are now explicit external/manual qualification gates.
+Finish exact-head CI for draft PR #84 and fix any regression it exposes; do not merge while required checks are running or red. Because BrokeDJ default-branch integration is intentionally throttled to coherent 4–6 hour packages, keep a green PR #84 on the development branch unless an earlier merge is justified by a real urgent integrity regression. After that, run and review the documented privacy-safe M4 connected-library/session witness on Windows 11 x64 against one exact staged executable, then complete the frozen M1–M3 hardware/listening evidence. Do not widen the current Beta target into M5+ feature work merely to keep the automation busy.
