@@ -277,6 +277,14 @@ jobs:
           finally {
             Pop-Location
           }
+      - name: Remove smoke outputs and re-verify publishable package
+        shell: pwsh
+        run: |
+          Remove-Item 'package/BrokeDJ/BrokeDJ-gui-smoke.json' -ErrorAction SilentlyContinue
+          Remove-Item 'package/BrokeDJ/BrokeDJ-device-probe.txt' -ErrorAction SilentlyContinue
+          Remove-Item 'package/BrokeDJ/BrokeDJ-device-probe.json' -ErrorAction SilentlyContinue
+          python package/VERIFY-PACKAGE.py verify --root package --expected-commit '${{ github.event.pull_request.head.sha || github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Post-smoke package verification failed' }
       - name: Publish smoke-qualified Beta Preview artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
