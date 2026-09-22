@@ -27,13 +27,24 @@ function Read-YesNo([string]$Question) {
     }
 }
 
-function Assert-Windows11 {
+function Assert-NotCi {
+    if ($env:GITHUB_ACTIONS -eq 'true' -or $env:CI -eq 'true') {
+        throw 'M4 witness evidence is human-controlled and cannot be generated in CI.'
+    }
+}
+
+function Assert-Windows11X64 {
     if ($env:OS -ne 'Windows_NT') {
         throw 'This witness must run on Windows.'
     }
     $build = [Environment]::OSVersion.Version.Build
     if ($build -lt 22000) {
         throw "Windows 11 is required for this witness (detected build $build)."
+    }
+    $osArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    $processArch = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    if ($osArch -ne 'X64' -or $processArch -ne 'X64') {
+        throw "M4 witness generation requires x64 Windows and x64 PowerShell (OS=$osArch, process=$processArch)."
     }
     return $build
 }
@@ -103,6 +114,44 @@ function Assert-BooleanProperty([object]$Object, [string]$Name, [bool]$Expected,
     }
     if ($value -ne $Expected) {
         throw "$Context.$Name must be $($Expected.ToString().ToLowerInvariant())."
+    }
+}
+
+function Invoke-GuiSmokePreflight([System.IO.FileInfo]$App) {
+    $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("BrokeDJ-M4-preflight-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $temporaryRoot -Force | Out-Null
+    $process = $null
+    try {
+        Write-Step 'Running the packaged no-audio GUI/resize preflight before manual M4 checks.'
+        $process = Start-Process -FilePath $App.FullName -ArgumentList '--smoke-test' `
+            -WorkingDirectory $temporaryRoot -PassThru
+        if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill() } catch { }
+            throw 'BrokeDJ --smoke-test did not finish within 30 seconds.'
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "BrokeDJ --smoke-test failed with exit code $($process.ExitCode)."
+        }
+
+        $reportPath = Join-Path $temporaryRoot 'BrokeDJ-gui-smoke.json'
+        if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+            throw 'BrokeDJ --smoke-test exited without BrokeDJ-gui-smoke.json.'
+        }
+        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        $schema = Assert-IntegerProperty -Object $report -Name 'schema_version' -Minimum 1 -Context 'guiSmoke'
+        if ($schema -ne 1) { throw 'Unsupported GUI smoke schema.' }
+        $mode = Assert-StringProperty -Object $report -Name 'mode' -Context 'guiSmoke'
+        if ($mode -ne 'native-resize-lifecycle') { throw 'Unexpected GUI smoke mode.' }
+        Assert-BooleanProperty -Object $report -Name 'plays_audio' -Expected $false -Context 'guiSmoke'
+        Assert-BooleanProperty -Object $report -Name 'opens_audio_device' -Expected $false -Context 'guiSmoke'
+        Assert-BooleanProperty -Object $report -Name 'success' -Expected $true -Context 'guiSmoke'
+        $workstationSteps = Assert-IntegerProperty -Object $report -Name 'workstation_step_count' -Minimum 1 -Context 'guiSmoke'
+        Write-Step "No-audio GUI preflight passed ($workstationSteps workstation resize step(s))."
+    } finally {
+        if ($null -ne $process -and -not $process.HasExited) {
+            try { $process.Kill() } catch { }
+        }
+        Remove-Item -LiteralPath $temporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -200,12 +249,15 @@ if ($ValidateExisting) {
     exit 0
 }
 
-$windowsBuild = Assert-Windows11
+Assert-NotCi
+$windowsBuild = Assert-Windows11X64
 $appFingerprint = Get-AppFingerprint -App $app
+Invoke-GuiSmokePreflight -App $app
 
 Write-Step 'This witness never asks for track names or paths and does not inspect source music.'
 Write-Step 'Use disposable copies or non-critical local tracks for manual interaction checks.'
 Write-Step 'Do not include screenshots or notes containing private paths in public artifacts.'
+Write-Step 'The automated preflight opened no audio device; the manual launch/resize check below is still required for real usability review.'
 Write-Host ''
 
 $checks = [ordered]@{}
