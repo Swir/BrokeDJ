@@ -2,6 +2,13 @@
 #include <JuceHeader.h>
 #include "app/MainComponent.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -57,6 +64,18 @@ void writeStereoWav(const juce::File& target) {
     check(target.existsAsFile() && target.getSize() > 44, "WAV fixture exists");
 }
 
+#if defined(_WIN32)
+bool dispatchNativeMessages() noexcept {
+    MSG message{};
+    while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        if (message.message == WM_QUIT) return false;
+        ::TranslateMessage(&message);
+        ::DispatchMessageW(&message);
+    }
+    return true;
+}
+#endif
+
 bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs) {
     auto* messages = juce::MessageManager::getInstance();
     if (messages == nullptr) return false;
@@ -65,12 +84,22 @@ bool pumpUntil(const std::function<bool()>& predicate, int timeoutMs) {
         + static_cast<double>(timeoutMs);
     while (juce::Time::getMillisecondCounterHiRes() < deadline) {
         if (predicate()) return true;
-#if JUCE_MODAL_LOOPS_PERMITTED
+#if defined(_WIN32)
+        // JUCE's callAsync() publishes the decoder result back to the Windows
+        // message thread. Console CTest targets do not run JUCEApplication's
+        // normal dispatch loop, so explicitly drain this test process' native
+        // queue instead of sleeping until the asynchronous import times out.
+        if (!dispatchNativeMessages()) return predicate();
+        juce::Thread::sleep(1);
+#elif JUCE_MODAL_LOOPS_PERMITTED
         if (!messages->runDispatchLoopUntil(10)) return predicate();
 #else
         juce::Thread::sleep(10);
 #endif
     }
+#if defined(_WIN32)
+    static_cast<void>(dispatchNativeMessages());
+#endif
     return predicate();
 }
 
