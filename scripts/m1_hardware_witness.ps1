@@ -20,6 +20,24 @@ function Write-Step([string]$Message) {
     Write-Host "[BrokeDJ M1] $Message"
 }
 
+function Test-TruthyEnvironmentValue([object]$Value) {
+    if ($null -eq $Value) { return $false }
+    switch (([string]$Value).Trim().ToLowerInvariant()) {
+        '1' { return $true }
+        'true' { return $true }
+        'yes' { return $true }
+        'on' { return $true }
+        default { return $false }
+    }
+}
+
+function Assert-NotCi {
+    if ((Test-TruthyEnvironmentValue $env:GITHUB_ACTIONS) -or
+        (Test-TruthyEnvironmentValue $env:CI)) {
+        throw 'M1 witness evidence is human-controlled and cannot be generated in CI.'
+    }
+}
+
 function Read-YesNo([string]$Question) {
     while ($true) {
         $answer = (Read-Host "$Question [y/n]").Trim().ToLowerInvariant()
@@ -287,6 +305,7 @@ if ($ValidateExisting) {
     exit 0
 }
 
+Assert-NotCi
 $windowsBuild = Assert-Windows11
 $osArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 $processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
