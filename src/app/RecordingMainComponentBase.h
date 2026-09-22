@@ -8,6 +8,7 @@
 #include "core/MasterPathProcessor.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <memory>
@@ -123,12 +124,39 @@ public:
         masterPath.setLimiterEnabled(true);
         masterPath.setBoothGainDb(-6.0f);
         masterPath.setBoothEnabled(false);
+
+        initialiseWorkstationUi();
     }
 
     ~RecordingMainComponent() override {
         recordChooser.reset();
         if (micSettings) delete micSettings.getComponent();
         recorder.stop();
+    }
+
+    [[nodiscard]] bool usingWorkstationLayout() const noexcept { return workstationLayout; }
+
+    [[nodiscard]] bool uiGeometrySane() const noexcept {
+        if (!workstationUiReady) return false;
+        const auto local = getLocalBounds();
+        for (const auto& deck : deckUi) {
+            if (deck.deck == nullptr || deck.deck->getWidth() <= 0 || deck.deck->getHeight() <= 0
+                || !local.contains(deck.deck->getBounds())) return false;
+        }
+        if (!workstationLayout) return true;
+        if (mixerBounds.isEmpty() || !local.contains(mixerBounds)) return false;
+        for (const auto& deck : deckUi)
+            if (deck.deck->getBounds().intersects(mixerBounds)) return false;
+        for (const auto& channel : channelUi) {
+            for (const auto& control : channel.controls) {
+                if (control.slider == nullptr || control.label == nullptr
+                    || control.slider->getParentComponent() != this
+                    || control.label->getParentComponent() != this
+                    || !mixerBounds.contains(control.slider->getBounds())
+                    || !mixerBounds.contains(control.label->getBounds())) return false;
+            }
+        }
+        return true;
     }
 
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
@@ -225,9 +253,6 @@ public:
     void paint(juce::Graphics& graphics) override {
         MainComponent::paint(graphics);
 
-        // A restrained workstation shell groups the existing operational
-        // controls. It is deliberately presentation-only and keeps all control
-        // hit targets/routing exactly where resized() places them.
         const int toolbarLeft = std::max(164, getWidth() - 900);
         const int toolbarRight = std::max(toolbarLeft + 1, getWidth() - 194);
         auto shell = juce::Rectangle<float>(static_cast<float>(toolbarLeft), 10.0f,
@@ -244,7 +269,6 @@ public:
         graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.18f));
         graphics.drawRoundedRectangle(shell, 10.0f, 1.0f);
 
-        // Group dividers: record / dynamics & monitor / library-history area.
         const int recRight = getWidth() - 20 - 165 - 8;
         const int dynamicsRight = recRight - 92 - 6;
         const int navigationRight = dynamicsRight - (58 + 6 + 52 + 6 + 62 + 6 + 130 + 6 + 64 + 6);
@@ -255,10 +279,206 @@ public:
             graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.08f));
             graphics.drawVerticalLine(x + 1, 18.0f, 56.0f);
         }
+
+        if (workstationLayout && !mixerBounds.isEmpty()) {
+            auto mixer = mixerBounds.toFloat();
+            graphics.setColour(juce::Colours::black.withAlpha(0.42f));
+            graphics.fillRoundedRectangle(mixer.translated(0.0f, 2.0f), 13.0f);
+            juce::ColourGradient mixerGradient(BrokeLookAndFeel::surfaceHighlight().withAlpha(0.98f),
+                                               mixer.getTopLeft(),
+                                               BrokeLookAndFeel::background().interpolatedWith(
+                                                   BrokeLookAndFeel::surface(), 0.72f),
+                                               mixer.getBottomLeft(), false);
+            graphics.setGradientFill(mixerGradient);
+            graphics.fillRoundedRectangle(mixer, 13.0f);
+            graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.26f));
+            graphics.drawRoundedRectangle(mixer.reduced(0.5f), 13.0f, 1.0f);
+
+            auto inner = mixerBounds.reduced(9);
+            const int stripWidth = std::max(1, inner.getWidth() / 4);
+            for (int i = 1; i < 4; ++i) {
+                const int x = inner.getX() + stripWidth * i;
+                graphics.setColour(i == 2 ? BrokeLookAndFeel::cyan().withAlpha(0.28f)
+                                          : BrokeLookAndFeel::outline().withAlpha(0.78f));
+                graphics.drawVerticalLine(x, static_cast<float>(inner.getY() + 8),
+                                           static_cast<float>(inner.getBottom() - 156));
+            }
+            auto masterShelf = mixerBounds.reduced(9).removeFromBottom(154).toFloat();
+            graphics.setColour(BrokeLookAndFeel::background().withAlpha(0.52f));
+            graphics.fillRoundedRectangle(masterShelf, 9.0f);
+            graphics.setColour(BrokeLookAndFeel::outline().withAlpha(0.88f));
+            graphics.drawRoundedRectangle(masterShelf, 9.0f, 1.0f);
+        }
     }
 
     void resized() override {
+        cacheWorkstationUi();
+        const bool wantsWorkstation = workstationUiReady && getWidth() >= 1240 && getHeight() >= 850;
+        setWorkstationLayoutEnabled(wantsWorkstation);
+
         MainComponent::resized();
+        layoutTopActions();
+        if (workstationLayout) layoutWorkstation();
+    }
+
+private:
+    struct ControlPair {
+        juce::Slider* slider = nullptr;
+        juce::Label* label = nullptr;
+    };
+
+    struct DeckUi {
+        DeckPanel* deck = nullptr;
+        Waveform* waveform = nullptr;
+        std::array<juce::Label*, 14> labels{};
+        std::array<juce::TextButton*, 18> buttons{};
+        std::array<juce::Slider*, 10> sliders{};
+        std::array<juce::ComboBox*, 2> combos{};
+        int labelCount = 0;
+        int buttonCount = 0;
+        int sliderCount = 0;
+        int comboCount = 0;
+    };
+
+    struct ChannelUi {
+        DeckPanel* deck = nullptr;
+        std::array<ControlPair, 5> controls{}; // trim, fader, low, mid, high
+    };
+
+    static juce::String dbfs(float linear) {
+        if (!std::isfinite(linear) || linear <= 1.0e-9f) return "— dBFS";
+        return juce::String(20.0f * std::log10(linear), 1) + " dBFS";
+    }
+
+    void initialiseWorkstationUi() {
+        cacheWorkstationUi();
+        constexpr std::array<const char*, 4> letters{"A", "B", "C", "D"};
+        for (std::size_t deck = 0; deck < channelHeadings.size(); ++deck) {
+            channelHeadings[deck].setText("CH " + juce::String(letters[deck]), juce::dontSendNotification);
+            channelHeadings[deck].setJustificationType(juce::Justification::centred);
+            channelHeadings[deck].setFont(juce::Font(juce::FontOptions(13.0f).withStyle("Bold")));
+            channelHeadings[deck].setColour(juce::Label::textColourId,
+                                            deck % 2 == 0 ? BrokeLookAndFeel::cyan()
+                                                          : BrokeLookAndFeel::accentBlue().brighter(0.35f));
+            channelHeadings[deck].setVisible(false);
+            addAndMakeVisible(channelHeadings[deck]);
+            channelHeadings[deck].setVisible(false);
+        }
+    }
+
+    void cacheWorkstationUi() {
+        if (workstationUiCached) return;
+
+        int deckCount = 0;
+        int globalSliderCount = 0;
+        for (int i = 0; i < getNumChildComponents(); ++i) {
+            auto* child = getChildComponent(i);
+            if (auto* deck = dynamic_cast<DeckPanel*>(child)) {
+                if (deckCount < static_cast<int>(deckUi.size()))
+                    deckUi[static_cast<std::size_t>(deckCount++)].deck = deck;
+            } else if (auto* slider = dynamic_cast<CrossfaderSlider*>(child)) {
+                if (globalSliderCount < static_cast<int>(globalMixSliders.size()))
+                    globalMixSliders[static_cast<std::size_t>(globalSliderCount++)] = slider;
+            } else if (auto* label = dynamic_cast<juce::Label*>(child)) {
+                const auto value = label->getText();
+                if (value.containsIgnoreCase("CROSSFADER")) crossfaderTitle = label;
+                else if (value == "MASTER") masterTitle = label;
+                else if (value == "HEADPHONES" || value == juce::String::fromUTF8("SŁUCHAWKI")) cueTitle = label;
+                else if (value.startsWithIgnoreCase("MASTER:")) masterMeter = label;
+            }
+        }
+
+        bool complete = deckCount == static_cast<int>(deckUi.size())
+            && globalSliderCount == static_cast<int>(globalMixSliders.size())
+            && crossfaderTitle != nullptr && masterTitle != nullptr && cueTitle != nullptr
+            && masterMeter != nullptr;
+
+        for (std::size_t deckIndex = 0; deckIndex < deckUi.size() && complete; ++deckIndex) {
+            auto& ui = deckUi[deckIndex];
+            for (int i = 0; i < ui.deck->getNumChildComponents(); ++i) {
+                auto* child = ui.deck->getChildComponent(i);
+                if (auto* label = dynamic_cast<juce::Label*>(child)) {
+                    if (ui.labelCount < static_cast<int>(ui.labels.size()))
+                        ui.labels[static_cast<std::size_t>(ui.labelCount++)] = label;
+                } else if (auto* button = dynamic_cast<juce::TextButton*>(child)) {
+                    if (ui.buttonCount < static_cast<int>(ui.buttons.size()))
+                        ui.buttons[static_cast<std::size_t>(ui.buttonCount++)] = button;
+                } else if (auto* slider = dynamic_cast<juce::Slider*>(child)) {
+                    if (ui.sliderCount < static_cast<int>(ui.sliders.size()))
+                        ui.sliders[static_cast<std::size_t>(ui.sliderCount++)] = slider;
+                } else if (auto* combo = dynamic_cast<juce::ComboBox*>(child)) {
+                    if (ui.comboCount < static_cast<int>(ui.combos.size()))
+                        ui.combos[static_cast<std::size_t>(ui.comboCount++)] = combo;
+                } else if (auto* waveform = dynamic_cast<Waveform*>(child)) {
+                    ui.waveform = waveform;
+                }
+            }
+
+            complete = ui.waveform != nullptr
+                && ui.labelCount >= static_cast<int>(ui.labels.size())
+                && ui.buttonCount >= static_cast<int>(ui.buttons.size())
+                && ui.sliderCount >= static_cast<int>(ui.sliders.size())
+                && ui.comboCount >= static_cast<int>(ui.combos.size());
+            if (!complete) break;
+
+            channelUi[deckIndex].deck = ui.deck;
+            constexpr std::array<int, 5> sliderIndices{0, 1, 3, 4, 5};
+            for (std::size_t control = 0; control < sliderIndices.size(); ++control) {
+                const auto sliderIndex = sliderIndices[control];
+                channelUi[deckIndex].controls[control].slider = ui.sliders[static_cast<std::size_t>(sliderIndex)];
+                channelUi[deckIndex].controls[control].label = ui.labels[static_cast<std::size_t>(4 + sliderIndex)];
+            }
+
+            for (auto* slider : ui.sliders) {
+                slider->setColour(juce::Slider::rotarySliderFillColourId, BrokeLookAndFeel::cyan());
+                slider->setColour(juce::Slider::rotarySliderOutlineColourId, BrokeLookAndFeel::outline());
+                slider->setColour(juce::Slider::thumbColourId, BrokeLookAndFeel::cyan());
+                slider->setColour(juce::Slider::textBoxTextColourId, BrokeLookAndFeel::primaryText());
+                slider->setColour(juce::Slider::textBoxOutlineColourId, BrokeLookAndFeel::outline());
+            }
+            for (auto* button : ui.buttons) {
+                button->setColour(juce::TextButton::buttonColourId, BrokeLookAndFeel::surfaceRaised());
+                button->setColour(juce::TextButton::buttonOnColourId, BrokeLookAndFeel::accentDeep());
+            }
+        }
+
+        if (complete) {
+            for (auto* slider : globalMixSliders) {
+                slider->setColour(juce::Slider::trackColourId, BrokeLookAndFeel::accentBlue());
+                slider->setColour(juce::Slider::thumbColourId, BrokeLookAndFeel::cyan());
+                slider->setColour(juce::Slider::textBoxTextColourId, BrokeLookAndFeel::primaryText());
+                slider->setColour(juce::Slider::textBoxOutlineColourId, BrokeLookAndFeel::outline());
+            }
+        }
+
+        workstationUiReady = complete;
+        workstationUiCached = true;
+    }
+
+    void setWorkstationLayoutEnabled(bool enabled) {
+        if (!workstationUiReady || workstationLayout == enabled) return;
+        workstationLayout = enabled;
+
+        for (std::size_t deckIndex = 0; deckIndex < channelUi.size(); ++deckIndex) {
+            auto& channel = channelUi[deckIndex];
+            for (std::size_t controlIndex = 0; controlIndex < channel.controls.size(); ++controlIndex) {
+                auto& control = channel.controls[controlIndex];
+                auto* destination = enabled ? static_cast<juce::Component*>(this)
+                                            : static_cast<juce::Component*>(channel.deck);
+                destination->addAndMakeVisible(*control.slider);
+                destination->addAndMakeVisible(*control.label);
+                control.slider->setSliderStyle(controlIndex == 1 && enabled
+                    ? juce::Slider::LinearVertical
+                    : juce::Slider::RotaryHorizontalVerticalDrag);
+                control.slider->setTextBoxStyle(juce::Slider::TextBoxBelow, false, 58, 18);
+            }
+            channelHeadings[deckIndex].setVisible(enabled);
+        }
+        mixerBounds = {};
+        repaint();
+    }
+
+    void layoutTopActions() {
         constexpr int settingsWidth = 165;
         constexpr int gap = 6;
         int right = getWidth() - 20 - settingsWidth - 8;
@@ -291,10 +511,159 @@ public:
         libraryWorkflow.setButtonBounds({right - libraryWidth, 20, libraryWidth, 34});
     }
 
-private:
-    static juce::String dbfs(float linear) {
-        if (!std::isfinite(linear) || linear <= 1.0e-9f) return "— dBFS";
-        return juce::String(20.0f * std::log10(linear), 1) + " dBFS";
+    static void layoutEqualRow(juce::Rectangle<int> area,
+                               const std::initializer_list<juce::Component*>& components,
+                               int inset = 2) {
+        const int count = static_cast<int>(components.size());
+        if (count <= 0) return;
+        int remaining = count;
+        for (auto* component : components) {
+            const int width = remaining > 0 ? area.getWidth() / remaining : area.getWidth();
+            auto slot = area.removeFromLeft(width);
+            if (component != nullptr) component->setBounds(slot.reduced(inset, 0));
+            --remaining;
+        }
+    }
+
+    static void placeRotary(ControlPair& control, juce::Rectangle<int>& strip, int controlHeight) {
+        if (control.slider == nullptr || control.label == nullptr) return;
+        auto block = strip.removeFromTop(std::min(controlHeight, strip.getHeight()));
+        control.label->setBounds(block.removeFromTop(15));
+        control.slider->setBounds(block.reduced(3, 0));
+        strip.removeFromTop(std::min(3, strip.getHeight()));
+    }
+
+    void layoutDeckForWorkstation(DeckUi& ui) {
+        auto area = ui.deck->getLocalBounds().reduced(12);
+        const bool compact = ui.deck->getHeight() < 390;
+
+        auto top = area.removeFromTop(24);
+        ui.labels[2]->setBounds(top.removeFromRight(std::min(172, top.getWidth() / 2)));
+        ui.labels[0]->setBounds(top);
+        ui.labels[1]->setBounds(area.removeFromTop(22));
+        ui.labels[3]->setBounds(area.removeFromTop(18));
+        area.removeFromTop(std::min(4, area.getHeight()));
+
+        const int transportHeight = compact ? 28 : 32;
+        const int hotCueHeight = compact ? 26 : 30;
+        const int performanceHeight = compact ? 26 : 30;
+        const int gridHeight = compact ? 36 : 40;
+        const int fxHeight = compact ? 62 : 76;
+        const int fixedBelow = 5 + transportHeight + 3 + hotCueHeight + 3
+            + performanceHeight + 3 + gridHeight + 3 + fxHeight;
+        const int waveformHeight = std::max(compact ? 44 : 66, area.getHeight() - fixedBelow);
+        ui.waveform->setBounds(area.removeFromTop(std::min(waveformHeight, area.getHeight())));
+        area.removeFromTop(std::min(5, area.getHeight()));
+
+        auto transport = area.removeFromTop(std::min(transportHeight, area.getHeight()));
+        layoutEqualRow(transport, {ui.buttons[0], ui.buttons[1], ui.buttons[2], ui.buttons[3],
+                                   ui.buttons[5], ui.combos[0], ui.buttons[4]});
+        area.removeFromTop(std::min(3, area.getHeight()));
+
+        auto hotCues = area.removeFromTop(std::min(hotCueHeight, area.getHeight()));
+        layoutEqualRow(hotCues, {ui.buttons[12], ui.buttons[13], ui.buttons[14], ui.buttons[15]});
+        area.removeFromTop(std::min(3, area.getHeight()));
+
+        auto performance = area.removeFromTop(std::min(performanceHeight, area.getHeight()));
+        layoutEqualRow(performance, {ui.buttons[6], ui.combos[1], ui.buttons[7], ui.buttons[8],
+                                     ui.buttons[9], ui.buttons[10], ui.buttons[11]});
+        area.removeFromTop(std::min(3, area.getHeight()));
+
+        auto grid = area.removeFromTop(std::min(gridHeight, area.getHeight()));
+        const int actionsWidth = std::min(compact ? 128 : 148, grid.getWidth() / 3);
+        auto actions = grid.removeFromRight(actionsWidth);
+        const int actionWidth = std::max(1, actions.getWidth() / 2);
+        ui.buttons[17]->setBounds(actions.removeFromLeft(actionWidth).reduced(2, 4));
+        ui.buttons[16]->setBounds(actions.reduced(2, 4));
+        auto zero = grid.removeFromLeft(grid.getWidth() / 2);
+        ui.labels[12]->setBounds(zero.removeFromTop(13));
+        ui.sliders[8]->setBounds(zero);
+        ui.labels[13]->setBounds(grid.removeFromTop(13));
+        ui.sliders[9]->setBounds(grid);
+        area.removeFromTop(std::min(3, area.getHeight()));
+
+        auto fx = area.removeFromTop(std::min(fxHeight, area.getHeight()));
+        constexpr std::array<int, 3> sliderIndices{2, 6, 7};
+        int remaining = static_cast<int>(sliderIndices.size());
+        for (const auto sliderIndex : sliderIndices) {
+            const int width = remaining > 0 ? fx.getWidth() / remaining : fx.getWidth();
+            auto slot = fx.removeFromLeft(width).reduced(2, 0);
+            ui.labels[static_cast<std::size_t>(4 + sliderIndex)]->setBounds(slot.removeFromTop(16));
+            ui.sliders[static_cast<std::size_t>(sliderIndex)]->setBounds(slot);
+            --remaining;
+        }
+    }
+
+    void layoutCentralMixer() {
+        auto inner = mixerBounds.reduced(9);
+        auto masterShelf = inner.removeFromBottom(std::min(146, inner.getHeight() / 3));
+        inner.removeFromBottom(std::min(6, inner.getHeight()));
+
+        constexpr std::array<std::size_t, 4> order{0, 2, 1, 3};
+        int remaining = static_cast<int>(order.size());
+        for (const auto deckIndex : order) {
+            const int width = remaining > 0 ? inner.getWidth() / remaining : inner.getWidth();
+            auto strip = inner.removeFromLeft(width).reduced(3, 0);
+            channelHeadings[deckIndex].setBounds(strip.removeFromTop(24));
+            strip.removeFromTop(std::min(2, strip.getHeight()));
+
+            auto& channel = channelUi[deckIndex];
+            const int rotaryHeight = std::max(54, std::min(70, (strip.getHeight() - 126) / 4));
+            placeRotary(channel.controls[0], strip, rotaryHeight); // trim
+            placeRotary(channel.controls[4], strip, rotaryHeight); // high
+            placeRotary(channel.controls[3], strip, rotaryHeight); // mid
+            placeRotary(channel.controls[2], strip, rotaryHeight); // low
+
+            auto& fader = channel.controls[1];
+            fader.label->setBounds(strip.removeFromTop(std::min(15, strip.getHeight())));
+            fader.slider->setBounds(strip.reduced(8, 1));
+            --remaining;
+        }
+
+        masterMeter->setBounds(masterShelf.removeFromTop(22).reduced(4, 0));
+        masterShelf.removeFromTop(std::min(2, masterShelf.getHeight()));
+        auto levels = masterShelf.removeFromTop(std::min(50, masterShelf.getHeight()));
+        auto masterArea = levels.removeFromLeft(levels.getWidth() / 2).reduced(4, 0);
+        masterTitle->setBounds(masterArea.removeFromTop(16));
+        globalMixSliders[1]->setBounds(masterArea);
+        auto cueArea = levels.reduced(4, 0);
+        cueTitle->setBounds(cueArea.removeFromTop(16));
+        globalMixSliders[2]->setBounds(cueArea);
+        masterShelf.removeFromTop(std::min(4, masterShelf.getHeight()));
+        crossfaderTitle->setBounds(masterShelf.removeFromTop(std::min(18, masterShelf.getHeight())));
+        globalMixSliders[0]->setBounds(masterShelf.reduced(5, 0));
+    }
+
+    void layoutWorkstation() {
+        auto work = getLocalBounds().reduced(20);
+        work.removeFromTop(std::min(70, work.getHeight()));
+        work.removeFromBottom(std::min(26, work.getHeight()));
+        work.reduce(0, 4);
+
+        const int mixerWidth = juce::jlimit(320, 380, getWidth() / 4);
+        constexpr int sideGap = 12;
+        const int sideWidth = std::max(1, (work.getWidth() - mixerWidth - sideGap * 2) / 2);
+        auto left = work.removeFromLeft(sideWidth);
+        work.removeFromLeft(std::min(sideGap, work.getWidth()));
+        mixerBounds = work.removeFromLeft(std::min(mixerWidth, work.getWidth()));
+        work.removeFromLeft(std::min(sideGap, work.getWidth()));
+        auto right = work;
+
+        constexpr int deckGap = 10;
+        const int leftHeight = std::max(1, (left.getHeight() - deckGap) / 2);
+        const int rightHeight = std::max(1, (right.getHeight() - deckGap) / 2);
+        auto leftTop = left.removeFromTop(leftHeight);
+        left.removeFromTop(std::min(deckGap, left.getHeight()));
+        auto rightTop = right.removeFromTop(rightHeight);
+        right.removeFromTop(std::min(deckGap, right.getHeight()));
+
+        deckUi[0].deck->setBounds(leftTop);
+        deckUi[2].deck->setBounds(left);
+        deckUi[1].deck->setBounds(rightTop);
+        deckUi[3].deck->setBounds(right);
+        for (auto& deck : deckUi) layoutDeckForWorkstation(deck);
+        layoutCentralMixer();
+        repaint();
     }
 
     void showMicIoSettings() {
@@ -435,5 +804,19 @@ private:
     std::atomic<bool> boothOutputAvailable{false};
 
     LibraryWorkflow libraryWorkflow;
+
+    std::array<DeckUi, 4> deckUi{};
+    std::array<ChannelUi, 4> channelUi{};
+    std::array<juce::Label, 4> channelHeadings{};
+    std::array<CrossfaderSlider*, 3> globalMixSliders{};
+    juce::Label* crossfaderTitle = nullptr;
+    juce::Label* masterTitle = nullptr;
+    juce::Label* cueTitle = nullptr;
+    juce::Label* masterMeter = nullptr;
+    juce::Rectangle<int> mixerBounds;
+    bool workstationUiCached = false;
+    bool workstationUiReady = false;
+    bool workstationLayout = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RecordingMainComponent)
 };
