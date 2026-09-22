@@ -5,6 +5,7 @@ on:
       - 'src/app/**'
       - 'scripts/capture_ui_smoke.ps1'
       - 'scripts/validate_ui_witness.ps1'
+      - 'scripts/test_ui_witness_validator.ps1'
       - '.github/workflows/ui-visual-witness.yml'
   workflow_dispatch:
 permissions:
@@ -22,6 +23,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Self-test UI pixel validator
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/test_ui_witness_validator.ps1
+          if ($LASTEXITCODE -ne 0) { throw "UI validator self-test failed: $LASTEXITCODE" }
 
       - name: Configure native Windows build
         run: cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
