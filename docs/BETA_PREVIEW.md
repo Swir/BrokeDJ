@@ -1,18 +1,34 @@
 # BrokeDJ Beta Preview
 
-This workflow artifact is a **user-testable Windows 11 x64 Beta Preview**. It is uploaded only after the exact staged package passes the repository's automated build, core/audio tests, package-contract verification, native GUI lifecycle/resize smoke and silent device-probe smoke.
+This workflow artifact is a **user-testable Windows 11 x64 Beta Preview candidate**. It is uploaded only after the exact staged package passes the repository's automated build, core/audio tests, package-contract verification, native GUI lifecycle/resize smoke and silent device-probe smoke.
 
 It is **not** a public Beta release, live-performance certification or proof that the manual M1-M4 hardware/listening gates have passed. The roadmap counter remains unchanged until its acceptance criteria are genuinely satisfied.
 
+## Portable package
+
+The workflow artifact contains `BrokeDJ-Beta-Preview-Windows-x64.zip` plus `BrokeDJ-Beta-Preview-Windows-x64.zip.sha256`. The ZIP is generated from the already-manifested staged tree with fixed member ordering/metadata, a single versioned top-level directory and no symlinks. Package verification checks the outer SHA-256, rejects duplicate/unsafe archive members, extracts to a temporary directory and re-validates the inner `PACKAGE-MANIFEST.json` / `SHA256SUMS.txt` against the same source commit.
+
+This is an integrity and extraction contract, not a clean-machine qualification. The existing staged Windows smoke still runs with audio disabled; real Windows 11 hardware/listening evidence remains manual.
+
 ## Run the preview
 
-1. Extract the complete workflow artifact to a normal writable local folder.
-2. Open the `BrokeDJ` folder.
-3. Start `BrokeDJ.exe`.
-4. Import only music that you own or are allowed to use.
-5. Exercise the ordinary four-deck, mixer, library/session and recording workflows before using the packaged witness procedures.
+1. Keep the `.zip` and `.zip.sha256` together until you have verified or extracted the package.
+2. Extract `BrokeDJ-Beta-Preview-Windows-x64.zip` to a normal writable local folder.
+3. Open the versioned `BrokeDJ-<version>-Beta-Preview-Windows-x64` folder, then open its `BrokeDJ` folder.
+4. Start `BrokeDJ.exe`.
+5. Import only music that you own or are allowed to use.
+6. Exercise the ordinary four-deck, mixer, library/session and recording workflows before using the packaged witness procedures.
 
-Keep the package together. `SOURCE-COMMIT.txt`, package metadata and the qualification/witness files intentionally travel with the executable so any report can be tied to the exact candidate.
+Keep the extracted package together. `SOURCE-COMMIT.txt`, package metadata and the qualification/witness files intentionally travel with the executable so any report can be tied to the exact candidate.
+
+For an optional integrity review before testing, run from the extracted versioned package root:
+
+```powershell
+python .\VERIFY-PACKAGE.py verify --root . --expected-commit <full-40-character-commit-sha>
+Get-Content .\SHA256SUMS.txt
+```
+
+Python is required only for this optional verification step; BrokeDJ itself does not require Python.
 
 ## Test first
 
