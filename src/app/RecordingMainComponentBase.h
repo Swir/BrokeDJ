@@ -24,6 +24,9 @@ public:
     explicit RecordingMainComponent(bool openAudio = true, bool enableKeyLockResearch = false)
         : MainComponent(openAudio, enableKeyLockResearch), libraryWorkflow(*this) {
         recordButton.setButtonText(text("REC SET", "NAGRAJ SET"));
+        recordButton.setColour(juce::TextButton::buttonOnColourId,
+                               BrokeLookAndFeel::recordRed().darker(0.10f));
+        recordButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
         recordButton.setTooltip(text(
             "Record post-limiter master outputs 1/2 to a 24-bit WAV. Disk encoding runs on a background thread; FIFO overflow is counted as a recording dropout instead of blocking playback.",
             "Nagraj wyjście master 1/2 po limiterze do WAV 24-bit. Zapis na dysku działa w tle; przepełnienie bufora jest liczone jako dropout nagrania zamiast blokować odtwarzanie."));
@@ -33,6 +36,8 @@ public:
         limiterButton.setButtonText("LIMIT");
         limiterButton.setClickingTogglesState(true);
         limiterButton.setToggleState(true, juce::dontSendNotification);
+        limiterButton.setColour(juce::TextButton::buttonOnColourId,
+                                BrokeLookAndFeel::accentDeep());
         limiterButton.setTooltip(text(
             "Linked-stereo -1 dBFS sample-peak safety limiter. Zero attack, 120 ms release, no look-ahead or true-peak reconstruction; not presented as a transparent mastering limiter.",
             "Sprzężony limiter stereo -1 dBFS dla szczytów próbek. Zerowy attack, release 120 ms, bez look-ahead i true-peak; nie jest przedstawiany jako przezroczysty limiter masteringowy."));
@@ -43,6 +48,8 @@ public:
 
         micButton.setButtonText("MIC");
         micButton.setClickingTogglesState(true);
+        micButton.setColour(juce::TextButton::buttonOnColourId,
+                            BrokeLookAndFeel::warningAmber().darker(0.36f));
         micButton.setTooltip(text(
             "Mix the first active audio input into master 1/2 at 0 dB with up to 12 dB music ducking. Enable an input with MIC I/O first.",
             "Dodaj pierwsze aktywne wejście audio do master 1/2 przy 0 dB z duckingiem muzyki do 12 dB. Najpierw włącz wejście przez MIC I/O."));
@@ -64,6 +71,8 @@ public:
 
         boothButton.setButtonText("BOOTH");
         boothButton.setClickingTogglesState(true);
+        boothButton.setColour(juce::TextButton::buttonOnColourId,
+                              BrokeLookAndFeel::accentDeep().brighter(0.05f));
         boothButton.setTooltip(text(
             "Send the protected master to dedicated logical outputs 5/6. Requires six active output channels; cue remains private on 3/4.",
             "Wyślij zabezpieczony master na osobne wyjścia logiczne 5/6. Wymaga sześciu aktywnych wyjść; odsłuch pozostaje prywatny na 3/4."));
@@ -89,6 +98,10 @@ public:
         boothLevel.setValue(-6.0, juce::dontSendNotification);
         boothLevel.setDoubleClickReturnValue(true, -6.0);
         boothLevel.setTextValueSuffix(" dB");
+        boothLevel.setColour(juce::Slider::trackColourId,
+                             BrokeLookAndFeel::signalGreen().withAlpha(0.78f));
+        boothLevel.setColour(juce::Slider::thumbColourId,
+                             BrokeLookAndFeel::signalGreen());
         boothLevel.setTooltip(text(
             "Independent Booth attenuation after the master limiter. Range -60..0 dB; it cannot boost above the protected master.",
             "Niezależne tłumienie Booth po limiterze master. Zakres -60..0 dB; nie może podbić sygnału ponad zabezpieczony master."));
@@ -212,16 +225,36 @@ public:
     void paint(juce::Graphics& graphics) override {
         MainComponent::paint(graphics);
 
-        // Visually group the operational controls into one instrument-like strip
-        // without changing their ownership, hit targets or realtime behavior.
+        // A restrained workstation shell groups the existing operational
+        // controls. It is deliberately presentation-only and keeps all control
+        // hit targets/routing exactly where resized() places them.
         const int toolbarLeft = std::max(164, getWidth() - 900);
-        auto toolbar = juce::Rectangle<float>(static_cast<float>(toolbarLeft), 12.0f,
-                                              static_cast<float>(std::max(1, getWidth() - toolbarLeft - 14)),
-                                              50.0f);
-        graphics.setColour(BrokeLookAndFeel::surface().withAlpha(0.94f));
-        graphics.fillRoundedRectangle(toolbar, 9.0f);
-        graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.14f));
-        graphics.drawRoundedRectangle(toolbar, 9.0f, 1.0f);
+        const int toolbarRight = std::max(toolbarLeft + 1, getWidth() - 194);
+        auto shell = juce::Rectangle<float>(static_cast<float>(toolbarLeft), 10.0f,
+                                            static_cast<float>(std::max(1, toolbarRight - toolbarLeft)),
+                                            54.0f);
+        graphics.setColour(juce::Colours::black.withAlpha(0.34f));
+        graphics.fillRoundedRectangle(shell.translated(0.0f, 2.0f), 10.0f);
+        juce::ColourGradient shellGradient(BrokeLookAndFeel::surfaceHighlight().withAlpha(0.96f),
+                                           shell.getTopLeft(),
+                                           BrokeLookAndFeel::surface().withAlpha(0.98f),
+                                           shell.getBottomLeft(), false);
+        graphics.setGradientFill(shellGradient);
+        graphics.fillRoundedRectangle(shell, 10.0f);
+        graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.18f));
+        graphics.drawRoundedRectangle(shell, 10.0f, 1.0f);
+
+        // Group dividers: record / dynamics & monitor / library-history area.
+        const int recRight = getWidth() - 20 - 165 - 8;
+        const int dynamicsRight = recRight - 92 - 6;
+        const int navigationRight = dynamicsRight - (58 + 6 + 52 + 6 + 62 + 6 + 130 + 6 + 64 + 6);
+        for (int x : {dynamicsRight + 3, navigationRight + 3}) {
+            if (x <= toolbarLeft + 6 || x >= toolbarRight - 6) continue;
+            graphics.setColour(BrokeLookAndFeel::outline().withAlpha(0.75f));
+            graphics.drawVerticalLine(x, 17.0f, 57.0f);
+            graphics.setColour(BrokeLookAndFeel::cyan().withAlpha(0.08f));
+            graphics.drawVerticalLine(x + 1, 18.0f, 56.0f);
+        }
     }
 
     void resized() override {
