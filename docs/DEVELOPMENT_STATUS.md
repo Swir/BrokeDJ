@@ -12,11 +12,11 @@ This file is the durable engineering checkpoint for the current repository state
 - PR #75 final head `157fb1a0bbc3ff6705cbaf79602a01534043724a` passed its exact-head required workflows before merge: Build and test `35638489968`, Native library scale smoke `35638489923`, Beta qualification tool `35638489893`, M1 hardware witness `35638489888`, M2 key-lock witness `35638489903` and M3 mixer/recording witness `35638490045`.
 - GitHub Releases remains empty. No open issue or competing PR was present before the current UI branch was created.
 - Active development: draft PR #76, branch `feat/pro-ui-pass`.
-- Functional UI implementation checkpoint before this status update: `8ecc9b3c0827f9b297edd38a846cd2b1b6ac09ef`.
-- PR #76 adds a BrokeDJ-specific native JUCE LookAndFeel using the canonical dark `#02050A` / `#07111C` and blue→cyan `#0088FF` / `#62E5FF` visual system. It restyles buttons, toggle/focus state, rotary/linear sliders, combo boxes, editors, popups, tooltips and alerts without changing the audio callback or DSP topology.
-- The existing recording/microphone/Booth/library controls are visually grouped into one workstation toolbar without changing their routing, ownership or hit targets. The playback-history surface now follows the same visual system.
-- The normal workstation default canvas is increased to 1440×960 for more breathing room. The existing 1050×800 minimum and automated resize compatibility sequence remain unchanged, so this is not a claim that the smallest layout is visually qualified.
-- This checkpoint documentation commit advances the PR head after the functional implementation commit, so fresh exact-final-head CI remains mandatory before any integration.
+- Latest functional UI checkpoint: `a6f4d27903a1bf14bb73260c6d8cbdb823ff01d0` (`Polish DJ controls and workflow strip`).
+- The native JUCE LookAndFeel now gives buttons, faders, rotary controls and combo boxes a deeper workstation-style material hierarchy: recessed tracks/wells, restrained gradients, hardware-like knob ticks/fader caps, clearer hover/focus state and thin status illumination while preserving per-control state colours.
+- Operational state is easier to scan without touching audio behavior: recording uses a dedicated red active state, microphone uses an amber active state, Booth level gets a distinct monitor signal colour, and the existing record/dynamics-monitor/library controls sit inside a segmented top workstation shell. No routing, callback, decoder, device or DSP topology changed in this pass.
+- The earlier PR work still provides the canonical dark `#02050A` / `#07111C` and blue→cyan `#0088FF` / `#62E5FF` visual system, consistent history/library surfaces and a 1440×960 normal canvas while retaining the existing 1050×800 automated resize compatibility gate.
+- Functional head `a6f4d279...` started exact-head workflows `35717414096` (Build and test) and `35717414051` (Native library scale smoke). They were still running when this checkpoint was written; this documentation commit advances the PR head again, so the final head must receive fresh exact-head results before integration.
 - Roadmap source of truth remains `docs/progress.json`: **1/10 equal-weight milestones complete (10.0%, PRE-ALPHA)**. UI polish and Beta tooling do not advance the milestone counter by themselves.
 
 ## Integrated foundations on main
@@ -38,4 +38,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Run exact-final-head CI for PR #76 and fix every compile, native GUI, package or qualification-tool regression it exposes. Keep the branch unmerged until those checks are green. After automated validation, review the staged Windows UI at normal and minimum sizes on Windows 11 and feed any layout/HiDPI regression back into this same PR before moving on to the remaining M1–M4 manual qualification gates.
+Fix any exact-head compile, GUI lifecycle, package or scale-smoke regression from PR #76 before integration. Once the final head is automated-green, review the staged Windows UI at 1440×960 and the 1050×800 minimum on Windows 11; feed layout/HiDPI regressions back into this same PR, then continue the existing M1–M4 physical/listening qualification gates instead of widening feature scope.
