@@ -117,8 +117,8 @@ $compact = $null
 $workstation = $null
 $candidate = $null
 $candidateArea = 0L
-$observations = New-Object System.Collections.Generic.List[object]
-$seenSizes = New-Object 'System.Collections.Generic.HashSet[string]'
+$observations = @()
+$seenSizes = @{}
 
 try {
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -132,9 +132,10 @@ try {
                 $width = $rect.Right - $rect.Left
                 $height = $rect.Bottom - $rect.Top
                 $sizeKey = "${width}x${height}"
-                if ($seenSizes.Add($sizeKey)) {
+                if (-not $seenSizes.ContainsKey($sizeKey)) {
+                    $seenSizes[$sizeKey] = $true
                     Write-Host "Observed BrokeDJ window: $sizeKey"
-                    $observations.Add([pscustomobject]@{ width = $width; height = $height })
+                    $observations += [pscustomobject]@{ width = $width; height = $height }
                 }
 
                 if ($null -eq $compact -and $width -ge 1040 -and $width -le 1160 -and $height -ge 760) {
@@ -184,13 +185,13 @@ try {
     }
 
     if ($null -eq $compact -or -not (Test-Path -LiteralPath $compactPath)) {
-        throw ('Compact 1050x800-class window was not captured. Observed: ' + (($seenSizes | Sort-Object) -join ', '))
+        throw ('Compact 1050x800-class window was not captured. Observed: ' + (($seenSizes.Keys | Sort-Object) -join ', '))
     }
 
     $workstationCaptureClass = 'requested-1600-class'
     if ($null -eq $workstation -or -not (Test-Path -LiteralPath $workstationPath)) {
         if ($null -eq $candidate -or -not (Test-Path -LiteralPath $candidatePath)) {
-            throw ('Workstation-class window was not captured. Observed: ' + (($seenSizes | Sort-Object) -join ', '))
+            throw ('Workstation-class window was not captured. Observed: ' + (($seenSizes.Keys | Sort-Object) -join ', '))
         }
         Move-Item -LiteralPath $candidatePath -Destination $workstationPath -Force
         $workstation = [pscustomobject]@{
