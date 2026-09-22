@@ -52,7 +52,10 @@ public:
                 "Historia odtwarzania jest niedostępna, ponieważ nie udało się otworzyć lokalnej bazy biblioteki."));
         }
 
-        setSize(base.getWidth(), base.getHeight());
+        // The previous 1280x860 default squeezed the four-deck workstation even
+        // though resizing worked. Start with more breathing room while keeping the
+        // existing 1050x800 compatibility smoke/minimum available to the user.
+        setSize(1440, 960);
         startTimerHz(20);
     }
 
@@ -103,9 +106,9 @@ private:
             refresh.setButtonText(text("Refresh", "Odśwież"));
             refresh.onClick = [this] { if (onRefresh) onRefresh(); };
 
-            list.setRowHeight(46);
+            list.setRowHeight(50);
             list.setColour(juce::ListBox::backgroundColourId, background);
-            list.setColour(juce::ListBox::outlineColourId, blue.withAlpha(0.25f));
+            list.setColour(juce::ListBox::outlineColourId, cyan.withAlpha(0.28f));
             list.setOutlineThickness(1);
 
             addAndMakeVisible(heading);
@@ -152,7 +155,12 @@ private:
             list.setBounds(area);
         }
 
-        void paint(juce::Graphics& graphics) override { graphics.fillAll(background); }
+        void paint(juce::Graphics& graphics) override {
+            graphics.fillAll(background);
+            graphics.setColour(cyan.withAlpha(0.05f));
+            for (int y = 0; y < getHeight(); y += 28)
+                graphics.drawHorizontalLine(y, 0.0f, static_cast<float>(getWidth()));
+        }
 
     private:
         int getNumRows() override { return static_cast<int>(rows.size()); }
@@ -173,8 +181,8 @@ private:
                               bool rowIsSelected) override {
             if (rowNumber < 0 || rowNumber >= static_cast<int>(rows.size())) return;
             const auto& row = rows[static_cast<std::size_t>(rowNumber)];
-            if (rowIsSelected) graphics.fillAll(blue.withAlpha(0.22f));
-            else if ((rowNumber & 1) != 0) graphics.fillAll(panel.withAlpha(0.55f));
+            if (rowIsSelected) graphics.fillAll(blue.withAlpha(0.24f));
+            else if ((rowNumber & 1) != 0) graphics.fillAll(panel.withAlpha(0.62f));
 
             auto bounds = juce::Rectangle<int>(0, 0, width, height).reduced(9, 3);
             graphics.setColour(row.track.missing ? muted : pale);
@@ -190,11 +198,12 @@ private:
             graphics.drawFittedText(detail, bounds, juce::Justification::centredLeft, 1);
         }
 
-        const juce::Colour background{0xff080e1a};
-        const juce::Colour panel{0xff111d30};
-        const juce::Colour blue{0xff3d9bff};
-        const juce::Colour pale{0xffdcecff};
-        const juce::Colour muted{0xff8199b8};
+        const juce::Colour background{0xff02050a};
+        const juce::Colour panel{0xff07111c};
+        const juce::Colour blue{0xff0088ff};
+        const juce::Colour cyan{0xff62e5ff};
+        const juce::Colour pale{0xfff4faff};
+        const juce::Colour muted{0xff8da8b8};
         juce::Label heading, message;
         juce::TextButton refresh;
         juce::ListBox list;
@@ -306,7 +315,7 @@ private:
 
         juce::DialogWindow::LaunchOptions options;
         options.dialogTitle = text("BrokeDJ / Playback history", "BrokeDJ / Historia odtwarzania");
-        options.dialogBackgroundColour = juce::Colour(0xff080e1a);
+        options.dialogBackgroundColour = BrokeLookAndFeel::background();
         options.useNativeTitleBar = true;
         options.resizable = true;
         options.escapeKeyTriggersCloseButton = true;
