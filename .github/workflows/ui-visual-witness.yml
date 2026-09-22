@@ -1,0 +1,70 @@
+name: UI visual witness
+on:
+  pull_request:
+    paths:
+      - 'src/app/**'
+      - 'scripts/capture_ui_smoke.ps1'
+      - '.github/workflows/ui-visual-witness.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ui-visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-ui-visual:
+    name: Windows x64 / UI pixel witness
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Configure native Windows build
+        run: cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
+
+      - name: Build BrokeDJ
+        run: cmake --build --preset windows-release --parallel 2
+
+      - name: Capture compact and workstation Windows UI witnesses
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe'
+          pwsh -NoProfile -File scripts/capture_ui_smoke.ps1 `
+            -ExePath $exe `
+            -OutputDirectory 'build/windows/ui-visual-witness' `
+            -TimeoutSeconds 30
+          if ($LASTEXITCODE -ne 0) { throw "UI visual witness failed: $LASTEXITCODE" }
+
+      - name: Validate visual witness contract
+        shell: pwsh
+        run: |
+          $root = 'build/windows/ui-visual-witness'
+          $manifest = Get-Content "$root/BrokeDJ-ui-visual-witness.json" -Raw | ConvertFrom-Json
+          if ($manifest.schema_version -ne 1 -or
+              $manifest.mode -ne 'windows-ui-visual-witness' -or
+              $manifest.plays_audio -ne $false -or
+              $manifest.opens_audio_device -ne $false -or
+              $manifest.smoke_success -ne $true) {
+            throw 'UI visual witness manifest failed schema/safety validation.'
+          }
+          if ($manifest.compact.width -lt 1040 -or $manifest.compact.height -lt 780 -or $manifest.compact.bytes -lt 4096) {
+            throw 'Compact UI witness dimensions/payload are invalid.'
+          }
+          if ($manifest.workstation.width -lt 1500 -or $manifest.workstation.height -lt 860 -or $manifest.workstation.bytes -lt 4096) {
+            throw 'Workstation UI witness dimensions/payload are invalid.'
+          }
+          foreach ($file in @($manifest.compact.file, $manifest.workstation.file)) {
+            if (-not (Test-Path "$root/$file")) { throw "UI witness image missing: $file" }
+          }
+          Copy-Item 'BrokeDJ-gui-smoke.json' "$root/BrokeDJ-gui-smoke.json"
+
+      - name: Upload Windows UI visual witness
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: BrokeDJ-UI-Visual-Witness-Windows-x64
+          path: build/windows/ui-visual-witness/
+          if-no-files-found: error
+          retention-days: 7
