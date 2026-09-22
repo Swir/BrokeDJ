@@ -11,10 +11,12 @@
 
 #include <array>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -36,6 +38,18 @@ struct TempDirectory final {
 
     juce::File directory;
 };
+
+std::filesystem::path filesystemPath(const juce::File& file) {
+#if JUCE_WINDOWS
+    return std::filesystem::path(file.getFullPathName().toWideCharPointer());
+#else
+    return std::filesystem::u8path(file.getFullPathName().toStdString());
+#endif
+}
+
+bool approximately(double actual, double expected, double tolerance = 1.0e-4) noexcept {
+    return std::isfinite(actual) && std::abs(actual - expected) <= tolerance;
+}
 
 void writeStereoWav(const juce::File& target, double leftFrequency, double rightFrequency) {
     constexpr double sampleRate = 48000.0;
@@ -111,6 +125,172 @@ bool allDecksIdle(const MainComponent& component) noexcept {
         if (component.sessionDeckLoading(deck)) return false;
     }
     return true;
+}
+
+void renderSilentBlocks(MainComponent& component, int blockCount) {
+    constexpr int frames = 512;
+    juce::AudioBuffer<float> output(4, frames);
+    juce::AudioSourceChannelInfo info(&output, 0, frames);
+    for (int block = 0; block < blockCount; ++block) {
+        output.clear();
+        component.getNextAudioBlock(info);
+    }
+}
+
+void verifyDeckState(const broke::session::DeckState& actual,
+                     const broke::session::DeckState& expected,
+                     bool expectPath) {
+    check(expectPath ? actual.path == expected.path : actual.path.empty(),
+          "restored deck source identity matches session");
+    check(approximately(actual.playbackRate, expected.playbackRate),
+          "restored playback rate matches session");
+    check(approximately(actual.trimDb, expected.trimDb),
+          "restored trim matches session");
+    check(approximately(actual.channelGain, expected.channelGain),
+          "restored channel gain matches session");
+    check(approximately(actual.low, expected.low), "restored low EQ matches session");
+    check(approximately(actual.mid, expected.mid), "restored mid EQ matches session");
+    check(approximately(actual.high, expected.high), "restored high EQ matches session");
+    check(approximately(actual.echo, expected.echo), "restored echo matches session");
+    check(approximately(actual.drive, expected.drive), "restored drive matches session");
+    check(actual.headphoneCue == expected.headphoneCue,
+          "restored headphone cue matches session");
+    check(actual.wholeTrackLoop == expected.wholeTrackLoop,
+          "restored whole-track loop matches session");
+    check(!actual.wasPlaying, "session restore never auto-resumes playback");
+}
+
+void exerciseNativeSessionRoundTrip(MainComponent& component,
+                                    const TempDirectory& temp,
+                                    const std::array<juce::File, broke::deckCount>& tracks,
+                                    const juce::File& replacement) {
+    // Adopt the current async imports through the real Engine callback before
+    // replacing them with a saved session. This is an offline/no-device render:
+    // no physical device is opened and no audible playback is requested.
+    component.prepareToPlay(512, 48000.0);
+    renderSilentBlocks(component, 3);
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+        check(component.sessionDeckDuration(deck) > 0.0,
+              "initial imported clip adopted by audio engine");
+
+    broke::session::SessionState wanted = component.captureSessionState();
+    wanted.mixer.crossfader = 0.23f;
+    wanted.mixer.master = 0.76f;
+    wanted.mixer.headphoneLevel = 0.41f;
+
+    const std::array<double, 4> positions{0.035, 0.070, 0.105, 0.0};
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck) {
+        auto& state = wanted.decks[deck];
+        state.positionSeconds = positions[deck];
+        state.playbackRate = static_cast<float>(0.92 + 0.04 * static_cast<double>(deck));
+        state.trimDb = static_cast<float>(-3.0 + static_cast<double>(deck));
+        state.channelGain = static_cast<float>(0.55 + 0.08 * static_cast<double>(deck));
+        state.low = static_cast<float>(0.78 + 0.05 * static_cast<double>(deck));
+        state.mid = static_cast<float>(0.88 + 0.04 * static_cast<double>(deck));
+        state.high = static_cast<float>(0.98 + 0.03 * static_cast<double>(deck));
+        state.echo = static_cast<float>(0.05 * static_cast<double>(deck));
+        state.drive = static_cast<float>(0.40 * static_cast<double>(deck));
+        state.headphoneCue = (deck % 2) == 0;
+        state.wholeTrackLoop = (deck % 2) != 0;
+        state.wasPlaying = true; // persisted history must not auto-resume on restore.
+    }
+    wanted.decks[0].path = tracks[0].getFullPathName().toStdString();
+    wanted.decks[1].path = replacement.getFullPathName().toStdString();
+    wanted.decks[2].path = tracks[2].getFullPathName().toStdString();
+    wanted.decks[3].path.clear(); // Exercise exact empty-slot ejection during restore.
+
+    broke::session::SessionStore store;
+    const auto sessionFile = temp.directory.getChildFile("native-session-roundtrip.brokedj-session");
+    std::string error;
+    check(store.save(filesystemPath(sessionFile), wanted, &error),
+          "native session snapshot saved atomically");
+    check(error.empty(), "session save reports no error");
+    auto loaded = store.load(filesystemPath(sessionFile), &error);
+    check(loaded.has_value(), "saved native session reloads with checksum validation");
+    check(error.empty(), "session load reports no error");
+
+    // Also cover explicit verified .bak recovery without changing production
+    // behavior: ordinary load must reject the damaged primary, while the opt-in
+    // recovery API may use a byte-identical verified backup.
+    const auto recoveryFile = temp.directory.getChildFile("native-session-recovery.brokedj-session");
+    error.clear();
+    check(store.save(filesystemPath(recoveryFile), wanted, &error),
+          "recovery session snapshot saved");
+    const juce::File recoveryBackup(recoveryFile.getFullPathName() + ".bak");
+    check(recoveryFile.copyFileTo(recoveryBackup), "verified recovery backup fixture copied");
+    check(recoveryFile.replaceWithText("damaged primary session\n"),
+          "primary recovery fixture deliberately corrupted");
+    error.clear();
+    check(!store.load(filesystemPath(recoveryFile), &error).has_value(),
+          "ordinary session load rejects corrupted primary");
+    bool usedBackup = false;
+    error.clear();
+    const auto recovered = store.loadRecoveringBackup(
+        filesystemPath(recoveryFile), &usedBackup, &error);
+    check(recovered.has_value() && usedBackup,
+          "explicit recovery loads verified backup after primary corruption");
+    check(recovered->decks[1].path == wanted.decks[1].path,
+          "recovered backup preserves deck source identity");
+
+    check(loaded.has_value(), "roundtrip state remains available for native restore");
+    component.prepareForSessionRestore(loaded->mixer);
+
+    for (std::size_t deck = 0; deck < 3; ++deck) {
+        const juce::File source(juce::String::fromUTF8(loaded->decks[deck].path.c_str()));
+        check(component.loadFileIntoDeck(deck, source),
+              "session restore async deck import accepted");
+    }
+    check(component.beginSessionDeckEject(3),
+          "session restore empty slot eject accepted");
+    component.armSessionDeckAdoptionMarker(3);
+
+    check(pumpUntil([&] { return allDecksIdle(component); }, 10000),
+          "session restore async imports completed within deadline");
+    for (std::size_t deck = 0; deck < 3; ++deck) {
+        const juce::File source(juce::String::fromUTF8(loaded->decks[deck].path.c_str()));
+        check(component.sessionDeckMatches(deck, source),
+              "session restore published expected source before adoption");
+        component.armSessionDeckAdoptionMarker(deck);
+    }
+
+    renderSilentBlocks(component, 3);
+    for (std::size_t deck = 0; deck < 3; ++deck) {
+        check(component.sessionDeckAdoptionMarkerConsumed(deck),
+              "session restore source crossed audio-engine adoption boundary");
+        check(component.sessionDeckDuration(deck) > 0.0,
+              "adopted session source exposes positive duration");
+        check(component.applyRestoredDeckState(deck, loaded->decks[deck]),
+              "saved deck controls applied only after source adoption");
+    }
+    check(component.sessionDeckDuration(3) <= 0.0,
+          "empty session slot clears previous audio-owned source");
+    check(component.completeSessionDeckEject(3, loaded->decks[3]),
+          "empty session slot finalizes only after engine clear");
+
+    // Process the restored seek mailboxes while transport is paused, then verify
+    // the public session snapshot observes the same state that the real workflow
+    // would expose after its timer-driven restore completes.
+    renderSilentBlocks(component, 2);
+    const auto restored = component.captureSessionState();
+    check(approximately(restored.mixer.crossfader, loaded->mixer.crossfader),
+          "restored crossfader matches session");
+    check(approximately(restored.mixer.master, loaded->mixer.master),
+          "restored master level matches session");
+    check(approximately(restored.mixer.headphoneLevel, loaded->mixer.headphoneLevel),
+          "restored headphone level matches session");
+
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+        verifyDeckState(restored.decks[deck], loaded->decks[deck], deck < 3);
+
+    for (std::size_t deck = 0; deck < 3; ++deck) {
+        check(approximately(restored.decks[deck].positionSeconds,
+                            loaded->decks[deck].positionSeconds, 0.012),
+              "restored paused deck position matches saved session");
+    }
+    check(approximately(restored.decks[3].positionSeconds, 0.0, 1.0e-6),
+          "restored empty deck position is zero");
+
+    component.releaseResources();
 }
 
 void runNativeImportSmoke() {
@@ -189,6 +369,8 @@ void runNativeImportSmoke() {
         check(finalSession.decks[deck].path == expected.getFullPathName().toStdString(),
               "final session snapshot matches isolated deck replacement state");
     }
+
+    exerciseNativeSessionRoundTrip(component, temp, tracks, replacement);
 }
 
 } // namespace
@@ -197,10 +379,10 @@ int main() {
     try {
         juce::ScopedJuceInitialiser_GUI juceInitialiser;
         runNativeImportSmoke();
-        std::cout << "BrokeDJ native import smoke OK (" << checks << " checks)\n";
+        std::cout << "BrokeDJ native import/session smoke OK (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "BrokeDJ native import smoke FAILED after " << checks
+        std::cerr << "BrokeDJ native import/session smoke FAILED after " << checks
                   << " checks: " << error.what() << '\n';
         return 1;
     }
