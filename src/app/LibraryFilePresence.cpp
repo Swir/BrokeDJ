@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Swir
 #include "LibraryDatabase.h"
+#include "LibraryPresenceAccounting.h"
 
 #include <sqlite3.h>
 
@@ -196,7 +197,13 @@ std::optional<FilePresenceRefreshResult> LibraryDatabase::refreshFilePresence(
             static_cast<void>(presenceExec(db, "ROLLBACK;", nullptr));
             return std::nullopt;
         }
-        if (sqlite3_changes(db) == 1) ++result.changed;
+
+        const auto accounting = accountPresenceConditionalUpdate(
+            decision.missingNow, sqlite3_changes(db));
+        result.changed += accounting.changed;
+        result.unresolved += accounting.unresolved;
+        if (accounting.discardObservedMissing && result.missing > 0)
+            --result.missing;
     }
 
     if (!presenceExec(db, "COMMIT;", error)) {
