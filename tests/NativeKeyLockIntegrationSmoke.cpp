@@ -23,6 +23,7 @@ int checks = 0;
 constexpr double sampleRate = 48000.0;
 constexpr int blockFrames = 512;
 constexpr double sourceFrequency = 440.0;
+constexpr double replacementFrequency = 330.0;
 
 void check(bool condition, const char* message) {
     ++checks;
@@ -41,7 +42,7 @@ struct TempDirectory final {
     juce::File directory;
 };
 
-void writeStereoTone(const juce::File& target) {
+void writeStereoTone(const juce::File& target, double frequencyHz = sourceFrequency) {
     constexpr int seconds = 8;
     constexpr int frames = static_cast<int>(sampleRate) * seconds;
     constexpr double twoPi = 6.283185307179586476925286766559;
@@ -49,7 +50,7 @@ void writeStereoTone(const juce::File& target) {
     juce::AudioBuffer<float> audio(2, frames);
     for (int frame = 0; frame < frames; ++frame) {
         const double time = static_cast<double>(frame) / sampleRate;
-        const float value = static_cast<float>(0.24 * std::sin(twoPi * sourceFrequency * time));
+        const float value = static_cast<float>(0.24 * std::sin(twoPi * frequencyHz * time));
         audio.setSample(0, frame, value);
         audio.setSample(1, frame, value * 0.92f);
     }
@@ -141,6 +142,13 @@ juce::Slider* rateSlider(DeckPanel& deck) {
     return nullptr;
 }
 
+Waveform* waveformComponent(DeckPanel& deck) {
+    for (int index = 0; index < deck.getNumChildComponents(); ++index) {
+        if (auto* waveform = dynamic_cast<Waveform*>(deck.getChildComponent(index))) return waveform;
+    }
+    return nullptr;
+}
+
 void renderBlocks(MainComponent& component, int blockCount) {
     juce::AudioBuffer<float> output(2, blockFrames);
     juce::AudioSourceChannelInfo info(&output, 0, blockFrames);
@@ -227,7 +235,9 @@ void setToggleAndInvoke(juce::TextButton& button, bool state, const char* messag
 void runNativeKeyLockIntegrationSmoke() {
     TempDirectory temp;
     const auto track = temp.directory.getChildFile("BrokeDJ key-lock integration 440Hz.wav");
+    const auto replacement = temp.directory.getChildFile("BrokeDJ key-lock replacement 330Hz.wav");
     writeStereoTone(track);
+    writeStereoTone(replacement, replacementFrequency);
 
     // No physical audio device is opened. Calling prepareToPlay directly gives
     // the real MainComponent/Engine lifecycle a deterministic offline device
@@ -266,10 +276,12 @@ void runNativeKeyLockIntegrationSmoke() {
     auto* rate = rateSlider(*deck);
     auto* loop = buttonByText(*deck, "LOOP");
     auto* cueZero = buttonByText(*deck, "CUE 0");
+    auto* waveform = waveformComponent(*deck);
     check(play != nullptr, "native PLAY control found");
     check(rate != nullptr, "native rate control found");
     check(loop != nullptr, "native whole-track LOOP control found");
     check(cueZero != nullptr, "native CUE 0 control found");
+    check(waveform != nullptr, "native waveform control found");
     check(loop->getToggleState(), "native LOOP control mirrors restored whole-track loop");
     check(std::abs(rate->getValue() - 20.0) < 0.02,
           "native rate control mirrors staged 1.20x transport");
@@ -358,6 +370,65 @@ void runNativeKeyLockIntegrationSmoke() {
     check(std::abs(cueRestaged.frequencyHz - locked.frequencyHz) < 12.0,
           "native key-lock pitch remains stable after explicit CUE 0 seek");
 
+    // Waveform seeking is the important live-seek path: unlike CUE 0 it leaves
+    // playback running. The real waveform callback must disarm the optional
+    // renderer immediately, let Engine consume the normalized seek and keep the
+    // ordinary production converter audible until the DJ pauses for a restage.
+    check(static_cast<bool>(waveform->onSeek), "native waveform seek callback is installed");
+    waveform->onSeek(0.50);
+    renderBlocks(component, 3);
+    const auto afterLiveSeek = component.captureSessionState();
+    check(afterLiveSeek.decks[0].wasPlaying,
+          "live waveform seek keeps ordinary fallback playback running");
+    check(afterLiveSeek.decks[0].positionSeconds > 3.5
+          && afterLiveSeek.decks[0].positionSeconds < 4.5,
+          "native waveform seek moves production transport near the requested midpoint");
+    const auto seekFallback = renderFrequency(component);
+    check(seekFallback.frequencyHz > 468.0 && seekFallback.frequencyHz < 500.0,
+          "live waveform seek falls back to pitch-changing production playback");
+
+    clickPlay(*play);
+    check(!component.captureSessionState().decks[0].wasPlaying,
+          "native deck paused before live-seek key-lock restage");
+    renderBlocks(component, 2);
+    clickPlay(*play);
+    const auto seekRestaged = renderFrequency(component);
+    check(seekRestaged.frequencyHz > 425.0 && seekRestaged.frequencyHz < 455.0,
+          "paused native restage restores key lock after live waveform seek");
+
+    // Replacing a loaded clip while transport is running is a separate immutable
+    // ownership discontinuity from seek/rate/loop edits. Decode the second tone
+    // off-thread, publish it through the normal load path and prove that the old
+    // key-lock snapshot cannot bleed into the new clip. Production fallback must
+    // play the new 330 Hz source at the current 1.10x rate (~363 Hz) until pause.
+    check(component.loadFileIntoDeck(0, replacement),
+          "native replacement fixture import accepted while playing");
+    check(pumpUntil([&] { return !component.sessionDeckLoading(0); }, 10000),
+          "native replacement fixture import completed within deadline");
+    check(component.sessionDeckMatches(0, replacement),
+          "native replacement fixture identity published");
+    renderBlocks(component, 3);
+    check(component.sessionDeckDuration(0) > 7.9,
+          "native replacement clip crossed Engine adoption boundary");
+    check(component.captureSessionState().decks[0].wasPlaying,
+          "native clip replacement preserves ordinary playback intent");
+    const auto replacementFallback = renderFrequency(component);
+    check(replacementFallback.frequencyHz > 348.0 && replacementFallback.frequencyHz < 378.0,
+          "live clip replacement falls back to the new source through production playback");
+    check(std::abs(replacementFallback.frequencyHz - seekRestaged.frequencyHz) > 60.0,
+          "replacement fallback cannot be stale audio from the previous key-lock snapshot");
+
+    clickPlay(*play);
+    check(!component.captureSessionState().decks[0].wasPlaying,
+          "native deck paused before replacement key-lock restage");
+    renderBlocks(component, 2);
+    clickPlay(*play);
+    const auto replacementRestaged = renderFrequency(component);
+    check(replacementRestaged.frequencyHz > 315.0 && replacementRestaged.frequencyHz < 345.0,
+          "paused native restage binds key lock to the replacement clip");
+    check(std::abs(replacementRestaged.frequencyHz - replacementFrequency) < 15.0,
+          "replacement key-lock pitch remains near the new source frequency");
+
     std::cout << std::fixed << std::setprecision(2)
               << "METRIC native_keylock_locked_hz=" << locked.frequencyHz << '\n'
               << "METRIC native_keylock_live_fallback_hz=" << fallback.frequencyHz << '\n'
@@ -365,12 +436,20 @@ void runNativeKeyLockIntegrationSmoke() {
               << "METRIC native_keylock_loop_fallback_hz=" << loopFallback.frequencyHz << '\n'
               << "METRIC native_keylock_loop_restaged_hz=" << loopRestaged.frequencyHz << '\n'
               << "METRIC native_keylock_cue_restaged_hz=" << cueRestaged.frequencyHz << '\n'
+              << "METRIC native_keylock_seek_fallback_hz=" << seekFallback.frequencyHz << '\n'
+              << "METRIC native_keylock_seek_restaged_hz=" << seekRestaged.frequencyHz << '\n'
+              << "METRIC native_keylock_replacement_fallback_hz=" << replacementFallback.frequencyHz << '\n'
+              << "METRIC native_keylock_replacement_restaged_hz=" << replacementRestaged.frequencyHz << '\n'
               << "METRIC native_keylock_locked_rms=" << locked.rms << '\n'
               << "METRIC native_keylock_live_fallback_rms=" << fallback.rms << '\n'
               << "METRIC native_keylock_restaged_rms=" << restaged.rms << '\n'
               << "METRIC native_keylock_loop_fallback_rms=" << loopFallback.rms << '\n'
               << "METRIC native_keylock_loop_restaged_rms=" << loopRestaged.rms << '\n'
-              << "METRIC native_keylock_cue_restaged_rms=" << cueRestaged.rms << '\n';
+              << "METRIC native_keylock_cue_restaged_rms=" << cueRestaged.rms << '\n'
+              << "METRIC native_keylock_seek_fallback_rms=" << seekFallback.rms << '\n'
+              << "METRIC native_keylock_seek_restaged_rms=" << seekRestaged.rms << '\n'
+              << "METRIC native_keylock_replacement_fallback_rms=" << replacementFallback.rms << '\n'
+              << "METRIC native_keylock_replacement_restaged_rms=" << replacementRestaged.rms << '\n';
 
     component.releaseResources();
 }
