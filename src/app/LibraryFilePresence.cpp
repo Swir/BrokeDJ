@@ -196,7 +196,20 @@ std::optional<FilePresenceRefreshResult> LibraryDatabase::refreshFilePresence(
             static_cast<void>(presenceExec(db, "ROLLBACK;", nullptr));
             return std::nullopt;
         }
-        if (sqlite3_changes(db) == 1) ++result.changed;
+
+        const int changes = sqlite3_changes(db);
+        if (changes == 1) {
+            ++result.changed;
+            continue;
+        }
+
+        // A zero-row conditional update means the track changed after the snapshot
+        // (for example a concurrent relocate or missing-flag mutation). Do not report
+        // the stale filesystem observation as settled: surface it as unresolved so a
+        // maintenance summary/witness can require another bounded refresh instead of
+        // silently claiming a complete reconciliation.
+        ++result.unresolved;
+        if (decision.missingNow && result.missing > 0) --result.missing;
     }
 
     if (!presenceExec(db, "COMMIT;", error)) {
