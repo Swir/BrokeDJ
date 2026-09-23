@@ -75,7 +75,7 @@ void verifyWav(const juce::File& file, double expectedRate, std::int64_t expecte
             require(std::isfinite(buffer.getSample(channel, frame)), "recorded WAV contains non-finite samples");
 }
 
-void verifySanitizedPcm(const juce::File& file) {
+void verifySanitizedPcm(const juce::File& file, float expectedLeft, float expectedRight) {
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
@@ -86,9 +86,9 @@ void verifySanitizedPcm(const juce::File& file) {
             "NaN left sample was not serialized as exact silence");
     require(std::abs(buffer.getSample(1, 17)) < 1.0e-7f,
             "Inf right sample was not serialized as exact silence");
-    require(std::abs(buffer.getSample(0, 4) - 0.15f) < 1.0e-4f,
+    require(std::abs(buffer.getSample(0, 4) - expectedLeft) < 1.0e-4f,
             "sanitation changed an adjacent valid left sample");
-    require(std::abs(buffer.getSample(1, 18) + 0.15f) < 1.0e-4f,
+    require(std::abs(buffer.getSample(1, 18) - expectedRight) < 1.0e-4f,
             "sanitation changed an adjacent valid right sample");
 }
 
@@ -314,7 +314,7 @@ void testNonFiniteCaptureIsSanitizedAndReported() {
             "timeline-preserving sanitation was incorrectly counted as an omission");
     requireReasonTotalsConsistent(state);
     verifyWav(state.destination, rate, frames);
-    verifySanitizedPcm(state.destination);
+    verifySanitizedPcm(state.destination, 0.15f, -0.15f);
     require(dir.deleteRecursively(), "could not remove non-finite recording fixture");
 }
 
@@ -370,7 +370,7 @@ void testSanitizationAndOverflowRemainDistinguishable() {
             "mixed fixture aggregate telemetry does not cover both failure classes");
     requireReasonTotalsConsistent(state);
     verifyWav(state.destination, rate, static_cast<std::int64_t>(state.writtenFrames));
-    verifySanitizedPcm(state.destination);
+    verifySanitizedPcm(state.destination, 0.2f, -0.2f);
     require(dir.deleteRecursively(), "could not remove mixed integrity recording fixture");
 }
 
