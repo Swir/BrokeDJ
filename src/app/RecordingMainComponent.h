@@ -36,7 +36,7 @@ public:
         addAndMakeVisible(base);
         monitorAudioDeviceChanges = openAudio;
         if (monitorAudioDeviceChanges)
-            deviceRecovery.reset(audioDeviceIsOpen());
+            deviceRecovery.reset(broke::audioDeviceIsOpen(base.deviceManager.getCurrentAudioDevice()));
 
         historyButton.setButtonText(text("HISTORY", "HISTORIA"));
         historyButton.setTooltip(text(
@@ -244,15 +244,10 @@ private:
             ? ms * 1000000 : ms;
     }
 
-    [[nodiscard]] bool audioDeviceIsOpen() const {
-        if (auto* device = base.deviceManager.getCurrentAudioDevice())
-            return device->isOpen();
-        return false;
-    }
-
     void serviceAudioDeviceRecovery() {
         if (!monitorAudioDeviceChanges) return;
-        const auto event = deviceRecovery.update(audioDeviceIsOpen());
+        const auto event = deviceRecovery.update(
+            broke::audioDeviceIsOpen(base.deviceManager.getCurrentAudioDevice()));
         if (event.pausePlayback) {
             const auto state = base.captureSessionState();
             base.prepareForSessionRestore(state.mixer);
