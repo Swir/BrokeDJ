@@ -24,11 +24,17 @@ namespace broke {
 // Live discontinuities fail closed immediately: mark/seek/rate/loop/pitch
 // changes disarm the owner so Engine uses its built-in production converter.
 // Restaging is deferred while the deck is playing; a paused deck can be staged
-// deterministically before play resumes. The lifecycle also compares the
-// authoritative loop/rate values passed to service() with the last staged
-// snapshot. This catches controller/device paths that change Engine controls
-// without first notifying the UI adapter, preventing a stale key-lock snapshot
-// from remaining armed indefinitely after Engine has already rejected it.
+// deterministically before play resumes. A seek issued while playback is already
+// stopped keeps its explicit immutable-clip cursor because Engine may not have
+// consumed the seek mailbox yet. A seek issued while playback is running does
+// not retain that original cursor: production fallback is allowed to advance,
+// so the later paused restage must use the authoritative current transport
+// position instead of rewinding the research renderer to stale seek time.
+// The lifecycle also compares the authoritative loop/rate values passed to
+// service() with the last staged snapshot. This catches controller/device paths
+// that change Engine controls without first notifying the UI adapter, preventing
+// a stale key-lock snapshot from remaining armed indefinitely after Engine has
+// already rejected it.
 // Invalid pitch requests are latched fail-closed until a later valid pitch
 // request explicitly clears the validation barrier; the previous valid pitch
 // value is never silently re-armed by the timer after an invalid control write.
@@ -153,12 +159,23 @@ public:
 
     void noteSeekNormalized(std::size_t deck, double normalized) noexcept {
         if (deck >= deckCount) return;
+        const bool seekIssuedWhilePlaying = engine.control(deck).playing.load();
         owners[deck].disarm();
         auto& state = states[deck];
         state.dirty = state.enabled && state.clip != nullptr;
         state.hasExplicitCursor = false;
         state.hasStagedTransport = false;
         if (!state.clip || !state.clip->valid() || !std::isfinite(normalized)) return;
+
+        // A live seek immediately falls back to Engine's production converter,
+        // whose transport continues advancing before a later pause/restage. In
+        // that case the original normalized cursor becomes stale by definition;
+        // service() must use the current meter position once playback stops.
+        if (seekIssuedWhilePlaying) return;
+
+        // A stopped seek is different: the Engine callback may not have consumed
+        // the seek mailbox yet, so preserve the requested immutable-clip cursor
+        // for deterministic staging before PLAY resumes.
         const auto frameCount = state.clip->frames();
         if (frameCount <= 0) return;
         const double clamped = std::clamp(normalized, 0.0, 1.0);
