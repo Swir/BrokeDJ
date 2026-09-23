@@ -112,6 +112,14 @@ DeckPanel* firstDeck(MainComponent& component) {
     return nullptr;
 }
 
+juce::TextButton* buttonByText(DeckPanel& deck, const juce::String& label) {
+    for (int index = 0; index < deck.getNumChildComponents(); ++index) {
+        auto* button = dynamic_cast<juce::TextButton*>(deck.getChildComponent(index));
+        if (button != nullptr && button->getButtonText() == label) return button;
+    }
+    return nullptr;
+}
+
 juce::TextButton* playButton(DeckPanel& deck) {
     for (int index = 0; index < deck.getNumChildComponents(); ++index) {
         auto* button = dynamic_cast<juce::TextButton*>(deck.getChildComponent(index));
@@ -210,6 +218,12 @@ void clickPlay(juce::TextButton& button) {
     button.onClick();
 }
 
+void setToggleAndInvoke(juce::TextButton& button, bool state, const char* message) {
+    check(static_cast<bool>(button.onClick), message);
+    button.setToggleState(state, juce::dontSendNotification);
+    button.onClick();
+}
+
 void runNativeKeyLockIntegrationSmoke() {
     TempDirectory temp;
     const auto track = temp.directory.getChildFile("BrokeDJ key-lock integration 440Hz.wav");
@@ -250,8 +264,13 @@ void runNativeKeyLockIntegrationSmoke() {
     check(deck != nullptr, "native deck component found");
     auto* play = playButton(*deck);
     auto* rate = rateSlider(*deck);
+    auto* loop = buttonByText(*deck, "LOOP");
+    auto* cueZero = buttonByText(*deck, "CUE 0");
     check(play != nullptr, "native PLAY control found");
     check(rate != nullptr, "native rate control found");
+    check(loop != nullptr, "native whole-track LOOP control found");
+    check(cueZero != nullptr, "native CUE 0 control found");
+    check(loop->getToggleState(), "native LOOP control mirrors restored whole-track loop");
     check(std::abs(rate->getValue() - 20.0) < 0.02,
           "native rate control mirrors staged 1.20x transport");
 
@@ -295,13 +314,63 @@ void runNativeKeyLockIntegrationSmoke() {
     check(std::abs(restaged.frequencyHz - locked.frequencyHz) < 12.0,
           "native key-lock pitch remains stable across paused rate restage");
 
+    // Whole-track LOOP is another transport snapshot owned by the real DeckPanel.
+    // Turning it off live must disarm key lock immediately, keep production
+    // playback running at 1.10x and defer research-path restaging until paused.
+    setToggleAndInvoke(*loop, false, "native LOOP callback is installed");
+    const auto afterLoopChange = component.captureSessionState();
+    check(afterLoopChange.decks[0].wasPlaying,
+          "live LOOP change preserves ordinary fallback playback");
+    check(!afterLoopChange.decks[0].wholeTrackLoop,
+          "native LOOP callback updates Engine whole-track loop state");
+    const auto loopFallback = renderFrequency(component);
+    check(loopFallback.frequencyHz > 468.0 && loopFallback.frequencyHz < 500.0,
+          "live LOOP discontinuity falls back to pitch-changing production playback");
+
+    clickPlay(*play);
+    check(!component.captureSessionState().decks[0].wasPlaying,
+          "native deck paused before LOOP key-lock restage");
+    renderBlocks(component, 2);
+    clickPlay(*play);
+    check(component.captureSessionState().decks[0].wasPlaying,
+          "native deck resumed after LOOP key-lock restage");
+    const auto loopRestaged = renderFrequency(component);
+    check(loopRestaged.frequencyHz > 425.0 && loopRestaged.frequencyHz < 455.0,
+          "paused native restage restores key lock after LOOP change");
+
+    // CUE 0 is the native explicit-seek callback. It must stop playback and move
+    // the production transport to the start while invalidating the old research
+    // snapshot. The next PLAY performs a safe paused restage at that new cursor.
+    check(static_cast<bool>(cueZero->onClick), "native CUE 0 callback is installed");
+    cueZero->onClick();
+    check(!component.captureSessionState().decks[0].wasPlaying,
+          "native CUE 0 stops playback before seek restage");
+    renderBlocks(component, 3); // consume the production seek while stopped.
+    const auto afterCue = component.captureSessionState();
+    check(afterCue.decks[0].positionSeconds < 0.05,
+          "native CUE 0 moves the adopted deck transport back to track start");
+    clickPlay(*play);
+    check(component.captureSessionState().decks[0].wasPlaying,
+          "native deck resumed after CUE 0 key-lock restage");
+    const auto cueRestaged = renderFrequency(component);
+    check(cueRestaged.frequencyHz > 425.0 && cueRestaged.frequencyHz < 455.0,
+          "native CUE 0 restart restores key-locked source pitch");
+    check(std::abs(cueRestaged.frequencyHz - locked.frequencyHz) < 12.0,
+          "native key-lock pitch remains stable after explicit CUE 0 seek");
+
     std::cout << std::fixed << std::setprecision(2)
               << "METRIC native_keylock_locked_hz=" << locked.frequencyHz << '\n'
               << "METRIC native_keylock_live_fallback_hz=" << fallback.frequencyHz << '\n'
               << "METRIC native_keylock_restaged_hz=" << restaged.frequencyHz << '\n'
+              << "METRIC native_keylock_loop_fallback_hz=" << loopFallback.frequencyHz << '\n'
+              << "METRIC native_keylock_loop_restaged_hz=" << loopRestaged.frequencyHz << '\n'
+              << "METRIC native_keylock_cue_restaged_hz=" << cueRestaged.frequencyHz << '\n'
               << "METRIC native_keylock_locked_rms=" << locked.rms << '\n'
               << "METRIC native_keylock_live_fallback_rms=" << fallback.rms << '\n'
-              << "METRIC native_keylock_restaged_rms=" << restaged.rms << '\n';
+              << "METRIC native_keylock_restaged_rms=" << restaged.rms << '\n'
+              << "METRIC native_keylock_loop_fallback_rms=" << loopFallback.rms << '\n'
+              << "METRIC native_keylock_loop_restaged_rms=" << loopRestaged.rms << '\n'
+              << "METRIC native_keylock_cue_restaged_rms=" << cueRestaged.rms << '\n';
 
     component.releaseResources();
 }
