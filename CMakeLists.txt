@@ -400,4 +400,36 @@ if(BROKEDJ_BUILD_APP AND BUILD_TESTING)
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
     add_test(NAME native_import_smoke COMMAND brokedj_native_import_smoke)
     set_tests_properties(native_import_smoke PROPERTIES TIMEOUT 30)
+
+    if(BROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE)
+        # Drive the same MainComponent/DeckPanel callbacks used by the native app
+        # through a deterministic no-device 440 Hz fixture. The test verifies
+        # key-locked pitch at changed tempo, live fail-closed fallback after a
+        # rate edit, and paused restage before playback resumes. Its test name is
+        # intentionally matched by the existing time_stretch diagnostics replay.
+        juce_add_console_app(brokedj_native_keylock_smoke
+            PRODUCT_NAME "BrokeDJ native key-lock integration smoke"
+            COMPANY_NAME "Swir")
+        juce_generate_juce_header(brokedj_native_keylock_smoke)
+        target_sources(brokedj_native_keylock_smoke PRIVATE
+            tests/NativeKeyLockIntegrationSmoke.cpp
+            src/app/MainComponent.cpp)
+        target_include_directories(brokedj_native_keylock_smoke PRIVATE src)
+        target_compile_definitions(brokedj_native_keylock_smoke PRIVATE
+            BROKEDJ_TIMESTRETCH_PROTOTYPE=1
+            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1)
+        if(MSVC)
+            target_compile_options(brokedj_native_keylock_smoke PRIVATE /W4 /permissive- /utf-8)
+        else()
+            target_compile_options(brokedj_native_keylock_smoke PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+        endif()
+        target_link_libraries(brokedj_native_keylock_smoke PRIVATE
+            brokedj_timestretch
+            brokedj_decoder
+            brokedj_library
+            juce::juce_audio_utils
+            PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+        add_test(NAME time_stretch_native_integration COMMAND brokedj_native_keylock_smoke)
+        set_tests_properties(time_stretch_native_integration PROPERTIES TIMEOUT 60)
+    endif()
 endif()
