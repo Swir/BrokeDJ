@@ -8,7 +8,7 @@ Use disposable copies or non-critical local tracks. BrokeDJ must not delete or o
 
 The witness recorder stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. Review any evidence before publishing it. The evidence schema is closed: validation rejects unrecognized top-level, environment, app, check or privacy fields so free-form notes or accidental path/name fields cannot silently become part of an accepted witness record.
 
-Evidence generation is deliberately rejected in GitHub Actions or another environment that sets `CI=true`. `-ValidateExisting` remains usable in CI so the schema/fingerprint validator can be regression-tested without fabricating a human witness.
+Evidence generation is deliberately rejected before resolving or launching `AppPath` when either `CI` or `GITHUB_ACTIONS` has a common truthy value (`1`, `true`, `yes`, `on`, case-insensitive). `-ValidateExisting` remains usable in CI so the schema/fingerprint validator can be regression-tested without fabricating a human witness.
 
 ## Prepare
 
@@ -26,11 +26,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\m4_library_witness.ps1 -AppPath "C:\path\to\BrokeDJ.exe"
 ```
 
-Before asking any manual questions, the recorder now performs a fail-closed preflight:
+Before asking any manual questions, the recorder performs a fail-closed preflight:
 
-1. confirms Windows 11 build 22000+ on an x64 OS from an x64 PowerShell process;
-2. resolves exactly `BrokeDJ.exe` and fingerprints its version plus SHA-256;
-3. rejects unattended CI evidence generation;
+1. rejects unattended CI evidence generation before touching the supplied executable;
+2. confirms Windows 11 build 22000+ on an x64 OS from an x64 PowerShell process;
+3. resolves exactly `BrokeDJ.exe` and fingerprints its version plus SHA-256;
 4. runs the selected executable with `--smoke-test` in a disposable temporary directory;
 5. requires the generated GUI-smoke report to confirm success, no audio playback, no audio-device open and at least one workstation-layout resize step.
 
@@ -49,7 +49,9 @@ The script then records the following user-controlled checks without automating 
 7. **Library backup/restore** — create a backup, make a harmless metadata change, restore the backup and verify the previous state returns.
 8. **Session save/load** — save a four-deck/mixer session, alter controls, reload it and verify expected state is restored. Restored decks must remain paused until explicit Play.
 
-A failed check is a real M4 blocker. Fix the product or repeat the witness after the fix; do not edit the JSON from `false` to `true` manually and treat it as evidence.
+A failed check is a real M4 blocker. If any answer is `no`, generation stops before creating or replacing the evidence file. Fix the product or repeat the witness after the fix; do not edit a failed result into `true` and treat it as evidence.
+
+When every check passes, the recorder serializes a candidate into a temporary file in the destination directory, validates the complete closed schema plus executable fingerprint, and only then replaces the final evidence path. The candidate is cleaned up in all cases. A failed or interrupted new run therefore does not deliberately overwrite an earlier accepted evidence file with incomplete data.
 
 ## Validate saved evidence
 
@@ -77,6 +79,6 @@ The JSON is still an auditable user witness record, not a digital signature or p
 
 ## Acceptance boundary
 
-Automated CI already covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, moved-file rebinding, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. The new preflight additionally proves that the exact selected executable passes its no-audio native GUI resize/geometry contract before the human workflow begins. Neither automated layer replaces the connected Windows 11 **user workflow**.
+Automated CI already covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, moved-file rebinding, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. The preflight additionally proves that the exact selected executable passes its no-audio native GUI resize/geometry contract before the human workflow begins. Neither automated layer replaces the connected Windows 11 **user workflow**.
 
 M4 may be marked complete only after the evidence is reviewed against the exact app build and there is no unresolved critical library/session regression. The milestone counter in `docs/progress.json` must remain unchanged until that review is real.
