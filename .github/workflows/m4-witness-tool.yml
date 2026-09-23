@@ -36,6 +36,27 @@ jobs:
           }
           Write-Host 'PowerShell parser: OK'
 
+      - name: Verify disposable fixture on both PowerShell hosts
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ witness fixture executable' -NoNewline -Encoding ascii
+
+          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "PowerShell 7 fixture self-test failed with exit code $LASTEXITCODE."
+          }
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\m4_library_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell 5.1 fixture self-test failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host 'Disposable fixture generation/cleanup: OK on PowerShell 7 and Windows PowerShell 5.1.'
+          $global:LASTEXITCODE = 0
+          exit 0
+
       - name: Reject unattended CI evidence generation
         shell: pwsh
         run: |
