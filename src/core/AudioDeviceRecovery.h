@@ -10,6 +10,14 @@ struct AudioDeviceRecoveryEvent {
     bool deviceRecovered = false;
 };
 
+// Observe device usability without coupling the recovery policy to JUCE. The
+// concrete app passes JUCE's AudioIODevice pointer, while the constexpr contract
+// below proves that a retained-but-closed object is treated as unavailable.
+template <typename Device>
+[[nodiscard]] constexpr bool audioDeviceIsOpen(Device* device) {
+    return device != nullptr && device->isOpen();
+}
+
 // Message-thread policy for the native device lifecycle. It intentionally has
 // no JUCE dependency so transition semantics can be compile-time verified and
 // reused without moving device I/O or recovery work into the audio callback.
@@ -48,6 +56,19 @@ private:
 };
 
 namespace audio_device_recovery_contract {
+struct FakeDevice {
+    bool open = false;
+    [[nodiscard]] constexpr bool isOpen() { return open; }
+};
+
+constexpr bool openStateUsesObjectStateNotPointerPresence() {
+    FakeDevice open{true};
+    FakeDevice closed{false};
+    return !audioDeviceIsOpen<FakeDevice>(nullptr)
+        && audioDeviceIsOpen(&open)
+        && !audioDeviceIsOpen(&closed);
+}
+
 constexpr bool firstObservationIsNeutral() {
     AudioDeviceRecoveryPolicy policy;
     const auto unavailable = policy.update(false);
@@ -98,6 +119,7 @@ constexpr bool repeatedLossCyclesRemainFailSafe() {
 }
 } // namespace audio_device_recovery_contract
 
+static_assert(audio_device_recovery_contract::openStateUsesObjectStateNotPointerPresence());
 static_assert(audio_device_recovery_contract::firstObservationIsNeutral());
 static_assert(audio_device_recovery_contract::lossPausesExactlyOnce());
 static_assert(audio_device_recovery_contract::recoveryDoesNotAutoResume());
