@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "app/LibraryDatabase.h"
 #include "app/LibraryPresenceAccounting.h"
+#include "app/M4FixtureQualification.h"
 
 #include <chrono>
 #include <filesystem>
@@ -241,6 +242,40 @@ void testContentHashScopedWitnessVerification() {
               && after->playlistMembershipCount == 1,
           "fixture workflow metadata survives targeted presence and relocate operations");
 
+    const auto confirmation = db.refreshFilePresenceForContentHash(fixtureHash, 16, &error);
+    const auto confirmedWorkflow = db.contentHashWorkflowSummary(fixtureHash, &error);
+    check(confirmation.has_value() && confirmedWorkflow.has_value(),
+          "second fixture verification pass succeeds");
+    check(confirmation->complete && confirmation->changed == 0
+              && confirmation->missing == 0 && confirmation->unresolved == 0,
+          "second fixture verification pass is settled and change-free");
+    const auto qualified = broke::library::qualification::evaluateM4FixtureQualification(
+        *settled, *after, *confirmation, *confirmedWorkflow);
+    check(qualified.qualified && qualified.workflowStable,
+          "settled fixture state qualifies across two bounded passes");
+
+    const auto displacedDuplicate = temp.path / "relocated" / "duplicate.wav";
+    std::filesystem::rename(duplicate, displacedDuplicate);
+    const auto changedConfirmation = db.refreshFilePresenceForContentHash(fixtureHash, 16, &error);
+    const auto changedWorkflow = db.contentHashWorkflowSummary(fixtureHash, &error);
+    check(changedConfirmation.has_value() && changedWorkflow.has_value(),
+          "fixture mutation between verification passes is observable");
+    check(changedConfirmation->changed == 1 && changedConfirmation->missing == 1,
+          "confirmation detects a fixture disappearing between passes");
+    const auto unstable = broke::library::qualification::evaluateM4FixtureQualification(
+        *confirmation, *confirmedWorkflow, *changedConfirmation, *changedWorkflow);
+    check(!unstable.qualified,
+          "two-pass fixture qualification fails closed on filesystem instability");
+
+    std::filesystem::rename(displacedDuplicate, duplicate);
+    const auto recovered = db.refreshFilePresenceForContentHash(fixtureHash, 16, &error);
+    const auto recoveredConfirmation = db.refreshFilePresenceForContentHash(fixtureHash, 16, &error);
+    check(recovered.has_value() && recoveredConfirmation.has_value()
+              && recovered->changed == 1 && recovered->missing == 0
+              && recoveredConfirmation->changed == 0
+              && recoveredConfirmation->missing == 0,
+          "fixture recovery settles on a later change-free confirmation pass");
+
     check(db.search(broke::library::LibraryDatabase::missingSearchDirective,
                     10, &error).empty(),
           "fixture-only refresh does not mutate unrelated user-track missing flags");
@@ -249,6 +284,45 @@ void testContentHashScopedWitnessVerification() {
           "malformed witness hash is rejected");
     check(error.find("SHA-256") != std::string::npos,
           "malformed witness hash reports the expected validation error");
+}
+
+void testM4FixtureQualificationContract() {
+    broke::library::FilePresenceRefreshResult initial;
+    initial.scanned = 2;
+    initial.changed = 1; // An initial stale flag repair is allowed.
+    initial.missing = 0;
+    initial.unresolved = 0;
+    initial.complete = true;
+
+    broke::library::FilePresenceRefreshResult confirmation = initial;
+    confirmation.changed = 0;
+
+    const broke::library::ContentHashWorkflowSummary workflow{2, 0, 1, 1, 1};
+    auto result = broke::library::qualification::evaluateM4FixtureQualification(
+        initial, workflow, confirmation, workflow);
+    check(result.qualified && result.workflowStable,
+          "two-pass M4 qualification accepts a settled change-free confirmation");
+
+    confirmation.changed = 1;
+    result = broke::library::qualification::evaluateM4FixtureQualification(
+        initial, workflow, confirmation, workflow);
+    check(!result.qualified && result.workflowStable,
+          "M4 qualification rejects a confirmation pass that still mutates state");
+
+    confirmation.changed = 0;
+    confirmation.unresolved = 1;
+    result = broke::library::qualification::evaluateM4FixtureQualification(
+        initial, workflow, confirmation, workflow);
+    check(!result.qualified,
+          "M4 qualification rejects unresolved confirmation probes");
+
+    confirmation.unresolved = 0;
+    auto changedWorkflow = workflow;
+    changedWorkflow.tagAssociationCount = 2;
+    result = broke::library::qualification::evaluateM4FixtureQualification(
+        initial, workflow, confirmation, changedWorkflow);
+    check(!result.qualified && !result.workflowStable,
+          "M4 qualification rejects aggregate workflow changes between passes");
 }
 
 void testUnicodeAndNonRegularPathClassification() {
@@ -328,6 +402,7 @@ int main() {
         testConditionalUpdateAccountingFailsClosed();
         testPagedPresenceRefreshAndMetadataRetention();
         testContentHashScopedWitnessVerification();
+        testM4FixtureQualificationContract();
         testUnicodeAndNonRegularPathClassification();
         testPageSizeClampsWithoutUnboundedScan();
         testInvalidCursorFailsClosed();

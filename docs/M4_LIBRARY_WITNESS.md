@@ -10,9 +10,9 @@ The script itself never starts playback. Keep system/headphone volume conservati
 
 The accepted witness file stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. The evidence schema remains closed and rejects unexpected fields.
 
-A second, temporary verification report is generated **after** the human workflow and before evidence is accepted. The witness passes the synthetic fixture SHA-256 to the exact BrokeDJ executable through a process-only environment variable, launches `BrokeDJ.exe --m4-fixture-state`, and requires a privacy-safe aggregate result for only that hash. The app serializes counts only: track count, missing-track count, history count, tag-association count and playlist-membership count plus bounded file-presence reconciliation counts. It does not serialize source paths, titles, artists, tag names, playlist names or history timestamps. The temporary report is deleted after validation and is not copied into the accepted witness file.
+A second, temporary verification report is generated **after** the human workflow and before evidence is accepted. The witness passes the synthetic fixture SHA-256 to the exact BrokeDJ executable through a process-only environment variable and launches `BrokeDJ.exe --m4-fixture-state`. The app performs two bounded fixture-scoped presence passes around two aggregate database snapshots. The first pass may repair a stale persisted missing flag; the confirmation pass must be complete, report zero missing/unresolved rows, make **zero further state changes**, and observe the same aggregate workflow counts as the first snapshot. This narrows the filesystem/database race window without claiming atomicity with an external filesystem mutation that happens after verification. The app serializes counts only: track count, missing-track count, history count, tag-association count and playlist-membership count plus bounded reconciliation counts. It does not serialize source paths, titles, artists, tag names, playlist names or history timestamps. The temporary report is deleted after validation and is not copied into the accepted witness file.
 
-Evidence generation is rejected before resolving or launching `AppPath` when either `CI` or `GITHUB_ACTIONS` has a common truthy value (`1`, `true`, `yes`, `on`, case-insensitive). `-ValidateExisting` remains usable in CI. `-FixtureSelfTest` creates two independent disposable fixtures, proves that each run gets a different content hash while each primary/duplicate pair remains byte-identical, validates the fixture WAV contract and exercises positive/negative aggregate-report validation. It creates no human qualification evidence.
+Evidence generation is rejected before resolving or launching `AppPath` when either `CI` or `GITHUB_ACTIONS` has a common truthy value (`1`, `true`, `yes`, `on`, case-insensitive). `-ValidateExisting` remains usable in CI. `-FixtureSelfTest` creates two independent disposable fixtures, proves that each run gets a different content hash while each primary/duplicate pair remains byte-identical, validates the fixture WAV contract and exercises positive/negative two-pass aggregate/stability report validation. It creates no human qualification evidence.
 
 ## Prepare
 
@@ -60,13 +60,15 @@ After all eight answers pass, the recorder asks you to close BrokeDJ and wait fo
 
 The verifier requires all of the following before evidence can be written:
 
-- the bounded fixture-only presence refresh is complete;
-- at least the two expected byte-identical fixture rows were scanned;
+- both bounded fixture-only presence passes are complete;
+- at least the two expected byte-identical fixture rows are scanned;
 - zero fixture rows remain missing and zero refresh results are unresolved;
+- the confirmation pass changes zero persisted presence flags;
+- aggregate track/missing/history/tag/playlist counts are unchanged between the two snapshots;
 - at least two fixture rows share the current run's exact SHA-256;
 - at least one History entry, tag association and playlist membership exist for that fixture content identity.
 
-Because the fixture SHA-256 is unique per run, stale synthetic rows from an earlier run cannot satisfy or poison this check. The targeted refresh cannot update unrelated user tracks. If the app report is malformed, incomplete, reports a different mode, opens audio, returns a non-zero result or fails any aggregate condition, the witness writes no accepted evidence.
+Because the fixture SHA-256 is unique per run, stale synthetic rows from an earlier run cannot satisfy or poison this check. The targeted refresh cannot update unrelated user tracks. A file or database mutation observed between the two passes now fails closed and requires a retry after the state settles. No finite verifier can prevent a new external filesystem mutation after its final pass, so this is stability evidence for the verification window rather than a claim of atomic filesystem state. If the app report is malformed, incomplete, reports a different mode, opens audio, returns a non-zero result or fails any aggregate/stability condition, the witness writes no accepted evidence.
 
 When the connected verifier passes, the recorder serializes the normal witness candidate to a temporary file, validates the closed evidence schema plus executable fingerprint, and only then replaces the final evidence path. A failed or interrupted new run therefore does not deliberately overwrite an earlier accepted witness with incomplete data.
 
@@ -94,7 +96,7 @@ From a source checkout:
 
 ## Acceptance boundary
 
-Automated CI covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, paged and fixture-scoped file-presence reconciliation, moved-file rebinding, privacy-safe fixture aggregate counts, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. Filesystem probes and SQLite maintenance stay outside the audio callback.
+Automated CI covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, paged and fixture-scoped file-presence reconciliation, two-pass fixture stability qualification, moved-file rebinding, privacy-safe fixture aggregate counts, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. Filesystem probes and SQLite maintenance stay outside the audio callback.
 
 The connected verifier strengthens the manual witness by checking real persisted application state for the current synthetic fixture instead of relying only on eight yes/no answers. It still does not establish real audio-device behavior, physical cue isolation, controller timing, listening quality or live reliability.
 

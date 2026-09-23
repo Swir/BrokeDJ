@@ -303,17 +303,22 @@ function Invoke-GuiSmokePreflight([System.IO.FileInfo]$App) {
 function Assert-FixtureStateReport([object]$Report) {
     Assert-ExactProperties -Object $Report -Expected @(
         'schema_version', 'mode', 'plays_audio', 'opens_audio_device', 'starts_audio_callback',
-        'database_schema_version', 'refresh', 'workflow', 'success', 'qualification_note'
+        'database_schema_version', 'verification_passes', 'initial_refresh_changed',
+        'workflow_stable', 'refresh', 'workflow', 'success', 'qualification_note'
     ) -Context 'fixtureState'
 
     $schema = Assert-IntegerProperty -Object $Report -Name 'schema_version' -Minimum 1 -Context 'fixtureState'
-    if ($schema -ne 1) { throw 'Unsupported fixture-state schema.' }
+    if ($schema -ne 2) { throw 'Unsupported fixture-state schema.' }
     $mode = Assert-StringProperty -Object $Report -Name 'mode' -Context 'fixtureState'
     if ($mode -ne 'm4-fixture-state') { throw 'Unexpected fixture-state mode.' }
     Assert-BooleanProperty -Object $Report -Name 'plays_audio' -Expected $false -Context 'fixtureState'
     Assert-BooleanProperty -Object $Report -Name 'opens_audio_device' -Expected $false -Context 'fixtureState'
     Assert-BooleanProperty -Object $Report -Name 'starts_audio_callback' -Expected $false -Context 'fixtureState'
     [void](Assert-IntegerProperty -Object $Report -Name 'database_schema_version' -Minimum 1 -Context 'fixtureState')
+    $verificationPasses = Assert-IntegerProperty -Object $Report -Name 'verification_passes' -Minimum 2 -Context 'fixtureState'
+    if ($verificationPasses -ne 2) { throw 'Fixture-state verification must use exactly two bounded passes.' }
+    [void](Assert-IntegerProperty -Object $Report -Name 'initial_refresh_changed' -Minimum 0 -Context 'fixtureState')
+    Assert-BooleanProperty -Object $Report -Name 'workflow_stable' -Expected $true -Context 'fixtureState'
     Assert-BooleanProperty -Object $Report -Name 'success' -Expected $true -Context 'fixtureState'
     [void](Assert-StringProperty -Object $Report -Name 'qualification_note' -Context 'fixtureState')
 
@@ -321,12 +326,12 @@ function Assert-FixtureStateReport([object]$Report) {
         'scanned', 'changed', 'missing', 'unresolved', 'complete'
     ) -Context 'fixtureState.refresh'
     $scanned = Assert-IntegerProperty -Object $Report.refresh -Name 'scanned' -Minimum 2 -Context 'fixtureState.refresh'
-    [void](Assert-IntegerProperty -Object $Report.refresh -Name 'changed' -Minimum 0 -Context 'fixtureState.refresh')
+    $changed = Assert-IntegerProperty -Object $Report.refresh -Name 'changed' -Minimum 0 -Context 'fixtureState.refresh'
     $missing = Assert-IntegerProperty -Object $Report.refresh -Name 'missing' -Minimum 0 -Context 'fixtureState.refresh'
     $unresolved = Assert-IntegerProperty -Object $Report.refresh -Name 'unresolved' -Minimum 0 -Context 'fixtureState.refresh'
     Assert-BooleanProperty -Object $Report.refresh -Name 'complete' -Expected $true -Context 'fixtureState.refresh'
-    if ($scanned -lt 2 -or $missing -ne 0 -or $unresolved -ne 0) {
-        throw 'Fixture-state refresh must scan both fixture rows and settle with zero missing/unresolved rows.'
+    if ($scanned -lt 2 -or $changed -ne 0 -or $missing -ne 0 -or $unresolved -ne 0) {
+        throw 'Fixture-state confirmation must scan both fixture rows and be change-free with zero missing/unresolved rows.'
     }
 
     Assert-ExactProperties -Object $Report.workflow -Expected @(
@@ -379,7 +384,7 @@ function Invoke-FixtureStateProbe([System.IO.FileInfo]$App, [string]$ContentHash
         if ($process.ExitCode -ne 0) {
             throw "Fixture-state report looked valid but BrokeDJ exited with code $($process.ExitCode)."
         }
-        Write-Step 'Fixture-scoped database verification passed: duplicate/history/tag/playlist state present and zero missing/unresolved fixture rows.'
+        Write-Step 'Fixture-scoped database verification passed twice: confirmation was change-free, aggregate counts were stable, and duplicate/history/tag/playlist state remained connected.'
     } finally {
         [Environment]::SetEnvironmentVariable('BROKEDJ_M4_FIXTURE_HASH', $previousHash, 'Process')
         if ($null -ne $process -and -not $process.HasExited) {
@@ -488,12 +493,15 @@ if ($FixtureSelfTest) {
         }
 
         $goodReport = [pscustomobject]@{
-            schema_version = 1
+            schema_version = 2
             mode = 'm4-fixture-state'
             plays_audio = $false
             opens_audio_device = $false
             starts_audio_callback = $false
             database_schema_version = 2
+            verification_passes = 2
+            initial_refresh_changed = 1
+            workflow_stable = $true
             refresh = [pscustomobject]@{ scanned = 2; changed = 0; missing = 0; unresolved = 0; complete = $true }
             workflow = [pscustomobject]@{ track_count = 2; missing_track_count = 0; history_count = 1; tag_association_count = 1; playlist_membership_count = 1 }
             success = $true
@@ -501,13 +509,25 @@ if ($FixtureSelfTest) {
         }
         Assert-FixtureStateReport -Report $goodReport
 
-        $badReport = $goodReport | ConvertTo-Json -Depth 6 | ConvertFrom-Json
-        $badReport.refresh.unresolved = 1
+        $unresolvedReport = $goodReport | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        $unresolvedReport.refresh.unresolved = 1
         $rejected = $false
-        try { Assert-FixtureStateReport -Report $badReport } catch { $rejected = $true }
+        try { Assert-FixtureStateReport -Report $unresolvedReport } catch { $rejected = $true }
         if (-not $rejected) { throw 'Fixture-state validator accepted unresolved fixture rows.' }
 
-        Write-Step 'Disposable synthetic WAV uniqueness/cleanup and fixture-state report contracts passed.'
+        $changingReport = $goodReport | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        $changingReport.refresh.changed = 1
+        $rejected = $false
+        try { Assert-FixtureStateReport -Report $changingReport } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Fixture-state validator accepted a confirmation pass that still changed persisted state.' }
+
+        $unstableReport = $goodReport | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        $unstableReport.workflow_stable = $false
+        $rejected = $false
+        try { Assert-FixtureStateReport -Report $unstableReport } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Fixture-state validator accepted changing aggregate workflow counts.' }
+
+        Write-Step 'Disposable synthetic WAV uniqueness/cleanup and two-pass fixture-state report contracts passed.'
     } finally {
         Remove-WitnessFixtureWorkspace -Workspace $first
         Remove-WitnessFixtureWorkspace -Workspace $second
