@@ -102,6 +102,33 @@ void run() {
     check(engine.meter(0).position.load() > engine.meter(0).audiblePosition.load(),
           "Engine publishes distinct transport and audible source positions");
 
+    // Clip adoption is a source-identity discontinuity. A replacement submitted
+    // while PLAY is active must fail closed to a stopped deck before any source
+    // renderer sees the new clip. This prevents stale/research audio from
+    // carrying across a track boundary and requires an explicit PLAY to resume.
+    const int callsBeforeReplacement = source.calls;
+    check(engine.submit(0, makeClip(0.10f)), "replacement clip submitted while playing");
+    engine.process(outputs.data(), 4, frames);
+    check(!engine.control(0).playing.load(),
+          "replacement clip adoption stops deck until explicit PLAY");
+    check(source.calls == callsBeforeReplacement,
+          "replacement adoption does not render through stale source ownership");
+    check(std::all_of(audio[0].begin(), audio[0].end(), [](float value) {
+        return std::isfinite(value) && std::abs(value) < 1.0e-7f;
+    }), "replacement adoption emits no stale master audio");
+    check(std::all_of(audio[2].begin(), audio[2].end(), [](float value) {
+        return std::isfinite(value) && std::abs(value) < 1.0e-7f;
+    }), "replacement adoption emits no stale cue audio");
+
+    engine.control(0).playing = true;
+    for (int block = 0; block < 8; ++block)
+        engine.process(outputs.data(), 4, frames);
+    check(source.calls == callsBeforeReplacement + 8,
+          "explicit PLAY resumes renderer only after replacement adoption");
+    check(std::any_of(audio[0].begin(), audio[0].end(), [](float value) {
+        return std::isfinite(value) && std::abs(value) > 0.01f;
+    }), "replacement source becomes audible only after explicit PLAY");
+
     // Production EQ/FX stay after the replaceable raw source boundary.
     engine.control(0).low = 0.0f;
     engine.control(0).mid = 0.0f;
