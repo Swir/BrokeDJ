@@ -59,19 +59,32 @@ jobs:
 
             $missingApp = Join-Path $PWD ("must-not-resolve-" + [Guid]::NewGuid().ToString('N') + '.exe')
             $outputPath = Join-Path $PWD ("must-not-write-" + [Guid]::NewGuid().ToString('N') + '.json')
-            $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath `
-              -AppPath $missingApp -QualificationPath $outputPath 2>&1
-            $exitCode = $LASTEXITCODE
-            $text = ($output | Out-String)
+            $stdoutPath = Join-Path $PWD ("guard-stdout-" + [Guid]::NewGuid().ToString('N') + '.txt')
+            $stderrPath = Join-Path $PWD ("guard-stderr-" + [Guid]::NewGuid().ToString('N') + '.txt')
 
-            if ($exitCode -eq 0) {
-              throw "CI guard accepted $($case.Variable)=$($case.Value)."
-            }
-            if ($text -notmatch 'human-controlled and cannot be generated in CI') {
-              throw "CI guard did not fail before candidate access for $($case.Variable)=$($case.Value): $text"
-            }
-            if (Test-Path -LiteralPath $outputPath) {
-              throw "CI guard wrote output for $($case.Variable)=$($case.Value)."
+            try {
+              $process = Start-Process -FilePath powershell.exe -ArgumentList @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $scriptPath,
+                '-AppPath', $missingApp,
+                '-QualificationPath', $outputPath
+              ) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru -Wait
+
+              $text = ((Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue) + "`n" +
+                       (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue))
+
+              if ($process.ExitCode -eq 0) {
+                throw "CI guard accepted $($case.Variable)=$($case.Value)."
+              }
+              if ($text -notmatch 'human-controlled and cannot be generated in CI') {
+                throw "CI guard did not fail before candidate access for $($case.Variable)=$($case.Value): $text"
+              }
+              if (Test-Path -LiteralPath $outputPath) {
+                throw "CI guard wrote output for $($case.Variable)=$($case.Value)."
+              }
+            } finally {
+              Remove-Item -LiteralPath $stdoutPath,$stderrPath,$outputPath -Force -ErrorAction SilentlyContinue
             }
           }
 
