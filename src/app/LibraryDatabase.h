@@ -49,6 +49,18 @@ struct FilePresenceRefreshResult final {
     bool complete = true;
 };
 
+// Privacy-safe aggregate state for one exact content hash. This intentionally
+// exposes counts only: no path, title, tag name, playlist name or history
+// timestamp leaves the library adapter. The M4 witness can therefore verify its
+// disposable synthetic fixture without serializing the user's music metadata.
+struct ContentHashWorkflowSummary final {
+    std::size_t trackCount = 0;
+    std::size_t missingTrackCount = 0;
+    std::size_t historyCount = 0;
+    std::size_t tagAssociationCount = 0;
+    std::size_t playlistMembershipCount = 0;
+};
+
 class LibraryDatabase final {
 public:
     static constexpr int currentSchemaVersion = 2;
@@ -84,6 +96,20 @@ public:
     [[nodiscard]] std::optional<FilePresenceRefreshResult> refreshFilePresence(
         std::size_t maxTracks = 512, std::int64_t afterTrackId = 0,
         std::string* error = nullptr);
+
+    // Narrow M4 qualification helper: reconcile only rows that belong to one exact
+    // SHA-256 content hash. It has the same guarded-update/race semantics as the
+    // general refresh but cannot touch unrelated user tracks. maxTracks is bounded;
+    // complete=false means the hash matched more records than the requested page.
+    [[nodiscard]] std::optional<FilePresenceRefreshResult> refreshFilePresenceForContentHash(
+        std::string_view contentHash, std::size_t maxTracks = 16,
+        std::string* error = nullptr);
+
+    // Return aggregate workflow evidence for one exact SHA-256 content hash without
+    // returning any identifying metadata. This is intended for local qualification
+    // tooling and remains ordinary SQLite work, never audio-callback work.
+    [[nodiscard]] std::optional<ContentHashWorkflowSummary> contentHashWorkflowSummary(
+        std::string_view contentHash, std::string* error = nullptr) const;
 
     [[nodiscard]] std::vector<TrackRecord> search(
         std::string_view query, std::size_t limit = 100, std::string* error = nullptr) const;

@@ -162,6 +162,93 @@ void testPagedPresenceRefreshAndMetadataRetention() {
           "missing review becomes empty after files are available");
 }
 
+void testContentHashScopedWitnessVerification() {
+    TempDirectory temp;
+    const auto primary = temp.path / "fixture" / "primary.wav";
+    const auto duplicate = temp.path / "fixture" / "duplicate.wav";
+    const auto relocated = temp.path / "relocated" / "primary.wav";
+    const auto unrelatedMissing = temp.path / "private-user-track.wav";
+    writeBytes(primary, "same-synthetic-fixture-content");
+    writeBytes(duplicate, "same-synthetic-fixture-content");
+
+    std::string error;
+    broke::library::LibraryDatabase db;
+    check(db.open(temp.path / "fixture-witness.sqlite3", &error),
+          "open content-hash witness library");
+
+    const auto primaryId = db.upsertTrack(makeTrack(primary, "Fixture Primary"), &error);
+    const auto duplicateId = db.upsertTrack(makeTrack(duplicate, "Fixture Duplicate"), &error);
+    const auto unrelatedId = db.upsertTrack(makeTrack(unrelatedMissing, "Unrelated"), &error);
+    check(primaryId && duplicateId && unrelatedId, "insert content-hash witness fixtures");
+
+    const auto fixtureRows = db.search("Fixture", 10, &error);
+    check(fixtureRows.size() == 2, "fixture search resolves both identical files");
+    const auto fixtureHash = fixtureRows.front().contentHash;
+    check(fixtureHash.size() == 64 && fixtureRows.back().contentHash == fixtureHash,
+          "identical fixture files share one SHA-256 content hash");
+
+    check(db.addTag(*primaryId, "M4-Witness", &error),
+          "attach fixture tag for aggregate verification");
+    const auto playlist = db.createPlaylist("M4 Witness", &error);
+    check(playlist.has_value(), "create fixture playlist");
+    check(db.addToPlaylist(*playlist, *primaryId, &error),
+          "attach fixture to playlist");
+    check(db.recordPlay(*primaryId, 123456789, &error),
+          "record fixture history entry");
+
+    const auto before = db.contentHashWorkflowSummary(fixtureHash, &error);
+    check(before.has_value(), "read privacy-safe fixture workflow summary");
+    check(before->trackCount == 2 && before->missingTrackCount == 0,
+          "fixture summary counts duplicate tracks without leaking metadata");
+    check(before->historyCount == 1 && before->tagAssociationCount == 1
+              && before->playlistMembershipCount == 1,
+          "fixture summary observes history/tag/playlist workflow state");
+
+    std::filesystem::create_directories(relocated.parent_path());
+    std::filesystem::rename(primary, relocated);
+
+    const auto bounded = db.refreshFilePresenceForContentHash(fixtureHash, 1, &error);
+    check(bounded.has_value(), "bounded fixture-only presence refresh succeeds");
+    check(bounded->scanned == 1 && !bounded->complete,
+          "fixture-only refresh reports truncation instead of scanning without a bound");
+    check(bounded->changed == 1 && bounded->missing == 1 && bounded->unresolved == 0,
+          "fixture-only refresh marks the moved primary missing");
+
+    const auto moved = db.refreshFilePresenceForContentHash(fixtureHash, 16, &error);
+    check(moved.has_value() && moved->complete && moved->scanned == 2,
+          "full fixture-only presence refresh reaches both duplicate rows");
+    check(moved->missing == 1 && moved->unresolved == 0,
+          "fixture-only refresh reports one settled missing row after the move");
+
+    check(db.relocateTrack(*primaryId, relocated,
+                           static_cast<std::int64_t>(std::filesystem::file_size(relocated)),
+                           2, &error),
+          "fixture relocate reconnects the moved primary");
+
+    const auto settled = db.refreshFilePresenceForContentHash(fixtureHash, 16, &error);
+    check(settled.has_value() && settled->complete && settled->scanned == 2,
+          "post-relocate fixture refresh is complete");
+    check(settled->missing == 0 && settled->unresolved == 0,
+          "post-relocate fixture refresh has zero missing/unresolved results");
+
+    const auto after = db.contentHashWorkflowSummary(fixtureHash, &error);
+    check(after.has_value(), "read post-relocate fixture workflow summary");
+    check(after->trackCount == 2 && after->missingTrackCount == 0,
+          "fixture duplicate remains connected after relocate");
+    check(after->historyCount == 1 && after->tagAssociationCount == 1
+              && after->playlistMembershipCount == 1,
+          "fixture workflow metadata survives targeted presence and relocate operations");
+
+    check(db.search(broke::library::LibraryDatabase::missingSearchDirective,
+                    10, &error).empty(),
+          "fixture-only refresh does not mutate unrelated user-track missing flags");
+
+    check(!db.refreshFilePresenceForContentHash("ABC", 16, &error).has_value(),
+          "malformed witness hash is rejected");
+    check(error.find("SHA-256") != std::string::npos,
+          "malformed witness hash reports the expected validation error");
+}
+
 void testUnicodeAndNonRegularPathClassification() {
     TempDirectory temp;
     const auto unicodeFile = temp.path / std::filesystem::path(u8"muzyka-zażółć.wav");
@@ -238,6 +325,7 @@ int main() {
     try {
         testConditionalUpdateAccountingFailsClosed();
         testPagedPresenceRefreshAndMetadataRetention();
+        testContentHashScopedWitnessVerification();
         testUnicodeAndNonRegularPathClassification();
         testPageSizeClampsWithoutUnboundedScan();
         testInvalidCursorFailsClosed();
