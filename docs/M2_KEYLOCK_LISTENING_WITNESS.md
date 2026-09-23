@@ -10,7 +10,7 @@ Automated CTest already checks bounded time/pitch behavior, fallback semantics a
 
 A valid witness requires:
 
-- Windows 11 x64 and an x64 BrokeDJ process;
+- Windows 11 x64 and x64 PowerShell;
 - the exact `BrokeDJ.exe` fingerprint stored in the evidence;
 - at least **three** representative tracks that you own or are licensed to use for testing;
 - a normal-playback baseline review;
@@ -113,9 +113,11 @@ pwsh -NoProfile -File .\M2-KEYLOCK-LISTENING-WITNESS.ps1 `
   -NoCriticalArtifactsObserved -RuntimeErrorReview
 ```
 
-The script refuses evidence generation in CI. It does not inspect or hash the test music. The output defaults to `BrokeDJ-M2-keylock-listening.json` and contains only the app fingerprint, coarse Windows build/architecture data, the representative-track count and closed boolean attestations.
+The script refuses evidence generation in CI. Common truthy `CI`/`GITHUB_ACTIONS` values (`1`, `true`, `yes`, `on`, case-insensitive) are rejected **before `AppPath` is resolved or hashed**. `-ValidateExisting` remains allowed in CI because it validates an already-created record instead of minting a listening claim.
 
-If any required check is omitted, the script writes the bounded evidence object but exits non-zero so an incomplete session cannot be mistaken for a passed witness.
+The output defaults to `BrokeDJ-M2-keylock-listening.json` and contains only the app fingerprint, coarse Windows build/architecture data, the representative-track count and closed boolean attestations. It does not inspect or hash the test music.
+
+Publication is fail-closed. A new run is first serialized to a sibling temporary candidate and fully validated against the exact executable. Only a complete candidate replaces the requested evidence file. If any required count/check is missing or false, the script exits `2`, deletes the temporary candidate and leaves any previously accepted evidence unchanged.
 
 ## Validate an existing witness
 
@@ -136,6 +138,8 @@ Validation rejects:
 - incomplete listening checks;
 - privacy flags indicating names, paths or source music;
 - unexpected/free-form JSON properties.
+
+Exit codes are `0` for a complete matching witness, `2` for an incomplete generation attempt that was not published, and `1` for malformed/mismatched evidence, unsupported host/input, missing files or CI-generation refusal.
 
 Review the JSON before sharing it. The schema intentionally has no free-form notes field so track names, paths and hardware details are not accidentally copied into public CI or issue logs.
 

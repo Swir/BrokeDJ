@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/m2_keylock_listening_witness.ps1'
       - 'docs/M2_KEYLOCK_LISTENING_WITNESS.md'
+      - 'docs/DEVELOPMENT_STATUS.md'
       - '.github/workflows/m2-keylock-witness-tool.yml'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -37,7 +38,7 @@ jobs:
           }
           Write-Host 'PowerShell parser: OK'
 
-      - name: Validate listening evidence contract and negative cases
+      - name: Validate listening evidence contract, atomic publication and CI guard
         shell: pwsh
         run: |
           Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ M2 listening witness fixture executable' -NoNewline -Encoding ascii
@@ -131,18 +132,52 @@ jobs:
           $wrongArchitecture.environment.architecture = 'X86'
           Assert-Rejected $wrongArchitecture '.\wrong-architecture.json' 'Non-x64 evidence was accepted.'
 
-          # Generation mode itself must refuse CI, even if every manual-looking
-          # switch is supplied. CI may validate fixtures but may never mint a
-          # complete listening witness.
-          & pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
-            -AppPath .\BrokeDJ.exe -EvidencePath .\must-not-exist.json `
-            -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
-            -NormalBaselineReviewed -SlowKeyLockReviewed -FastKeyLockReviewed `
-            -TransportFallbackReviewed -PitchStabilityAcceptable `
-            -NoCriticalArtifactsObserved -RuntimeErrorReview
-          if ($LASTEXITCODE -eq 0) { throw 'CI was allowed to generate M2 listening evidence.' }
-          if (Test-Path .\must-not-exist.json) { throw 'CI generation wrote an evidence file.' }
-          $global:LASTEXITCODE = 0
+          foreach ($variable in @('CI', 'GITHUB_ACTIONS')) {
+            $original = [Environment]::GetEnvironmentVariable($variable)
+            try {
+              foreach ($value in @('1', 'true', 'yes', 'on')) {
+                Set-Item -Path "Env:$variable" -Value $value
+                Remove-Item .\must-not-exist.json -ErrorAction SilentlyContinue
+                $output = & pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
+                  -AppPath .\path-that-must-not-exist\BrokeDJ.exe -EvidencePath .\must-not-exist.json `
+                  -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+                  -NormalBaselineReviewed -SlowKeyLockReviewed -FastKeyLockReviewed `
+                  -TransportFallbackReviewed -PitchStabilityAcceptable `
+                  -NoCriticalArtifactsObserved -RuntimeErrorReview 2>&1
+                if ($LASTEXITCODE -eq 0) { throw "$variable=$value was allowed to generate M2 listening evidence." }
+                if (($output | Out-String) -notmatch 'cannot be generated in CI') {
+                  throw "$variable=$value did not fail at the CI guard before AppPath resolution. Output: $($output | Out-String)"
+                }
+                if (Test-Path .\must-not-exist.json) { throw "$variable=$value wrote an M2 evidence file." }
+              }
+            } finally {
+              if ($null -eq $original) { Remove-Item -Path "Env:$variable" -ErrorAction SilentlyContinue }
+              else { Set-Item -Path "Env:$variable" -Value $original }
+            }
+          }
 
-          Write-Host 'M2 witness contract: complete fixture accepted; incomplete, spoofed, privacy-unsafe, wrong-identity/environment and CI-generation cases rejected.'
+          Copy-Item .\complete.json .\protected.json -Force
+          $before = (Get-FileHash .\protected.json -Algorithm SHA256).Hash
+          $ciOriginal = $env:CI
+          $ghaOriginal = $env:GITHUB_ACTIONS
+          try {
+            Remove-Item Env:CI -ErrorAction SilentlyContinue
+            Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+            & pwsh -NoProfile -File .\scripts\m2_keylock_listening_witness.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath .\protected.json `
+              -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+              -NormalBaselineReviewed -SlowKeyLockReviewed -FastKeyLockReviewed `
+              -TransportFallbackReviewed -PitchStabilityAcceptable -RuntimeErrorReview
+            if ($LASTEXITCODE -ne 2) { throw "Incomplete generation returned $LASTEXITCODE instead of 2." }
+          } finally {
+            if ($null -eq $ciOriginal) { Remove-Item Env:CI -ErrorAction SilentlyContinue } else { $env:CI = $ciOriginal }
+            if ($null -eq $ghaOriginal) { Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue } else { $env:GITHUB_ACTIONS = $ghaOriginal }
+          }
+          $after = (Get-FileHash .\protected.json -Algorithm SHA256).Hash
+          if ($before -ne $after) { throw 'Incomplete generation replaced previously accepted M2 evidence.' }
+          if (@(Get-ChildItem . -Filter '.BrokeDJ-M2-Witness-*.tmp' -Force).Count -ne 0) {
+            throw 'Incomplete M2 generation left a temporary candidate behind.'
+          }
+
+          Write-Host 'M2 witness contract: complete fixture accepted; incomplete/spoofed/privacy-unsafe cases rejected; CI guard precedes AppPath resolution; incomplete retries preserve accepted evidence.'
           exit 0
