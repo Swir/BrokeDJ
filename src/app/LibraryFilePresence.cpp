@@ -150,15 +150,24 @@ std::optional<FilePresenceRefreshResult> LibraryDatabase::refreshFilePresence(
     std::vector<PresenceDecision> decisions;
     decisions.reserve(snapshot.size());
     for (const auto& item : snapshot) {
+        const auto path = presencePathFromUtf8(item.path);
         std::error_code filesystemError;
-        const auto status = std::filesystem::status(
-            presencePathFromUtf8(item.path), filesystemError);
+        const bool exists = std::filesystem::exists(path, filesystemError);
         if (filesystemError) {
             ++result.unresolved;
             continue;
         }
 
-        const bool missingNow = !std::filesystem::is_regular_file(status);
+        bool missingNow = !exists;
+        if (exists) {
+            const bool regularFile = std::filesystem::is_regular_file(path, filesystemError);
+            if (filesystemError) {
+                ++result.unresolved;
+                continue;
+            }
+            missingNow = !regularFile;
+        }
+
         if (missingNow) ++result.missing;
         if (missingNow != item.missing)
             decisions.push_back(PresenceDecision{item, missingNow});
