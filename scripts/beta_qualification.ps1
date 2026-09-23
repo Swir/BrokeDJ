@@ -19,8 +19,20 @@ function Write-Step([string]$Message) {
     Write-Host "[BrokeDJ Beta] $Message"
 }
 
+function Test-TruthyEnvironmentValue([object]$Value) {
+    if ($null -eq $Value) { return $false }
+    switch (([string]$Value).Trim().ToLowerInvariant()) {
+        '1' { return $true }
+        'true' { return $true }
+        'yes' { return $true }
+        'on' { return $true }
+        default { return $false }
+    }
+}
+
 function Assert-NotCi {
-    if ($env:GITHUB_ACTIONS -eq 'true' -or $env:CI -eq 'true') {
+    if ((Test-TruthyEnvironmentValue $env:GITHUB_ACTIONS) -or
+        (Test-TruthyEnvironmentValue $env:CI)) {
         throw 'Beta qualification evidence is human-controlled and cannot be generated in CI.'
     }
 }
@@ -55,6 +67,15 @@ function Resolve-WitnessScript([string]$PackagedName, [string]$RepositoryName) {
         }
     }
     throw "Required witness validator is missing: $PackagedName / $RepositoryName"
+}
+
+function Get-PowerShellHostPath {
+    $hostName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+    $candidate = Join-Path $PSHOME $hostName
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "Unable to locate the current PowerShell host: $candidate"
+    }
+    return (Resolve-Path -LiteralPath $candidate).Path
 }
 
 function Get-Sha256([System.IO.FileInfo]$File) {
@@ -96,7 +117,9 @@ function Invoke-WitnessValidator(
     if ($null -ne $Probe) {
         $arguments += @('-ProbePath', $Probe.FullName)
     }
-    & pwsh @arguments
+
+    $hostExecutable = Get-PowerShellHostPath
+    & $hostExecutable @arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Witness validation failed for $($Evidence.Name) with exit code $LASTEXITCODE."
     }
@@ -193,12 +216,13 @@ function Read-Qualification([System.IO.FileInfo]$App,
     Write-Step "Source commit: $expectedCommit"
 }
 
-$app = Resolve-Leaf -Path $AppPath -ExpectedName 'BrokeDJ.exe'
 if (-not $ValidateExisting) {
+    # Reject unattended generation before resolving or hashing any supplied candidate/evidence files.
     Assert-NotCi
     Assert-Windows11X64
 }
 
+$app = Resolve-Leaf -Path $AppPath -ExpectedName 'BrokeDJ.exe'
 $probe = Resolve-Leaf -Path $ProbePath -ExpectedName 'BrokeDJ-device-probe.json'
 $evidenceFiles = @{
     m1 = Resolve-Leaf -Path $M1EvidencePath -ExpectedName 'BrokeDJ-M1-Hardware-Witness.json'
@@ -253,9 +277,30 @@ $qualification = [ordered]@{
 }
 
 $parent = Split-Path -Parent $QualificationPath
-if (-not [string]::IsNullOrWhiteSpace($parent)) {
+if ([string]::IsNullOrWhiteSpace($parent)) {
+    $parent = (Get-Location).Path
+} elseif (-not (Test-Path -LiteralPath $parent)) {
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
 }
-$qualification | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $QualificationPath -Encoding utf8
-Read-Qualification -App $app -Probe $probe -EvidenceFiles $evidenceFiles -Path $QualificationPath
-Write-Step "Wrote privacy-safe beta qualification summary: $QualificationPath"
+$parent = (Resolve-Path -LiteralPath $parent).Path
+$finalQualificationPath = Join-Path $parent ([System.IO.Path]::GetFileName($QualificationPath))
+$temporaryQualificationPath = Join-Path $parent (
+    '.BrokeDJ-Beta-Qualification-' + [Guid]::NewGuid().ToString('N') + '.tmp'
+)
+
+try {
+    $qualification | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath $temporaryQualificationPath -Encoding utf8
+
+    # Validate the exact bytes before publishing them. A failed generation leaves any
+    # previously valid qualification file untouched.
+    Read-Qualification -App $app -Probe $probe -EvidenceFiles $evidenceFiles -Path $temporaryQualificationPath
+    Move-Item -LiteralPath $temporaryQualificationPath -Destination $finalQualificationPath -Force
+    Read-Qualification -App $app -Probe $probe -EvidenceFiles $evidenceFiles -Path $finalQualificationPath
+    Write-Step "Wrote privacy-safe beta qualification summary: $finalQualificationPath"
+} catch {
+    Write-Error $_
+    exit 2
+} finally {
+    Remove-Item -LiteralPath $temporaryQualificationPath -Force -ErrorAction SilentlyContinue
+}
