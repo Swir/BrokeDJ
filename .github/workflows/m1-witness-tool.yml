@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/m1_hardware_witness.ps1'
       - 'docs/M1_HARDWARE_WITNESS.md'
+      - 'docs/DEVELOPMENT_STATUS.md'
       - '.github/workflows/m1-witness-tool.yml'
       - '.github/workflows/build.yml'
   workflow_dispatch:
