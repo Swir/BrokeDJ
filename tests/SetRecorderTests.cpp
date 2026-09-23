@@ -228,6 +228,30 @@ void testCleanFinalize() {
     require(dir.deleteRecursively(), "could not remove clean recording fixture");
 }
 
+void testNonFiniteCaptureIsSanitizedAndReported() {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 512;
+    auto dir = freshDirectory("nonfinite");
+    const auto requested = dir.getChildFile("nonfinite.wav");
+    std::vector<float> left(frames, 0.15f), right(frames, -0.15f);
+    left[3] = std::numeric_limits<float>::quiet_NaN();
+    right[17] = std::numeric_limits<float>::infinity();
+
+    SetRecorder recorder(4096);
+    require(recorder.start(requested, rate), "non-finite recording failed to start");
+    recorder.capture(left.data(), right.data(), frames);
+    recorder.stop();
+    const auto state = recorder.snapshot();
+    require(state.finalized, "sanitized non-finite recording did not finalize");
+    require(state.writtenFrames == frames, "sanitized recording changed timeline length");
+    require(state.dropoutEvents == 1,
+            "non-finite source block did not surface one recording dropout event");
+    require(state.droppedFrames == 2,
+            "non-finite source frames were not counted as affected recording frames");
+    verifyWav(state.destination, rate, frames);
+    require(dir.deleteRecursively(), "could not remove non-finite recording fixture");
+}
+
 void testOverflowIsMeasuredNotBlocking() {
     constexpr double rate = 44100.0;
     constexpr int frames = 8192;
@@ -292,6 +316,7 @@ int main() {
     testBoothRoutingUsesProtectedMasterAndIndependentLevel();
     testBoothDisabledClearsDedicatedOutputs();
     testCleanFinalize();
+    testNonFiniteCaptureIsSanitizedAndReported();
     testOverflowIsMeasuredNotBlocking();
     testLateDestinationIsNeverOverwritten();
     testInvalidStartFailsClosed();
