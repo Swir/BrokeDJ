@@ -12,6 +12,7 @@
 
 #include "LibraryDatabase.h"
 #include "LibraryRuntimeStore.h"
+#include "core/AudioDeviceRecovery.h"
 
 #include <JuceHeader.h>
 
@@ -33,6 +34,9 @@ public:
     explicit RecordingMainComponent(bool openAudio = true, bool enableKeyLockResearch = false)
         : base(openAudio, enableKeyLockResearch), databaseFile(libraryDatabaseFile()) {
         addAndMakeVisible(base);
+        monitorAudioDeviceChanges = openAudio;
+        if (monitorAudioDeviceChanges)
+            deviceRecovery.reset(base.deviceManager.getCurrentAudioDevice() != nullptr);
 
         historyButton.setButtonText(text("HISTORY", "HISTORIA"));
         historyButton.setTooltip(text(
@@ -240,8 +244,29 @@ private:
             ? ms * 1000000 : ms;
     }
 
+    void serviceAudioDeviceRecovery() {
+        if (!monitorAudioDeviceChanges) return;
+        const auto event = deviceRecovery.update(base.deviceManager.getCurrentAudioDevice() != nullptr);
+        if (event.pausePlayback) {
+            const auto state = base.captureSessionState();
+            base.prepareForSessionRestore(state.mixer);
+            previousPlaying.fill(false);
+            base.showWorkflowStatus(text(
+                "Audio device disconnected — playback paused. Select an audio device and press PLAY to resume.",
+                "Urządzenie audio odłączone — odtwarzanie wstrzymane. Wybierz urządzenie audio i naciśnij PLAY, aby wznowić."));
+            return;
+        }
+        if (event.deviceRecovered) {
+            base.showWorkflowStatus(text(
+                "Audio device available again — playback remains paused. Press PLAY when ready.",
+                "Urządzenie audio znów jest dostępne — odtwarzanie pozostaje wstrzymane. Naciśnij PLAY, gdy będziesz gotowy."));
+        }
+    }
+
     void timerCallback() override {
-        if (!historyDatabaseAvailable || cancelled.load(std::memory_order_acquire)) return;
+        if (cancelled.load(std::memory_order_acquire)) return;
+        serviceAudioDeviceRecovery();
+        if (!historyDatabaseAvailable) return;
         const auto state = base.captureSessionState();
         for (std::size_t deck = 0; deck < state.decks.size(); ++deck) {
             const auto& deckState = state.decks[deck];
@@ -357,7 +382,9 @@ private:
     std::atomic<bool> cancelled{false};
     std::atomic<std::uint64_t> historyGeneration{0};
     std::array<bool, broke::session::SessionState::deckCount> previousPlaying{};
+    broke::AudioDeviceRecoveryPolicy deviceRecovery;
     juce::Component::SafePointer<juce::DialogWindow> historyDialog;
     juce::Component::SafePointer<HistoryPanel> historyPanel;
     bool historyDatabaseAvailable = false;
+    bool monitorAudioDeviceChanges = false;
 };
