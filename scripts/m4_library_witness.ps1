@@ -8,7 +8,9 @@ param(
 
     [string]$EvidencePath = (Join-Path (Get-Location) 'BrokeDJ-M4-Library-Witness.json'),
 
-    [switch]$ValidateExisting
+    [switch]$ValidateExisting,
+
+    [switch]$FixtureSelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -126,6 +128,124 @@ function Assert-BooleanProperty([object]$Object, [string]$Name, [bool]$Expected,
     }
     if ($value -ne $Expected) {
         throw "$Context.$Name must be $($Expected.ToString().ToLowerInvariant())."
+    }
+}
+
+function New-WitnessFixtureWorkspace {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("BrokeDJ-M4-fixture-" + [Guid]::NewGuid().ToString('N'))
+    $importDirectory = Join-Path $root 'import'
+    $duplicateDirectory = Join-Path $root 'duplicate'
+    $relocatedDirectory = Join-Path $root 'relocated'
+    New-Item -ItemType Directory -Path $importDirectory,$duplicateDirectory,$relocatedDirectory -Force | Out-Null
+
+    $sourcePath = Join-Path $importDirectory 'BrokeDJ-M4-Fixture.wav'
+    $duplicatePath = Join-Path $duplicateDirectory 'BrokeDJ-M4-Fixture-copy.wav'
+
+    $sampleRate = 48000
+    $channels = 2
+    $bitsPerSample = 16
+    $frameCount = 48000
+    $bytesPerSample = [int]($bitsPerSample / 8)
+    $blockAlign = $channels * $bytesPerSample
+    $dataSize = $frameCount * $blockAlign
+    $byteRate = $sampleRate * $blockAlign
+    $stream = [System.IO.File]::Open($sourcePath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $writer = [System.IO.BinaryWriter]::new($stream)
+
+    try {
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+        $writer.Write([int](36 + $dataSize))
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVE'))
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('fmt '))
+        $writer.Write([int]16)
+        $writer.Write([int16]1)
+        $writer.Write([int16]$channels)
+        $writer.Write([int]$sampleRate)
+        $writer.Write([int]$byteRate)
+        $writer.Write([int16]$blockAlign)
+        $writer.Write([int16]$bitsPerSample)
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+        $writer.Write([int]$dataSize)
+
+        $fadeFrames = 480
+        for ($frame = 0; $frame -lt $frameCount; ++$frame) {
+            $fadeIn = [Math]::Min(1.0, [double]$frame / [double]$fadeFrames)
+            $fadeOut = [Math]::Min(1.0, [double]($frameCount - 1 - $frame) / [double]$fadeFrames)
+            $fade = [Math]::Min($fadeIn, $fadeOut)
+            $angle = 2.0 * [Math]::PI * 440.0 * [double]$frame / [double]$sampleRate
+            $sample = [int16][Math]::Round([Math]::Sin($angle) * 4096.0 * $fade)
+            $writer.Write($sample)
+            $writer.Write($sample)
+        }
+    } finally {
+        $writer.Dispose()
+        $stream.Dispose()
+    }
+
+    Copy-Item -LiteralPath $sourcePath -Destination $duplicatePath
+
+    $readmePath = Join-Path $root 'README.txt'
+    @(
+        'BrokeDJ M4 disposable fixture workspace',
+        '',
+        '1. Import the WAV under import\ into BrokeDJ.',
+        '2. Import the byte-identical WAV under duplicate\ to exercise duplicate review.',
+        '3. For the relocate check, move the primary WAV from import\ into relocated\ while BrokeDJ is running, refresh missing-file review, then relocate the existing library record to the moved copy.',
+        '4. The witness script removes this entire workspace when the run ends.',
+        '',
+        'These generated files contain no user music or private library metadata.'
+    ) | Set-Content -LiteralPath $readmePath -Encoding utf8
+
+    return [pscustomobject]@{
+        Root = $root
+        Source = $sourcePath
+        Duplicate = $duplicatePath
+        RelocatedDirectory = $relocatedDirectory
+        Readme = $readmePath
+    }
+}
+
+function Test-WitnessFixtureWorkspace([object]$Workspace) {
+    foreach ($path in @($Workspace.Source, $Workspace.Duplicate, $Workspace.Readme)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Fixture workspace is missing required file: $path"
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Workspace.RelocatedDirectory -PathType Container)) {
+        throw 'Fixture workspace is missing the relocation directory.'
+    }
+
+    $sourceHash = (Get-FileHash -LiteralPath $Workspace.Source -Algorithm SHA256).Hash
+    $duplicateHash = (Get-FileHash -LiteralPath $Workspace.Duplicate -Algorithm SHA256).Hash
+    if ($sourceHash -ne $duplicateHash) {
+        throw 'Fixture duplicate is not byte-identical to the primary WAV.'
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Workspace.Source)
+    if ($bytes.Length -ne 192044) {
+        throw "Fixture WAV length is unexpected: $($bytes.Length) bytes."
+    }
+    if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'RIFF' -or
+        [System.Text.Encoding]::ASCII.GetString($bytes, 8, 4) -ne 'WAVE' -or
+        [System.Text.Encoding]::ASCII.GetString($bytes, 12, 4) -ne 'fmt ' -or
+        [System.Text.Encoding]::ASCII.GetString($bytes, 36, 4) -ne 'data') {
+        throw 'Fixture WAV RIFF/WAVE structure is invalid.'
+    }
+
+    $formatTag = [BitConverter]::ToInt16($bytes, 20)
+    $channels = [BitConverter]::ToInt16($bytes, 22)
+    $sampleRate = [BitConverter]::ToInt32($bytes, 24)
+    $bitsPerSample = [BitConverter]::ToInt16($bytes, 34)
+    $dataSize = [BitConverter]::ToInt32($bytes, 40)
+    if ($formatTag -ne 1 -or $channels -ne 2 -or $sampleRate -ne 48000 -or
+        $bitsPerSample -ne 16 -or $dataSize -ne 192000) {
+        throw 'Fixture WAV format is not the expected 48 kHz stereo 16-bit PCM contract.'
+    }
+}
+
+function Remove-WitnessFixtureWorkspace([object]$Workspace) {
+    if ($null -ne $Workspace -and -not [string]::IsNullOrWhiteSpace([string]$Workspace.Root)) {
+        Remove-Item -LiteralPath $Workspace.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -254,6 +374,23 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
     Write-Step "Windows build: $windowsBuild"
 }
 
+if ($FixtureSelfTest) {
+    $fixture = $null
+    $fixtureRoot = $null
+    try {
+        $fixture = New-WitnessFixtureWorkspace
+        $fixtureRoot = $fixture.Root
+        Test-WitnessFixtureWorkspace -Workspace $fixture
+        Write-Step 'Disposable synthetic WAV fixture contract passed.'
+    } finally {
+        Remove-WitnessFixtureWorkspace -Workspace $fixture
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$fixtureRoot) -and (Test-Path -LiteralPath $fixtureRoot)) {
+        throw 'Fixture self-test left its temporary workspace behind.'
+    }
+    exit 0
+}
+
 if ($ValidateExisting) {
     $app = Resolve-App -Path $AppPath
     Validate-Evidence -Path $EvidencePath -ExpectedApp $app
@@ -267,65 +404,77 @@ $windowsBuild = Assert-Windows11X64
 $appFingerprint = Get-AppFingerprint -App $app
 Invoke-GuiSmokePreflight -App $app
 
-Write-Step 'This witness never asks for track names or paths and does not inspect source music.'
-Write-Step 'Use disposable copies or non-critical local tracks for manual interaction checks.'
-Write-Step 'Do not include screenshots or notes containing private paths in public artifacts.'
-Write-Step 'The automated preflight opened no audio device; the manual launch/resize check below is still required for real usability review.'
-Write-Host ''
-
-$checks = [ordered]@{}
-$checks.launchAndResize = Read-YesNo 'BrokeDJ launched on Windows 11 and remained usable while resizing without overlapping/hidden critical controls?'
-$checks.importAndSearch = Read-YesNo 'A supported local track imported successfully and bounded library search found it?'
-$checks.tagsAndPlaylists = Read-YesNo 'Tag editing plus playlist create/add/remove/browse worked and persisted after refresh?'
-$checks.history = Read-YesNo 'Starting playback created a bounded local history entry visible in the History view?'
-$checks.duplicateAndMissingReview = Read-YesNo 'Duplicate and missing-file review filters behaved non-destructively?'
-$checks.relocate = Read-YesNo 'Relocate reconnected a deliberately moved test copy without losing tags/playlist membership?'
-$checks.libraryBackupRestore = Read-YesNo 'Library backup succeeded; after a controlled metadata mutation, restore returned the prior library state?'
-$checks.sessionSaveLoad = Read-YesNo 'A four-deck/mixer session snapshot saved and loaded with restored controls while decks remained paused until explicit Play?'
-
-$failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
-if ($failedChecks.Count -gt 0) {
-    throw ('M4 witness failed; no evidence was written. Failed checks: ' + ($failedChecks -join ', '))
-}
-
-$evidence = [ordered]@{
-    schema = 1
-    project = 'BrokeDJ'
-    scope = 'M4-library-workflow'
-    generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
-    environment = [ordered]@{
-        windowsBuild = $windowsBuild
-        architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-        processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
-    }
-    app = $appFingerprint
-    checks = $checks
-    privacy = [ordered]@{
-        containsTrackPaths = $false
-        containsTrackNames = $false
-        containsSourceMusic = $false
-    }
-}
-
-$parent = Split-Path -Parent $EvidencePath
-if ([string]::IsNullOrWhiteSpace($parent)) {
-    $parent = (Get-Location).Path
-} elseif (-not (Test-Path -LiteralPath $parent)) {
-    New-Item -ItemType Directory -Path $parent -Force | Out-Null
-}
-$parent = (Resolve-Path -LiteralPath $parent).Path
-$finalEvidencePath = Join-Path $parent ([System.IO.Path]::GetFileName($EvidencePath))
-$temporaryEvidencePath = Join-Path $parent ('.BrokeDJ-M4-Witness-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-
+$fixture = New-WitnessFixtureWorkspace
 try {
-    $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporaryEvidencePath -Encoding utf8
-    Validate-Evidence -Path $temporaryEvidencePath -ExpectedApp $app
-    Move-Item -LiteralPath $temporaryEvidencePath -Destination $finalEvidencePath -Force
-    Validate-Evidence -Path $finalEvidencePath -ExpectedApp $app
-    Write-Step "Evidence written to: $finalEvidencePath"
-} catch {
-    Write-Error $_
-    exit 2
+    Test-WitnessFixtureWorkspace -Workspace $fixture
+    Write-Step 'A disposable synthetic WAV fixture workspace was prepared; no personal music is required.'
+    Write-Step "Primary import fixture: $($fixture.Source)"
+    Write-Step "Byte-identical duplicate fixture: $($fixture.Duplicate)"
+    Write-Step "Relocate destination directory: $($fixture.RelocatedDirectory)"
+    Write-Step "Local step guide: $($fixture.Readme)"
+    Write-Step 'The fixture contains a quiet generated 440 Hz PCM tone and is never played by this script.'
+    Write-Step 'Keep system/headphone volume conservative if you choose to start playback for the History check.'
+    Write-Step 'This witness never asks for track names or paths and does not inspect source music.'
+    Write-Step 'Do not include screenshots or notes containing private paths in public artifacts.'
+    Write-Step 'The automated preflight opened no audio device; the manual launch/resize check below is still required for real usability review.'
+    Write-Host ''
+
+    $checks = [ordered]@{}
+    $checks.launchAndResize = Read-YesNo 'BrokeDJ launched on Windows 11 and remained usable while resizing without overlapping/hidden critical controls?'
+    $checks.importAndSearch = Read-YesNo 'The generated primary fixture imported successfully and bounded library search found it?'
+    $checks.tagsAndPlaylists = Read-YesNo 'Tag editing plus playlist create/add/remove/browse worked on the fixture and persisted after refresh?'
+    $checks.history = Read-YesNo 'Starting the generated fixture once under your control created a bounded local history entry visible in the History view?'
+    $checks.duplicateAndMissingReview = Read-YesNo 'The generated duplicate plus a deliberately moved primary exercised duplicate/missing review non-destructively?'
+    $checks.relocate = Read-YesNo 'Relocate reconnected the moved primary fixture without losing tags/playlist membership?'
+    $checks.libraryBackupRestore = Read-YesNo 'Library backup succeeded; after a controlled metadata mutation, restore returned the prior library state?'
+    $checks.sessionSaveLoad = Read-YesNo 'A four-deck/mixer session snapshot saved and loaded with restored controls while decks remained paused until explicit Play?'
+
+    $failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
+    if ($failedChecks.Count -gt 0) {
+        throw ('M4 witness failed; no evidence was written. Failed checks: ' + ($failedChecks -join ', '))
+    }
+
+    $evidence = [ordered]@{
+        schema = 1
+        project = 'BrokeDJ'
+        scope = 'M4-library-workflow'
+        generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
+        environment = [ordered]@{
+            windowsBuild = $windowsBuild
+            architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        }
+        app = $appFingerprint
+        checks = $checks
+        privacy = [ordered]@{
+            containsTrackPaths = $false
+            containsTrackNames = $false
+            containsSourceMusic = $false
+        }
+    }
+
+    $parent = Split-Path -Parent $EvidencePath
+    if ([string]::IsNullOrWhiteSpace($parent)) {
+        $parent = (Get-Location).Path
+    } elseif (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $parent = (Resolve-Path -LiteralPath $parent).Path
+    $finalEvidencePath = Join-Path $parent ([System.IO.Path]::GetFileName($EvidencePath))
+    $temporaryEvidencePath = Join-Path $parent ('.BrokeDJ-M4-Witness-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+
+    try {
+        $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporaryEvidencePath -Encoding utf8
+        Validate-Evidence -Path $temporaryEvidencePath -ExpectedApp $app
+        Move-Item -LiteralPath $temporaryEvidencePath -Destination $finalEvidencePath -Force
+        Validate-Evidence -Path $finalEvidencePath -ExpectedApp $app
+        Write-Step "Evidence written to: $finalEvidencePath"
+    } catch {
+        Write-Error $_
+        exit 2
+    } finally {
+        Remove-Item -LiteralPath $temporaryEvidencePath -Force -ErrorAction SilentlyContinue
+    }
 } finally {
-    Remove-Item -LiteralPath $temporaryEvidencePath -Force -ErrorAction SilentlyContinue
+    Remove-WitnessFixtureWorkspace -Workspace $fixture
 }
