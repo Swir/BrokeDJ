@@ -21,8 +21,15 @@ public:
         bool recording = false;
         bool finalized = false;
         std::uint64_t writtenFrames = 0;
+        // Aggregate affected source-frame/event counters retained for the existing
+        // UI/witness contract. Reason-specific counters below make the evidence
+        // diagnosable without changing the realtime callback ownership model.
         std::uint64_t droppedFrames = 0;
         std::uint64_t dropoutEvents = 0;
+        std::uint64_t sanitizedFrames = 0;
+        std::uint64_t sanitizationEvents = 0;
+        std::uint64_t omittedFrames = 0;
+        std::uint64_t omissionEvents = 0;
         juce::File destination;
         juce::File recoveryFile;
         juce::String error;
@@ -77,6 +84,10 @@ public:
         writtenFrames.store(0, std::memory_order_relaxed);
         droppedFrames.store(0, std::memory_order_relaxed);
         dropoutEvents.store(0, std::memory_order_relaxed);
+        sanitizedFrames.store(0, std::memory_order_relaxed);
+        sanitizationEvents.store(0, std::memory_order_relaxed);
+        omittedFrames.store(0, std::memory_order_relaxed);
+        omissionEvents.store(0, std::memory_order_relaxed);
         activeCaptures.store(0, std::memory_order_relaxed);
         finalized.store(false, std::memory_order_relaxed);
         writerFailed.store(false, std::memory_order_relaxed);
@@ -131,10 +142,10 @@ public:
 
     // Realtime entry point. No I/O, mutex, allocation, condition-variable notify
     // or unbounded retry. The writer polls the FIFO from its background thread.
-    // A full FIFO drops the unavailable tail and records explicit evidence.
-    // Non-finite master samples are replaced with silence before they cross the
-    // PCM serialization boundary and are counted through the existing dropout
-    // evidence so a corrupted upstream block cannot be reported as a clean take.
+    // A full FIFO omits the unavailable tail and records explicit evidence.
+    // Non-finite master samples that fit in the FIFO are replaced with silence;
+    // they keep their timeline position but are tracked separately from frames
+    // omitted because the input bus/FIFO could not supply storage.
     void capture(const float* masterLeft, const float* masterRight, int frames) noexcept {
         if (frames <= 0) return;
 
@@ -148,7 +159,7 @@ public:
         }
 
         if (masterLeft == nullptr || masterRight == nullptr) {
-            noteDrop(static_cast<std::uint64_t>(frames));
+            noteOmission(static_cast<std::uint64_t>(frames));
             activeCaptures.fetch_sub(1, std::memory_order_release);
             return;
         }
@@ -156,7 +167,7 @@ public:
         int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
         fifo.prepareToWrite(frames, start1, size1, start2, size2);
         const int accepted = size1 + size2;
-        std::uint64_t sanitizedFrames = 0;
+        std::uint64_t repaired = 0;
         const auto copySanitized = [&](int sourceOffset, int destinationOffset, int count) noexcept {
             for (int i = 0; i < count; ++i) {
                 float l = masterLeft[sourceOffset + i];
@@ -165,7 +176,7 @@ public:
                 const bool invalidRight = !std::isfinite(r);
                 if (invalidLeft) l = 0.0f;
                 if (invalidRight) r = 0.0f;
-                if (invalidLeft || invalidRight) ++sanitizedFrames;
+                if (invalidLeft || invalidRight) ++repaired;
                 left[static_cast<std::size_t>(destinationOffset + i)] = l;
                 right[static_cast<std::size_t>(destinationOffset + i)] = r;
             }
@@ -173,8 +184,8 @@ public:
         if (size1 > 0) copySanitized(0, start1, size1);
         if (size2 > 0) copySanitized(size1, start2, size2);
         fifo.finishedWrite(accepted);
-        if (sanitizedFrames > 0) noteDrop(sanitizedFrames);
-        if (accepted < frames) noteDrop(static_cast<std::uint64_t>(frames - accepted));
+        if (repaired > 0) noteSanitization(repaired);
+        if (accepted < frames) noteOmission(static_cast<std::uint64_t>(frames - accepted));
         activeCaptures.fetch_sub(1, std::memory_order_release);
     }
 
@@ -189,6 +200,10 @@ public:
         result.writtenFrames = writtenFrames.load(std::memory_order_relaxed);
         result.droppedFrames = droppedFrames.load(std::memory_order_relaxed);
         result.dropoutEvents = dropoutEvents.load(std::memory_order_relaxed);
+        result.sanitizedFrames = sanitizedFrames.load(std::memory_order_relaxed);
+        result.sanitizationEvents = sanitizationEvents.load(std::memory_order_relaxed);
+        result.omittedFrames = omittedFrames.load(std::memory_order_relaxed);
+        result.omissionEvents = omissionEvents.load(std::memory_order_relaxed);
         const juce::ScopedLock lock(stateLock);
         result.destination = destination;
         result.recoveryFile = recoveryFile;
@@ -197,9 +212,18 @@ public:
     }
 
 private:
-    void noteDrop(std::uint64_t frames) noexcept {
+    void noteSanitization(std::uint64_t frames) noexcept {
         droppedFrames.fetch_add(frames, std::memory_order_relaxed);
         dropoutEvents.fetch_add(1, std::memory_order_relaxed);
+        sanitizedFrames.fetch_add(frames, std::memory_order_relaxed);
+        sanitizationEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void noteOmission(std::uint64_t frames) noexcept {
+        droppedFrames.fetch_add(frames, std::memory_order_relaxed);
+        dropoutEvents.fetch_add(1, std::memory_order_relaxed);
+        omittedFrames.fetch_add(frames, std::memory_order_relaxed);
+        omissionEvents.fetch_add(1, std::memory_order_relaxed);
     }
 
     void setError(const juce::String& message) {
@@ -294,6 +318,10 @@ private:
     std::atomic<std::uint64_t> writtenFrames{0};
     std::atomic<std::uint64_t> droppedFrames{0};
     std::atomic<std::uint64_t> dropoutEvents{0};
+    std::atomic<std::uint64_t> sanitizedFrames{0};
+    std::atomic<std::uint64_t> sanitizationEvents{0};
+    std::atomic<std::uint64_t> omittedFrames{0};
+    std::atomic<std::uint64_t> omissionEvents{0};
 
     mutable juce::CriticalSection stateLock;
     std::unique_ptr<juce::AudioFormatWriter> writer;
