@@ -10,7 +10,9 @@ param(
 
     [string]$ProbePath = (Join-Path (Get-Location) 'BrokeDJ-device-probe.json'),
 
-    [switch]$ValidateExisting
+    [switch]$ValidateExisting,
+
+    [switch]$FixtureSelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -123,6 +125,114 @@ function Assert-BooleanProperty([object]$Object, [string]$Name, [bool]$Expected,
     }
     if ($value -ne $Expected) {
         throw "$Context.$Name must be $($Expected.ToString().ToLowerInvariant())."
+    }
+}
+
+function New-PlaybackFixtureWorkspace {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("BrokeDJ-M1-fixture-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $sourcePath = Join-Path $root 'BrokeDJ-M1-Playback-Fixture.wav'
+    $readmePath = Join-Path $root 'README.txt'
+
+    $sampleRate = 48000
+    $channels = 2
+    $bitsPerSample = 16
+    $frameCount = 48000
+    $bytesPerSample = [int]($bitsPerSample / 8)
+    $blockAlign = $channels * $bytesPerSample
+    $dataSize = $frameCount * $blockAlign
+    $byteRate = $sampleRate * $blockAlign
+    $stream = [System.IO.File]::Open(
+        $sourcePath,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+    $writer = [System.IO.BinaryWriter]::new($stream)
+
+    try {
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+        $writer.Write([int](36 + $dataSize))
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVE'))
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('fmt '))
+        $writer.Write([int]16)
+        $writer.Write([int16]1)
+        $writer.Write([int16]$channels)
+        $writer.Write([int]$sampleRate)
+        $writer.Write([int]$byteRate)
+        $writer.Write([int16]$blockAlign)
+        $writer.Write([int16]$bitsPerSample)
+        $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+        $writer.Write([int]$dataSize)
+
+        $fadeFrames = 480
+        for ($frame = 0; $frame -lt $frameCount; ++$frame) {
+            $fadeIn = [Math]::Min(1.0, [double]$frame / [double]$fadeFrames)
+            $fadeOut = [Math]::Min(1.0, [double]($frameCount - 1 - $frame) / [double]$fadeFrames)
+            $fade = [Math]::Min($fadeIn, $fadeOut)
+            $angle = 2.0 * [Math]::PI * 440.0 * [double]$frame / [double]$sampleRate
+            $sample = [int16][Math]::Round([Math]::Sin($angle) * 4096.0 * $fade)
+            $writer.Write($sample)
+            $writer.Write($sample)
+        }
+    } finally {
+        $writer.Dispose()
+        $stream.Dispose()
+    }
+
+    @(
+        'BrokeDJ M1 disposable playback fixture',
+        '',
+        'Use BrokeDJ-M1-Playback-Fixture.wav for the M1 import/playback check.',
+        'The witness script never starts playback and removes this workspace when the run ends.',
+        'Keep hardware volume conservative before pressing Play.',
+        'This generated WAV contains no user music or private library metadata.'
+    ) | Set-Content -LiteralPath $readmePath -Encoding utf8
+
+    return [pscustomobject]@{
+        Root = $root
+        Source = $sourcePath
+        Readme = $readmePath
+    }
+}
+
+function Test-PlaybackFixtureWorkspace([object]$Workspace) {
+    foreach ($path in @($Workspace.Source, $Workspace.Readme)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Fixture workspace is missing required file: $path"
+        }
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Workspace.Source)
+    if ($bytes.Length -ne 192044) {
+        throw "Fixture WAV length is unexpected: $($bytes.Length) bytes."
+    }
+    if ([System.Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'RIFF' -or
+        [System.Text.Encoding]::ASCII.GetString($bytes, 8, 4) -ne 'WAVE' -or
+        [System.Text.Encoding]::ASCII.GetString($bytes, 12, 4) -ne 'fmt ' -or
+        [System.Text.Encoding]::ASCII.GetString($bytes, 36, 4) -ne 'data') {
+        throw 'Fixture WAV RIFF/WAVE structure is invalid.'
+    }
+
+    $formatTag = [BitConverter]::ToInt16($bytes, 20)
+    $channels = [BitConverter]::ToInt16($bytes, 22)
+    $sampleRate = [BitConverter]::ToInt32($bytes, 24)
+    $bitsPerSample = [BitConverter]::ToInt16($bytes, 34)
+    $dataSize = [BitConverter]::ToInt32($bytes, 40)
+    if ($formatTag -ne 1 -or $channels -ne 2 -or $sampleRate -ne 48000 -or
+        $bitsPerSample -ne 16 -or $dataSize -ne 192000) {
+        throw 'Fixture WAV format is not the expected 48 kHz stereo 16-bit PCM contract.'
+    }
+
+    $hash = (Get-FileHash -LiteralPath $Workspace.Source -Algorithm SHA256).Hash
+    if ($hash -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'Fixture WAV did not produce a valid SHA-256 digest.'
+    }
+}
+
+function Remove-PlaybackFixtureWorkspace([object]$Workspace) {
+    if ($null -ne $Workspace -and -not [string]::IsNullOrWhiteSpace([string]$Workspace.Root)) {
+        Remove-Item -LiteralPath $Workspace.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -297,15 +407,33 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp, [Sys
     Write-Step "Windows build: $windowsBuild"
 }
 
-$app = Resolve-App -Path $AppPath
+if ($FixtureSelfTest) {
+    $fixture = $null
+    $fixtureRoot = $null
+    try {
+        $fixture = New-PlaybackFixtureWorkspace
+        $fixtureRoot = $fixture.Root
+        Test-PlaybackFixtureWorkspace -Workspace $fixture
+        Write-Step 'Disposable synthetic playback fixture contract passed.'
+    } finally {
+        Remove-PlaybackFixtureWorkspace -Workspace $fixture
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$fixtureRoot) -and (Test-Path -LiteralPath $fixtureRoot)) {
+        throw 'Fixture self-test left its temporary workspace behind.'
+    }
+    exit 0
+}
 
 if ($ValidateExisting) {
+    $app = Resolve-App -Path $AppPath
     $probe = Resolve-Probe -Path $ProbePath
     Validate-Evidence -Path $EvidencePath -ExpectedApp $app -ExpectedProbe $probe
     exit 0
 }
 
+# Reject unattended generation before resolving, hashing or launching the supplied app.
 Assert-NotCi
+$app = Resolve-App -Path $AppPath
 $windowsBuild = Assert-Windows11
 $osArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 $processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
@@ -335,50 +463,75 @@ $probe = Resolve-Probe -Path $expectedProbePath
 $probeFingerprint = Validate-Probe -Probe $probe
 $appFingerprint = Get-AppFingerprint -App $app
 
-Write-Step 'The generated witness JSON stores no device names, track names, track paths or source music.'
-Write-Step 'The separate BrokeDJ-device-probe.json can contain local backend/device names; keep it private unless reviewed.'
-Write-Step 'The script does not automate playback or loud tests. Keep hardware volume low and perform the documented steps manually.'
-Write-Host ''
-
-$checks = [ordered]@{}
-$checks.cleanLaunch = Read-YesNo 'The staged BrokeDJ build launched cleanly on Windows 11 x64 without a crash?'
-$checks.resizeAndHiDpi = Read-YesNo 'The UI remained usable at 1050x800 and a normal desktop size/qualified display scale without overlapping critical controls?'
-$checks.importAndPlayback = Read-YesNo 'A supported local test track imported and ordinary playback worked through the intended real output device at safe volume?'
-$checks.deviceSwitchRecovery = Read-YesNo 'Switching to another intended audio device/backend and back recovered without a crash, stale routing or unusable playback?'
-$checks.fourOutputCueIsolation = Read-YesNo 'On a real four-output interface, master stayed on 1/2 and private CUE stayed isolated on 3/4 for at least two decks and after reopening/switching device settings?'
-$checks.runtimeErrorReview = Read-YesNo 'Available driver/runtime/xrun diagnostics were reviewed and no unresolved M1-blocking error remained?'
-
-$evidence = [ordered]@{
-    schema = 1
-    project = 'BrokeDJ'
-    scope = 'M1-windows-hardware'
-    generatedUtc = [DateTime]::UtcNow.ToString('o')
-    environment = [ordered]@{
-        windowsBuild = $windowsBuild
-        architecture = $osArchitecture
-        processArchitecture = $processArchitecture
-    }
-    app = $appFingerprint
-    deviceProbe = $probeFingerprint
-    checks = $checks
-    privacy = [ordered]@{
-        containsDeviceNames = $false
-        containsTrackPaths = $false
-        containsTrackNames = $false
-        containsSourceMusic = $false
-    }
-}
-
-$evidenceParent = Split-Path -Parent $EvidencePath
-if (-not [string]::IsNullOrWhiteSpace($evidenceParent) -and -not (Test-Path -LiteralPath $evidenceParent)) {
-    New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
-}
-$evidence | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $EvidencePath -Encoding utf8
-Write-Step "Evidence written to: $EvidencePath"
-
+$fixture = $null
 try {
-    Validate-Evidence -Path $EvidencePath -ExpectedApp $app -ExpectedProbe $probe
-} catch {
-    Write-Error $_
-    exit 2
+    $fixture = New-PlaybackFixtureWorkspace
+    Test-PlaybackFixtureWorkspace -Workspace $fixture
+
+    Write-Step 'A disposable synthetic 48 kHz stereo WAV is ready for the import/playback check; no personal music is required.'
+    Write-Step "Playback fixture: $($fixture.Source)"
+    Write-Step "Local step guide: $($fixture.Readme)"
+    Write-Step 'The script never starts playback or changes hardware volume. Keep monitor/headphone volume conservative before pressing Play.'
+    Write-Step 'The generated witness JSON stores no device names, track names, track paths or source music.'
+    Write-Step 'The separate BrokeDJ-device-probe.json can contain local backend/device names; keep it private unless reviewed.'
+    Write-Host ''
+
+    $checks = [ordered]@{}
+    $checks.cleanLaunch = Read-YesNo 'The staged BrokeDJ build launched cleanly on Windows 11 x64 without a crash?'
+    $checks.resizeAndHiDpi = Read-YesNo 'The UI remained usable at 1050x800 and a normal desktop size/qualified display scale without overlapping critical controls?'
+    $checks.importAndPlayback = Read-YesNo 'The generated playback fixture imported and ordinary playback worked through the intended real output device at safe volume?'
+    $checks.deviceSwitchRecovery = Read-YesNo 'Switching to another intended audio device/backend and back recovered without a crash, stale routing or unusable playback?'
+    $checks.fourOutputCueIsolation = Read-YesNo 'On a real four-output interface, master stayed on 1/2 and private CUE stayed isolated on 3/4 for at least two decks and after reopening/switching device settings?'
+    $checks.runtimeErrorReview = Read-YesNo 'Available driver/runtime/xrun diagnostics were reviewed and no unresolved M1-blocking error remained?'
+
+    $failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
+    if ($failedChecks.Count -gt 0) {
+        throw ('M1 witness failed; no evidence was written. Failed checks: ' + ($failedChecks -join ', '))
+    }
+
+    $evidence = [ordered]@{
+        schema = 1
+        project = 'BrokeDJ'
+        scope = 'M1-windows-hardware'
+        generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
+        environment = [ordered]@{
+            windowsBuild = $windowsBuild
+            architecture = $osArchitecture
+            processArchitecture = $processArchitecture
+        }
+        app = $appFingerprint
+        deviceProbe = $probeFingerprint
+        checks = $checks
+        privacy = [ordered]@{
+            containsDeviceNames = $false
+            containsTrackPaths = $false
+            containsTrackNames = $false
+            containsSourceMusic = $false
+        }
+    }
+
+    $evidenceParent = Split-Path -Parent $EvidencePath
+    if ([string]::IsNullOrWhiteSpace($evidenceParent)) {
+        $evidenceParent = (Get-Location).Path
+    } elseif (-not (Test-Path -LiteralPath $evidenceParent)) {
+        New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
+    }
+    $evidenceParent = (Resolve-Path -LiteralPath $evidenceParent).Path
+    $finalEvidencePath = Join-Path $evidenceParent ([System.IO.Path]::GetFileName($EvidencePath))
+    $temporaryEvidencePath = Join-Path $evidenceParent ('.BrokeDJ-M1-Witness-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+
+    try {
+        $evidence | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $temporaryEvidencePath -Encoding utf8
+        Validate-Evidence -Path $temporaryEvidencePath -ExpectedApp $app -ExpectedProbe $probe
+        Move-Item -LiteralPath $temporaryEvidencePath -Destination $finalEvidencePath -Force
+        Validate-Evidence -Path $finalEvidencePath -ExpectedApp $app -ExpectedProbe $probe
+        Write-Step "Evidence written to: $finalEvidencePath"
+    } catch {
+        Write-Error $_
+        exit 2
+    } finally {
+        Remove-Item -LiteralPath $temporaryEvidencePath -Force -ErrorAction SilentlyContinue
+    }
+} finally {
+    Remove-PlaybackFixtureWorkspace -Workspace $fixture
 }
