@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -37,9 +38,9 @@ public:
 
     explicit SetRecorder(int fifoFrames = 262144)
         : juce::Thread("BrokeDJ set recorder"),
-          fifo(std::max(4096, fifoFrames)),
-          left(static_cast<std::size_t>(std::max(4096, fifoFrames))),
-          right(static_cast<std::size_t>(std::max(4096, fifoFrames))) {}
+          fifo(fifoStorageSize(fifoFrames)),
+          left(static_cast<std::size_t>(fifoStorageSize(fifoFrames))),
+          right(static_cast<std::size_t>(fifoStorageSize(fifoFrames))) {}
 
     ~SetRecorder() override { stop(); }
 
@@ -212,6 +213,17 @@ public:
     }
 
 private:
+    static int fifoStorageSize(int requestedCapacity) noexcept {
+        // juce::AbstractFifo reserves one sentinel slot, so its documented usable
+        // capacity is totalSize - 1. Keep fifoFrames as the real frame capacity by
+        // allocating that sentinel explicitly instead of silently losing one frame.
+        constexpr int minimumCapacity = 4096;
+        const int capacity = std::clamp(requestedCapacity,
+                                        minimumCapacity,
+                                        std::numeric_limits<int>::max() - 1);
+        return capacity + 1;
+    }
+
     void noteSanitization(std::uint64_t frames) noexcept {
         droppedFrames.fetch_add(frames, std::memory_order_relaxed);
         dropoutEvents.fetch_add(1, std::memory_order_relaxed);
