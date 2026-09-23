@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/m3_mixer_recording_witness.ps1'
       - 'docs/M3_MIXER_RECORDING_WITNESS.md'
+      - 'docs/DEVELOPMENT_STATUS.md'
       - '.github/workflows/m3-mixer-witness-tool.yml'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -37,7 +38,7 @@ jobs:
           }
           Write-Host 'PowerShell parser: OK'
 
-      - name: Validate M3 evidence contract and negative cases
+      - name: Validate M3 evidence contract, atomic publication and CI guard
         shell: pwsh
         run: |
           Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ M3 witness fixture executable' -NoNewline -Encoding ascii
@@ -143,17 +144,55 @@ jobs:
           $wrongArchitecture.environment.architecture = 'X86'
           Assert-Rejected $wrongArchitecture '.\wrong-architecture.json' 'Non-x64 evidence was accepted.'
 
-          Remove-Item .\must-not-exist.json -ErrorAction SilentlyContinue
-          & pwsh -NoProfile -File .\scripts\m3_mixer_recording_witness.ps1 `
-            -AppPath .\BrokeDJ.exe -EvidencePath .\must-not-exist.json `
-            -ContinuousSessionMinutes 60 -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
-            -EqListeningReviewed -GainStagingReviewed -CrossfaderLawsReviewed `
-            -LimiterBehaviorReviewed -MicrophoneInputReviewed -DuckingReviewed `
-            -BoothRoutingReviewed -CueIsolationPreserved -RecordingCreated `
-            -RecordingPlaybackReviewed -ZeroRecordingDropoutsObserved -RuntimeErrorReview
-          if ($LASTEXITCODE -eq 0) { throw 'CI was allowed to generate M3 mixer/recording evidence.' }
-          if (Test-Path .\must-not-exist.json) { throw 'CI generation wrote an M3 evidence file.' }
-          $global:LASTEXITCODE = 0
+          foreach ($variable in @('CI', 'GITHUB_ACTIONS')) {
+            $original = [Environment]::GetEnvironmentVariable($variable)
+            try {
+              foreach ($value in @('1', 'true', 'yes', 'on')) {
+                Set-Item -Path "Env:$variable" -Value $value
+                Remove-Item .\must-not-exist.json -ErrorAction SilentlyContinue
+                $output = & pwsh -NoProfile -File .\scripts\m3_mixer_recording_witness.ps1 `
+                  -AppPath .\path-that-must-not-exist\BrokeDJ.exe -EvidencePath .\must-not-exist.json `
+                  -ContinuousSessionMinutes 60 -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+                  -EqListeningReviewed -GainStagingReviewed -CrossfaderLawsReviewed `
+                  -LimiterBehaviorReviewed -MicrophoneInputReviewed -DuckingReviewed `
+                  -BoothRoutingReviewed -CueIsolationPreserved -RecordingCreated `
+                  -RecordingPlaybackReviewed -ZeroRecordingDropoutsObserved -RuntimeErrorReview 2>&1
+                if ($LASTEXITCODE -eq 0) { throw "$variable=$value was allowed to generate M3 evidence." }
+                if (($output | Out-String) -notmatch 'cannot be generated in CI') {
+                  throw "$variable=$value did not fail at the CI guard before AppPath resolution. Output: $($output | Out-String)"
+                }
+                if (Test-Path .\must-not-exist.json) { throw "$variable=$value wrote an M3 evidence file." }
+              }
+            } finally {
+              if ($null -eq $original) { Remove-Item -Path "Env:$variable" -ErrorAction SilentlyContinue }
+              else { Set-Item -Path "Env:$variable" -Value $original }
+            }
+          }
 
-          Write-Host 'M3 witness contract: complete fixture accepted; incomplete, spoofed, privacy-unsafe, wrong-identity/environment and CI-generation cases rejected.'
+          Copy-Item .\complete.json .\protected.json -Force
+          $before = (Get-FileHash .\protected.json -Algorithm SHA256).Hash
+          $ciOriginal = $env:CI
+          $ghaOriginal = $env:GITHUB_ACTIONS
+          try {
+            Remove-Item Env:CI -ErrorAction SilentlyContinue
+            Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+            & pwsh -NoProfile -File .\scripts\m3_mixer_recording_witness.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath .\protected.json `
+              -ContinuousSessionMinutes 60 -RepresentativeTrackCount 3 -UserOwnedOrLicensed `
+              -EqListeningReviewed -GainStagingReviewed -CrossfaderLawsReviewed `
+              -LimiterBehaviorReviewed -MicrophoneInputReviewed -DuckingReviewed `
+              -BoothRoutingReviewed -CueIsolationPreserved -RecordingCreated `
+              -ZeroRecordingDropoutsObserved -RuntimeErrorReview
+            if ($LASTEXITCODE -ne 2) { throw "Incomplete generation returned $LASTEXITCODE instead of 2." }
+          } finally {
+            if ($null -eq $ciOriginal) { Remove-Item Env:CI -ErrorAction SilentlyContinue } else { $env:CI = $ciOriginal }
+            if ($null -eq $ghaOriginal) { Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue } else { $env:GITHUB_ACTIONS = $ghaOriginal }
+          }
+          $after = (Get-FileHash .\protected.json -Algorithm SHA256).Hash
+          if ($before -ne $after) { throw 'Incomplete generation replaced previously accepted M3 evidence.' }
+          if (@(Get-ChildItem . -Filter '.BrokeDJ-M3-Witness-*.tmp' -Force).Count -ne 0) {
+            throw 'Incomplete M3 generation left a temporary candidate behind.'
+          }
+
+          Write-Host 'M3 witness contract: complete fixture accepted; incomplete/spoofed/privacy-unsafe cases rejected; CI guard precedes AppPath resolution; incomplete retries preserve accepted evidence.'
           exit 0

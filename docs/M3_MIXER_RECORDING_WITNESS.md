@@ -71,6 +71,10 @@ pwsh -NoProfile -File .\M3-MIXER-RECORDING-WITNESS.ps1 `
 
 The default evidence file is `BrokeDJ-M3-mixer-recording.json`. The JSON contains only closed, typed qualification fields, environment class, duration/counts and the exact executable fingerprint. It does not contain the names or paths of test tracks, recordings or devices.
 
+Generation is fail-closed. Common truthy `CI`/`GITHUB_ACTIONS` values (`1`, `true`, `yes`, `on`, case-insensitive) are rejected **before `AppPath` is resolved or hashed**. `-ValidateExisting` is still allowed in CI because it only validates an existing record.
+
+A new manual result is first written to a sibling temporary candidate and validated against the exact executable. Only a complete candidate is moved into the requested evidence path. An incomplete retry exits `2`, removes its temporary candidate and leaves any previously accepted witness unchanged.
+
 ## Validate an existing witness
 
 ```powershell
@@ -83,12 +87,12 @@ pwsh -NoProfile -File .\M3-MIXER-RECORDING-WITNESS.ps1 `
 Exit codes:
 
 - `0` — the evidence schema is complete and matches the selected executable;
-- `2` — generation wrote an intentionally incomplete record because one or more acceptance fields were not satisfied;
+- `2` — generation was incomplete and therefore **not published**; any earlier accepted evidence remains unchanged;
 - `1` — malformed/unsafe/mismatched evidence, unsupported environment, missing file, or CI-generation refusal.
 
 ## CI safety and privacy contract
 
-CI is allowed to parse the script and validate synthetic fixtures. **CI generation mode is deliberately refused**, even when every command-line switch is supplied. Therefore a green workflow cannot manufacture a claim that a human listened to or physically tested the mixer.
+CI is allowed to parse the script and validate synthetic fixtures. **CI generation mode is deliberately refused**, even when every command-line switch is supplied. The workflow exercises `CI` and `GITHUB_ACTIONS` with `1`, `true`, `yes` and `on` and uses a nonexistent `AppPath` to prove the guard runs before application resolution. Therefore a green workflow cannot manufacture a claim that a human listened to or physically tested the mixer.
 
 Validation rejects:
 
@@ -99,6 +103,8 @@ Validation rejects:
 - privacy flags indicating device names, local paths, track names, recordings, source music or microphone audio were embedded;
 - unexpected/free-form fields;
 - evidence whose executable fingerprint does not match the selected `BrokeDJ.exe`.
+
+The workflow also verifies that an incomplete retry cannot overwrite an already accepted witness and cannot leave a temporary candidate behind.
 
 ## What this still does not prove
 
