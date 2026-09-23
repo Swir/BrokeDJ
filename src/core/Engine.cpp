@@ -403,8 +403,11 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             state.wasPlaying = false;
             state.wasReverse = false;
             state.wasSlip = false;
-            for (auto& channel : state.delay) std::fill(channel.begin(), channel.end(), 0.0f);
-            state.delayIndex = 0;
+            // Invalidate the 250 ms echo history in O(1) instead of clearing the
+            // whole ring on the realtime thread. delayIndex >= ring size means
+            // "priming": old slots are treated as silence until each has been
+            // overwritten once by the newly adopted deck epoch.
+            state.delayIndex = state.delay[0].empty() ? 0 : state.delay[0].size();
             control.playing.store(false, std::memory_order_relaxed);
             control.reverse.store(false, std::memory_order_relaxed);
             control.slip.store(false, std::memory_order_relaxed);
@@ -632,6 +635,9 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
             const float transitionMix = s.transitionRemaining > 0
                 ? 1.0f - static_cast<float>(s.transitionRemaining) / static_cast<float>(transitionSamples)
                 : 1.0f;
+            const auto delaySize = s.delay[0].size();
+            const bool delayPriming = delaySize > 0 && s.delayIndex >= delaySize;
+            const auto delaySlot = delaySize > 0 ? s.delayIndex % delaySize : 0;
             for (std::size_t c = 0; c < 2; ++c) {
                 // Input trim lives before EQ/FX and therefore also affects the
                 // pre-fader headphone cue. The channel fader remains post-FX.
@@ -641,8 +647,8 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 float x = s.bass[c] * s.low + (s.treble[c] - s.bass[c]) * s.mid + (in - s.treble[c]) * s.high;
                 if (s.drive > 0.001f) x = std::tanh(x * (1.0f + s.drive)) / std::tanh(1.0f + s.drive);
                 if (!s.delay[c].empty()) {
-                    const float delayed = s.delay[c][s.delayIndex];
-                    s.delay[c][s.delayIndex] = clean(x + delayed * 0.35f);
+                    const float delayed = delayPriming ? 0.0f : s.delay[c][delaySlot];
+                    s.delay[c][delaySlot] = clean(x + delayed * 0.35f);
                     x = x * (1.0f - s.echo) + delayed * s.echo;
                 }
                 x = clean(x);
@@ -658,7 +664,12 @@ void Engine::process(float* const* output, int channels, int frames) noexcept {
                 mix[c] += x * ((d % 2 == 0) ? leftFade : rightFade);
             }
             if (s.transitionRemaining > 0) --s.transitionRemaining;
-            if (!s.delay[0].empty()) s.delayIndex = (s.delayIndex + 1) % s.delay[0].size();
+            if (delaySize > 0) {
+                const auto nextDelaySlot = (delaySlot + 1) % delaySize;
+                s.delayIndex = (delayPriming && nextDelaySlot != 0)
+                    ? delaySize + nextDelaySlot
+                    : nextDelaySlot;
+            }
         }
         for (int c = 0; c < 2; ++c) {
             const float x = clean(mix[static_cast<std::size_t>(c)] * masterSmooth);

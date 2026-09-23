@@ -2,6 +2,7 @@
 #include "core/Engine.h"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -31,9 +32,10 @@ struct Fixture {
     }
 };
 
-std::unique_ptr<broke::Clip> constantClip(float value, int frames = 48000) {
+std::unique_ptr<broke::Clip> constantClip(float value, int frames = 48000,
+                                          double sampleRate = 48000.0) {
     auto clip = std::make_unique<broke::Clip>();
-    clip->sampleRate = 48000.0;
+    clip->sampleRate = sampleRate;
     clip->left.assign(static_cast<std::size_t>(frames), value);
     clip->right = clip->left;
     return clip;
@@ -212,6 +214,53 @@ void run() {
         f.render();
         check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float x) { return std::isfinite(x); }),
             "smoothed trim, EQ and FX automation remains finite");
+    }
+    {
+        // The largest supported device rate makes the fixed 250 ms echo ring
+        // 48,000 frames per channel. Replacement must not leak the old deck's
+        // echo tail and the adoption callback records diagnostic cost without
+        // turning shared-runner timing into a hardware-performance threshold.
+        constexpr double sampleRate = 192000.0;
+        broke::Engine engine;
+        engine.prepare(sampleRate);
+        engine.crossfader = 0.0f;
+        engine.master = 1.0f;
+        std::array<std::array<float, 512>, 4> audio{};
+        std::array<float*, 4> out{};
+        for (std::size_t channel = 0; channel < out.size(); ++channel)
+            out[channel] = audio[channel].data();
+
+        check(engine.submit(0, constantClip(0.40f, 192000, sampleRate)),
+              "max-rate echo adoption fixture accepted");
+        engine.process(out.data(), 4, 512);
+        auto& control = engine.control(0);
+        control.gain = 1.0f;
+        control.echo = 0.7f;
+        control.playing = true;
+        for (int block = 0; block < 110; ++block) engine.process(out.data(), 4, 512);
+        check(peakOf(audio[0]) > 0.05f,
+              "max-rate echo fixture reaches audible old-deck state before replacement");
+
+        check(engine.submit(0, constantClip(0.0f, 192000, sampleRate)),
+              "silent replacement accepted after populated echo history");
+        const auto adoptionStarted = std::chrono::steady_clock::now();
+        engine.process(out.data(), 4, 512);
+        const auto adoptionFinished = std::chrono::steady_clock::now();
+        engine.collectRetired();
+
+        control.gain = 1.0f;
+        control.echo = 0.7f;
+        control.playing = true;
+        for (int block = 0; block < 8; ++block) engine.process(out.data(), 4, 512);
+        const float staleEchoPeak = peakOf(audio[0]);
+        check(staleEchoPeak < 1.0e-6f,
+              "clip replacement cannot leak stale echo history into the new deck epoch");
+        const auto adoptionNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            adoptionFinished - adoptionStarted).count();
+        std::cout << "METRIC deck_adoption_output_hz=192000 delay_frames=48000"
+                  << " adoption_elapsed_ns=" << adoptionNs
+                  << " stale_echo_peak=" << staleEchoPeak
+                  << " timing_is_diagnostic_only=1\n";
     }
     {
         Fixture f;
