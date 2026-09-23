@@ -40,6 +40,15 @@ struct DuplicateGroup final {
     std::vector<TrackRecord> tracks;
 };
 
+struct FilePresenceRefreshResult final {
+    std::size_t scanned = 0;
+    std::size_t changed = 0;
+    std::size_t missing = 0;
+    std::size_t unresolved = 0;
+    std::int64_t nextAfterTrackId = 0;
+    bool complete = true;
+};
+
 class LibraryDatabase final {
 public:
     static constexpr int currentSchemaVersion = 2;
@@ -66,6 +75,15 @@ public:
     [[nodiscard]] bool relocateTrack(std::int64_t trackId, const std::filesystem::path& newPath,
                                      std::int64_t fileSize, std::int64_t modifiedNs,
                                      std::string* error = nullptr);
+
+    // Reconcile persisted missing flags against the local filesystem in a bounded
+    // ID-ordered page. File probes happen outside SQLite write transactions; updates
+    // are conditional on the same id/path/old flag so a concurrent relocate cannot
+    // be overwritten by a stale probe. Callers can continue with nextAfterTrackId
+    // until complete=true. This is maintenance I/O and must stay off the audio thread.
+    [[nodiscard]] std::optional<FilePresenceRefreshResult> refreshFilePresence(
+        std::size_t maxTracks = 512, std::int64_t afterTrackId = 0,
+        std::string* error = nullptr);
 
     [[nodiscard]] std::vector<TrackRecord> search(
         std::string_view query, std::size_t limit = 100, std::string* error = nullptr) const;

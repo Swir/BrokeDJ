@@ -250,7 +250,8 @@ if(BROKEDJ_BUILD_APP)
     endif()
 
     add_library(brokedj_library STATIC
-        src/app/LibraryDatabase.cpp)
+        src/app/LibraryDatabase.cpp
+        src/app/LibraryFilePresence.cpp)
     target_include_directories(brokedj_library PUBLIC src)
     target_link_libraries(brokedj_library PUBLIC brokedj_sqlite)
     if(MSVC)
@@ -329,6 +330,11 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_library_database_tests PRIVATE brokedj_library)
         add_test(NAME library_database COMMAND brokedj_library_database_tests)
         set_tests_properties(library_database PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_library_file_presence_tests tests/LibraryFilePresenceTests.cpp)
+        target_link_libraries(brokedj_library_file_presence_tests PRIVATE brokedj_library)
+        add_test(NAME library_file_presence COMMAND brokedj_library_file_presence_tests)
+        set_tests_properties(library_file_presence PROPERTIES TIMEOUT 60)
 
         add_executable(brokedj_library_runtime_store_tests tests/LibraryRuntimeStoreTests.cpp)
         target_link_libraries(brokedj_library_runtime_store_tests PRIVATE brokedj_library)

@@ -102,6 +102,8 @@ private:
         juce::PopupMenu menu;
         menu.addItem(1, uiText("Open local library", "Otwórz lokalną bibliotekę"),
                      databaseAvailable && !restoreInProgress && !maintenance);
+        menu.addItem(7, uiText("Refresh file status", "Odśwież status plików"),
+                     databaseAvailable && !restoreInProgress && !maintenance);
         menu.addSeparator();
         menu.addItem(2, uiText("Save session…", "Zapisz sesję…"),
                      !restoreInProgress && !sessionChooser && !maintenance);
@@ -125,6 +127,7 @@ private:
                 case 4: loadSession(true); break;
                 case 5: backupLibrary(); break;
                 case 6: restoreLibraryBackup(); break;
+                case 7: refreshLibraryFileStatus(); break;
                 default: break;
             }
         });
@@ -307,6 +310,91 @@ private:
                     });
                 });
             });
+    }
+
+    void refreshLibraryFileStatus() {
+        if (!databaseAvailable || !database.isOpen()
+            || databaseMaintenance.exchange(true, std::memory_order_acq_rel)) return;
+
+        queryGeneration.fetch_add(1, std::memory_order_acq_rel);
+        if (panel) {
+            panel->setBusy(true);
+            panel->setMessage(uiText("Refreshing local file status…",
+                                     "Odświeżanie statusu lokalnych plików…"));
+        }
+        owner.showWorkflowStatus(uiText("Refreshing library file status…",
+                                        "Odświeżanie statusu plików biblioteki…"));
+
+        const auto weak = std::weak_ptr<int>(lifetime);
+        writeWorkers.addJob([this, weak] {
+            if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
+            // Drain type-ahead reads so the maintenance snapshot cannot be
+            // interleaved with a stale search publication. Filesystem probes are
+            // paged and happen on this worker, never on the audio or message thread.
+            searchWorkers.removeAllJobs(true, -1);
+
+            constexpr std::size_t pageSize = 512;
+            std::size_t scanned = 0;
+            std::size_t changed = 0;
+            std::size_t missing = 0;
+            std::size_t unresolved = 0;
+            std::int64_t cursor = 0;
+            bool complete = false;
+            bool ok = true;
+            std::string error;
+
+            while (!complete && !cancelled.load(std::memory_order_acquire)) {
+                auto page = database.refreshFilePresence(pageSize, cursor, &error);
+                if (!page) {
+                    ok = false;
+                    break;
+                }
+                scanned += page->scanned;
+                changed += page->changed;
+                missing += page->missing;
+                unresolved += page->unresolved;
+                complete = page->complete;
+                if (page->scanned == 0) {
+                    complete = true;
+                    break;
+                }
+                if (page->nextAfterTrackId <= cursor) {
+                    ok = false;
+                    error = "File-presence refresh cursor did not advance";
+                    break;
+                }
+                cursor = page->nextAfterTrackId;
+            }
+
+            databaseMaintenance.store(false, std::memory_order_release);
+            if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
+            juce::MessageManager::callAsync(
+                [this, weak, ok, scanned, changed, missing, unresolved] {
+                    if (weak.expired() || cancelled.load(std::memory_order_acquire)) return;
+                    juce::String detail;
+                    if (ok) {
+                        detail = uiText("File status refreshed — scanned: ",
+                                        "Status plików odświeżony — sprawdzono: ")
+                            + juce::String(static_cast<juce::int64>(scanned))
+                            + uiText(", missing: ", ", brakujące: ")
+                            + juce::String(static_cast<juce::int64>(missing))
+                            + uiText(", changed: ", ", zmienione: ")
+                            + juce::String(static_cast<juce::int64>(changed));
+                        if (unresolved > 0)
+                            detail += uiText(", unresolved: ", ", nierozstrzygnięte: ")
+                                + juce::String(static_cast<juce::int64>(unresolved));
+                    } else {
+                        detail = uiText("File-status refresh failed; existing library records were kept.",
+                                        "Odświeżanie statusu plików nie powiodło się; istniejące rekordy biblioteki zachowano.");
+                    }
+                    owner.showWorkflowStatus(detail);
+                    if (panel) {
+                        panel->setBusy(false);
+                        panel->setMessage(detail);
+                        queueSearch(panel->query());
+                    }
+                });
+        });
     }
 
     void backupLibrary() {
