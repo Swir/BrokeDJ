@@ -35,8 +35,10 @@ public:
         : base(openAudio, enableKeyLockResearch), databaseFile(libraryDatabaseFile()) {
         addAndMakeVisible(base);
         monitorAudioDeviceChanges = openAudio;
-        if (monitorAudioDeviceChanges)
-            deviceRecovery.reset(broke::audioDeviceIsOpen(base.deviceManager.getCurrentAudioDevice()));
+        if (monitorAudioDeviceChanges) {
+            auto* device = base.deviceManager.getCurrentAudioDevice();
+            deviceRecovery.reset(broke::audioDeviceIsOpen(device), broke::audioDeviceIdentity(device));
+        }
 
         historyButton.setButtonText(text("HISTORY", "HISTORIA"));
         historyButton.setTooltip(text(
@@ -246,15 +248,20 @@ private:
 
     void serviceAudioDeviceRecovery() {
         if (!monitorAudioDeviceChanges) return;
+        auto* device = base.deviceManager.getCurrentAudioDevice();
         const auto event = deviceRecovery.update(
-            broke::audioDeviceIsOpen(base.deviceManager.getCurrentAudioDevice()));
+            broke::audioDeviceIsOpen(device), broke::audioDeviceIdentity(device));
         if (event.pausePlayback) {
             const auto state = base.captureSessionState();
             base.prepareForSessionRestore(state.mixer);
             previousPlaying.fill(false);
-            base.showWorkflowStatus(text(
-                "Audio device disconnected — playback paused. Select an audio device and press PLAY to resume.",
-                "Urządzenie audio odłączone — odtwarzanie wstrzymane. Wybierz urządzenie audio i naciśnij PLAY, aby wznowić."));
+            base.showWorkflowStatus(event.deviceChanged
+                ? text(
+                    "Audio device changed — playback paused. Verify routing and press PLAY to resume.",
+                    "Urządzenie audio zmieniono — odtwarzanie wstrzymane. Sprawdź routing i naciśnij PLAY, aby wznowić.")
+                : text(
+                    "Audio device disconnected — playback paused. Select an audio device and press PLAY to resume.",
+                    "Urządzenie audio odłączone — odtwarzanie wstrzymane. Wybierz urządzenie audio i naciśnij PLAY, aby wznowić."));
             return;
         }
         if (event.deviceRecovered) {
