@@ -23,23 +23,41 @@ The four milestone evidence files must already have been produced by their packa
 
 ## Generate the Beta qualification summary
 
-From PowerShell 7 in the staged BrokeDJ directory:
+Run the packaged script from either PowerShell 7 **or the built-in Windows PowerShell 5.1** in the staged BrokeDJ directory. The orchestrator launches each M1–M4 validator with the same PowerShell edition that launched the orchestrator, so a clean Windows 11 machine does not need PowerShell 7 solely for qualification.
+
+PowerShell 7:
 
 ```powershell
 pwsh -NoProfile -File .\BETA-QUALIFICATION.ps1
 ```
 
+Windows PowerShell 5.1:
+
+```powershell
+powershell.exe -NoProfile -File .\BETA-QUALIFICATION.ps1
+```
+
 On success this writes `BrokeDJ-Beta-Qualification.json`. The summary intentionally stores no device names, track names, local paths, recording paths, source music or microphone audio. It contains only source/application identity, pass/fail gate booleans and file names plus SHA-256 fingerprints.
 
-Generation refuses CI. Automated jobs may verify packaging and negative/refusal behavior, but they cannot mint human listening/hardware qualification.
+Generation refuses CI-style environments before it resolves, hashes or launches the supplied candidate/evidence files. Common truthy forms such as `true`, `1`, `yes` and `on` are rejected for both `GITHUB_ACTIONS` and `CI`. Automated jobs may verify packaging and refusal behavior, but they cannot mint human listening/hardware qualification.
+
+The output is transactional: BrokeDJ writes and fully validates a temporary JSON beside the requested destination, then replaces the destination only after validation succeeds. A failed generation therefore does not leave a partial new qualification file in place or destroy an older valid summary.
 
 ## Revalidate an existing summary
+
+PowerShell 7:
 
 ```powershell
 pwsh -NoProfile -File .\BETA-QUALIFICATION.ps1 -ValidateExisting
 ```
 
-Revalidation fails if the executable, source commit, device probe or any M1–M4 evidence file has changed, if any individual witness no longer validates, if the summary contains unexpected fields, or if its privacy contract is altered.
+Windows PowerShell 5.1:
+
+```powershell
+powershell.exe -NoProfile -File .\BETA-QUALIFICATION.ps1 -ValidateExisting
+```
+
+Revalidation fails if the executable, source commit, device probe or any M1–M4 evidence file has changed, if any individual witness no longer validates, if the summary contains unexpected fields, or if its privacy contract is altered. Validation is intentionally permitted in CI because it does not generate new human evidence.
 
 ## Beta publication gate
 
