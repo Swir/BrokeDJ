@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/m1_hardware_witness.ps1'
       - 'docs/M1_HARDWARE_WITNESS.md'
+      - 'docs/DEVELOPMENT_STATUS.md'
       - '.github/workflows/m1-witness-tool.yml'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -36,6 +37,27 @@ jobs:
             exit 1
           }
           Write-Host 'PowerShell parser: OK'
+
+      - name: Verify disposable playback fixture on both PowerShell hosts
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ M1 witness fixture executable' -NoNewline -Encoding ascii
+
+          & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "PowerShell 7 fixture self-test failed with exit code $LASTEXITCODE."
+          }
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\m1_hardware_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell 5.1 fixture self-test failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host 'Disposable M1 playback fixture generation/validation/cleanup: OK on PowerShell 7 and Windows PowerShell 5.1.'
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: Validate evidence integrity and negative cases
         shell: pwsh
@@ -116,12 +138,13 @@ jobs:
               if ($Variable -eq 'CI') { $env:CI = $Value }
               Remove-Item .\must-not-exist.json -ErrorAction SilentlyContinue
               $output = & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
-                -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+                -AppPath .\path-that-must-not-exist\BrokeDJ.exe `
+                -ProbePath .\BrokeDJ-device-probe.json `
                 -EvidencePath .\must-not-exist.json 2>&1
               $exitCode = $LASTEXITCODE
               if ($exitCode -eq 0) { throw "$Variable=$Value was allowed to generate M1 evidence." }
               if (($output | Out-String) -notmatch 'cannot be generated in CI') {
-                throw "$Variable=$Value did not fail at the CI guard. Output: $($output | Out-String)"
+                throw "$Variable=$Value did not fail at the CI guard before AppPath resolution. Output: $($output | Out-String)"
               }
               if (Test-Path .\must-not-exist.json) { throw "$Variable=$Value wrote an M1 evidence file." }
             } finally {
@@ -191,6 +214,6 @@ jobs:
           $noFourOutputEvidence.deviceProbe.fourOutputCandidateCount = 0
           Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output\BrokeDJ-device-probe.json'
 
-          Write-Host 'M1 evidence contract: complete fixture accepted; CI-generation, incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases rejected.'
+          Write-Host 'M1 evidence contract: complete fixture accepted; CI generation fails before AppPath resolution; incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases rejected.'
           $global:LASTEXITCODE = 0
           exit 0

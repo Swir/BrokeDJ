@@ -10,12 +10,22 @@ M1 still requires all of the following on a real Windows 11 x64 machine:
 
 - clean-machine launch of the staged/portable build;
 - resize/usability review at the supported window limits and normal HiDPI scaling;
-- local-file import and playback through a real output device;
+- import and playback through a real output device;
 - device switching and recovery without a crash or stale private cue route;
 - independent master 1/2 and cue 3/4 on hardware that genuinely exposes four output channels;
 - review of device/runtime errors or xruns when the backend reports them.
 
 CI compilation, no-audio GUI smoke, offline routing tests and the silent probe below are prerequisites only. They do not close M1.
+
+## Safety, privacy and the disposable playback fixture
+
+The witness prepares its own disposable synthetic playback file, so personal music is not required for the M1 import/playback step. The fixture is a quiet generated 440 Hz, 48 kHz stereo, 16-bit PCM WAV with short fades at both ends. The script **never starts playback**, opens a playback device on behalf of the tester, or changes hardware volume. Keep monitor/headphone volume conservative before pressing Play yourself.
+
+The fixture exists only for the current witness run and is removed when the script exits. Its local path is printed for operator guidance but is never written into accepted M1 evidence. The internal `-FixtureSelfTest` path creates, structurally validates and removes the WAV without resolving or launching `AppPath`; CI uses that path only to test the fixture contract, not to create human evidence.
+
+Evidence generation is rejected before resolving, hashing or launching `AppPath` when either `CI` or `GITHUB_ACTIONS` has a common truthy value (`1`, `true`, `yes`, `on`, case-insensitive). `-ValidateExisting` remains available in CI because it only checks an already-created record.
+
+A failed or interrupted new witness never deliberately replaces an earlier accepted evidence file. All manual checks must pass before a candidate is serialized. The candidate is written to a sibling temporary file, fully validated against the exact executable and probe fingerprints, then moved into the requested evidence path. Temporary candidates and the disposable playback fixture are cleaned up on exit.
 
 ## Recommended staged-artifact workflow
 
@@ -26,11 +36,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\M1-HARDWARE-WITNESS.ps1 -AppPath ".\BrokeDJ.exe"
 ```
 
-The recorder first runs BrokeDJ's **silent** `--device-probe` mode in the current directory. That mode does not call `AudioIODevice::open`, start an audio callback or play audio. The script then validates the probe's schema/safety invariants and requires at least one output device plus at least one descriptor that advertises four output channels before it will accept a complete M1 record.
+The recorder first runs BrokeDJ's **silent** `--device-probe` mode in the current directory. That mode does not call `AudioIODevice::open`, start an audio callback or play audio. The script validates the probe's schema/safety invariants and requires at least one output device plus at least one descriptor that advertises four output channels before it will proceed to the manual M1 checks.
 
-The recorder does **not** automate playback, device switching, cue routing or volume changes. It prompts the tester only after the silent probe has passed. Keep monitor/headphone volume low and perform each audible/manual step yourself.
+It then creates and validates the disposable playback fixture and prints its local path. The recorder does **not** automate playback, device switching, cue routing or volume changes. It prompts the tester only after the silent probe and fixture preflight have passed.
 
-It writes two local files:
+It writes or updates these local files:
 
 - `BrokeDJ-device-probe.json` — detailed local capability inventory; this can include backend/device names and should be treated as private until reviewed;
 - `BrokeDJ-M1-Hardware-Witness.json` — closed-schema witness data containing only Windows/app identity, probe filename/hash/counts, pass/fail booleans and explicit privacy flags.
@@ -45,7 +55,7 @@ Set-ExecutionPolicy -Scope Process Bypass
   -AppPath ".\build\windows\BrokeDJ_artefacts\Release\BrokeDJ.exe"
 ```
 
-A `no` answer is a real M1 blocker. Fix the product/hardware setup or repeat the witness after the issue is understood; do not edit failed checks into success.
+A `no` answer is a real M1 blocker. The script stops before publishing new evidence. Fix the product/hardware setup or repeat the witness after the issue is understood; do not edit failed checks into success.
 
 ## 1. Silent capability inventory
 
@@ -90,23 +100,23 @@ The recorder's `cleanLaunch` and `resizeAndHiDpi` answers must reflect what was 
 
 ## 3. Import and ordinary playback witness
 
-Use a local track that you have the right to test. Start with low hardware volume.
+Use the generated `BrokeDJ-M1-Playback-Fixture.wav` whose temporary path is printed by the witness. Start with low hardware volume.
 
-1. Load the file by the Load button, then repeat with drag-and-drop.
+1. Load the generated file by the Load button, then repeat with drag-and-drop.
 2. Confirm playback starts before background musical analysis is required to finish.
 3. Exercise play/pause, waveform seek and CUE 0.
 4. Exercise whole-track loop separately from reviewed-grid Beat Loop.
 5. If a reviewed grid is available, exercise Hot Cue, Beat Jump and one-shot MASTER/SYNC while confirming failed/out-of-range actions do not destabilize playback.
-6. Keep any codec/sample-rate/backend/buffer-size notes private unless explicitly reviewed for sharing.
+6. Keep any backend/buffer-size notes private unless explicitly reviewed for sharing.
 
-The recorder stores only the boolean `importAndPlayback` result, not source-file metadata.
+The generated WAV is only a controlled import/playback fixture. It does not replace representative-music BPM/key or key-lock listening evidence required by M2. The recorder stores only the boolean `importAndPlayback` result, not the temporary fixture path.
 
 ## 4. Device switching witness
 
 With monitor/headphone volume low:
 
 1. Open Audio settings and select the first intended output device.
-2. Start ordinary playback and verify expected master output.
+2. Start ordinary playback of the generated fixture and verify expected master output.
 3. Stop playback before changing a driver/backend when the device requires it.
 4. Switch to the second intended device and confirm BrokeDJ remains responsive and playback can be restarted.
 5. Switch back once and repeat a seek/play/pause sequence.
@@ -156,8 +166,8 @@ A useful **private** qualification package can retain:
 - BrokeDJ package manifest/checksums and `SOURCE-COMMIT.txt`;
 - private notes for display scale, backend/device identity, selected sample rate/buffer size and any runtime/xrun diagnostics actually exposed by the driver.
 
-Do not commit local music, private file paths, screenshots with personal information or an unreviewed detailed device probe. The small witness JSON is privacy-minimized, but the detailed probe can identify the local hardware setup.
+Do not commit private file paths, screenshots with personal information or an unreviewed detailed device probe. The small witness JSON is privacy-minimized, but the detailed probe can identify the local hardware setup. The generated playback fixture is disposable and is removed by the witness; it is not part of the evidence package.
 
 ## Pass rule
 
-M1 may be marked complete only after the repository's stated acceptance criteria are satisfied with real Windows 11 evidence. A successful silent probe, green Windows CI, a four-channel capability descriptor or a generated witness file alone is **not** sufficient. The actual launch/resize/import/device-switch/four-output-cue workflow must be performed and reviewed on real hardware.
+M1 may be marked complete only after the repository's stated acceptance criteria are satisfied with real Windows 11 evidence. A successful synthetic-fixture self-test, silent probe, green Windows CI, a four-channel capability descriptor or a generated witness file alone is **not** sufficient. The actual launch/resize/import/device-switch/four-output-cue workflow must be performed and reviewed on real hardware.
