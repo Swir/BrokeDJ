@@ -180,6 +180,54 @@ void run() {
         check(std::abs(f.engine.meter(0).position.load() - 0.5) < 0.0001f, "normalized seek works while paused");
     }
     {
+        Fixture f; f.load(0, 0.25f, 8 * 48000);
+        f.engine.crossfader = 0.0f;
+        f.engine.master = 1.0f;
+        f.engine.control(0).gain = 1.0f;
+        f.engine.control(0).headphone = true;
+        f.render(32);
+        const double beforeSwitch = f.engine.meter(0).position.load();
+        check(beforeSwitch > 0.25, "device-switch fixture advances before reprepare");
+
+        f.engine.prepare(44100);
+        check(f.engine.control(0).playing.load(), "device reprepare preserves play intent");
+        f.render();
+        const double afterSwitch = f.engine.meter(0).position.load();
+        check(afterSwitch > beforeSwitch, "device reprepare preserves and advances transport position");
+        check(afterSwitch - beforeSwitch < 0.03, "device reprepare does not rewind or jump transport");
+        check(std::all_of(f.audio[0].begin(), f.audio[0].end(), [](float sample) {
+            return std::isfinite(sample);
+        }), "device reprepare master output remains finite");
+        check(std::all_of(f.audio[2].begin(), f.audio[2].end(), [](float sample) {
+            return std::isfinite(sample);
+        }), "device reprepare cue output remains finite");
+    }
+    {
+        Fixture f; f.load(0, 0.25f, 6 * 48000);
+        f.engine.control(0).playing = false;
+        f.engine.control(0).seek = 0.50;
+        f.render();
+        f.engine.control(0).slip = true;
+        f.engine.control(0).reverse = true;
+        f.engine.control(0).playing = true;
+        f.render(8);
+        const double hiddenBeforeSwitch = f.engine.meter(0).position.load();
+        const double audibleBeforeSwitch = f.engine.meter(0).audiblePosition.load();
+        check(hiddenBeforeSwitch - audibleBeforeSwitch > 0.10,
+              "device-switch slip fixture starts with split cursors");
+
+        f.engine.prepare(96000);
+        f.render();
+        const double hiddenAfterSwitch = f.engine.meter(0).position.load();
+        const double audibleAfterSwitch = f.engine.meter(0).audiblePosition.load();
+        check(hiddenAfterSwitch > hiddenBeforeSwitch,
+              "device reprepare preserves forward hidden slip transport");
+        check(audibleAfterSwitch < audibleBeforeSwitch,
+              "device reprepare preserves reverse audible slip cursor");
+        check(hiddenAfterSwitch - audibleAfterSwitch > 0.10,
+              "device reprepare preserves split slip transport ownership");
+    }
+    {
         Fixture f; f.load(0, 0.25f, 6 * 48000);
         f.engine.control(0).playing = false;
         f.engine.control(0).seek = 0.60;

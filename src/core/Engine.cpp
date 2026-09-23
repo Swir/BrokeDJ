@@ -324,15 +324,27 @@ void Engine::prepare(double rate, int maxAudioBlockFrames) {
     for (auto& scratch : sourceScratch)
         for (auto& channel : scratch)
             channel.assign(static_cast<std::size_t>(maxBlockFrames), 0.0f);
-    for (auto& s : states) {
+    for (std::size_t deck = 0; deck < states.size(); ++deck) {
+        auto& s = states[deck];
+        // AudioAppComponent stops the callback before prepare() is called again
+        // for a device switch or sample-rate change. Keep the source-frame
+        // transport clocks across that stopped-audio boundary instead of
+        // rewinding loaded decks to zero. DSP histories and smoothers are still
+        // rebuilt for the new device configuration, so the first resumed block
+        // fades in from clean state without reusing stale filter/delay samples.
+        const double preservedCursor = std::isfinite(s.cursor) && s.cursor >= 0.0 ? s.cursor : 0.0;
+        const double preservedAudibleCursor = std::isfinite(s.audibleCursor) && s.audibleCursor >= 0.0
+            ? s.audibleCursor : preservedCursor;
+        const bool preservedReverse = controls[deck].reverse.load(std::memory_order_relaxed);
+        const bool preservedSlip = controls[deck].slip.load(std::memory_order_relaxed);
         for (auto& channel : s.delay) channel.assign(static_cast<std::size_t>(rate * 0.25), 0.0f);
         s.delayIndex = 0;
         s.bass.fill(0.0f);
         s.treble.fill(0.0f);
         s.lastProcessed.fill(0.0f);
         s.transitionFrom.fill(0.0f);
-        s.cursor = 0.0;
-        s.audibleCursor = 0.0;
+        s.cursor = preservedCursor;
+        s.audibleCursor = preservedAudibleCursor;
         s.trim = 1.0f;
         s.gain = 0.0f;
         s.rate = 1.0f;
@@ -341,8 +353,8 @@ void Engine::prepare(double rate, int maxAudioBlockFrames) {
         s.echo = s.drive = 0.0f;
         s.transitionRemaining = 0;
         s.wasPlaying = false;
-        s.wasReverse = false;
-        s.wasSlip = false;
+        s.wasReverse = preservedReverse;
+        s.wasSlip = preservedSlip;
         s.streamReady = true;
     }
 }
