@@ -27,8 +27,20 @@ function Read-YesNo([string]$Question) {
     }
 }
 
+function Test-TruthyEnvironmentValue([object]$Value) {
+    if ($null -eq $Value) { return $false }
+    switch (([string]$Value).Trim().ToLowerInvariant()) {
+        '1' { return $true }
+        'true' { return $true }
+        'yes' { return $true }
+        'on' { return $true }
+        default { return $false }
+    }
+}
+
 function Assert-NotCi {
-    if ($env:GITHUB_ACTIONS -eq 'true' -or $env:CI -eq 'true') {
+    if ((Test-TruthyEnvironmentValue $env:GITHUB_ACTIONS) -or
+        (Test-TruthyEnvironmentValue $env:CI)) {
         throw 'M4 witness evidence is human-controlled and cannot be generated in CI.'
     }
 }
@@ -242,14 +254,15 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
     Write-Step "Windows build: $windowsBuild"
 }
 
-$app = Resolve-App -Path $AppPath
-
 if ($ValidateExisting) {
+    $app = Resolve-App -Path $AppPath
     Validate-Evidence -Path $EvidencePath -ExpectedApp $app
     exit 0
 }
 
+# Reject unattended generation before resolving or launching the supplied app.
 Assert-NotCi
+$app = Resolve-App -Path $AppPath
 $windowsBuild = Assert-Windows11X64
 $appFingerprint = Get-AppFingerprint -App $app
 Invoke-GuiSmokePreflight -App $app
@@ -270,11 +283,16 @@ $checks.relocate = Read-YesNo 'Relocate reconnected a deliberately moved test co
 $checks.libraryBackupRestore = Read-YesNo 'Library backup succeeded; after a controlled metadata mutation, restore returned the prior library state?'
 $checks.sessionSaveLoad = Read-YesNo 'A four-deck/mixer session snapshot saved and loaded with restored controls while decks remained paused until explicit Play?'
 
+$failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
+if ($failedChecks.Count -gt 0) {
+    throw ('M4 witness failed; no evidence was written. Failed checks: ' + ($failedChecks -join ', '))
+}
+
 $evidence = [ordered]@{
     schema = 1
     project = 'BrokeDJ'
     scope = 'M4-library-workflow'
-    generatedUtc = [DateTime]::UtcNow.ToString('o')
+    generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
     environment = [ordered]@{
         windowsBuild = $windowsBuild
         architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
@@ -290,15 +308,24 @@ $evidence = [ordered]@{
 }
 
 $parent = Split-Path -Parent $EvidencePath
-if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+if ([string]::IsNullOrWhiteSpace($parent)) {
+    $parent = (Get-Location).Path
+} elseif (-not (Test-Path -LiteralPath $parent)) {
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
 }
-$evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $EvidencePath -Encoding utf8
-Write-Step "Evidence written to: $EvidencePath"
+$parent = (Resolve-Path -LiteralPath $parent).Path
+$finalEvidencePath = Join-Path $parent ([System.IO.Path]::GetFileName($EvidencePath))
+$temporaryEvidencePath = Join-Path $parent ('.BrokeDJ-M4-Witness-' + [Guid]::NewGuid().ToString('N') + '.tmp')
 
 try {
-    Validate-Evidence -Path $EvidencePath -ExpectedApp $app
+    $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $temporaryEvidencePath -Encoding utf8
+    Validate-Evidence -Path $temporaryEvidencePath -ExpectedApp $app
+    Move-Item -LiteralPath $temporaryEvidencePath -Destination $finalEvidencePath -Force
+    Validate-Evidence -Path $finalEvidencePath -ExpectedApp $app
+    Write-Step "Evidence written to: $finalEvidencePath"
 } catch {
     Write-Error $_
     exit 2
+} finally {
+    Remove-Item -LiteralPath $temporaryEvidencePath -Force -ErrorAction SilentlyContinue
 }

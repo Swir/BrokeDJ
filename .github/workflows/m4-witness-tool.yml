@@ -16,7 +16,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Parse PowerShell witness script
         shell: pwsh
@@ -38,16 +40,38 @@ jobs:
         shell: pwsh
         run: |
           Set-Content -LiteralPath .\BrokeDJ.exe -Value 'BrokeDJ witness fixture executable' -NoNewline -Encoding ascii
-          Remove-Item -LiteralPath .\ci-generated.json -Force -ErrorAction SilentlyContinue
-          & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
-            -AppPath .\BrokeDJ.exe -EvidencePath .\ci-generated.json 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            throw 'The M4 witness incorrectly allowed human evidence generation in CI.'
+
+          function Assert-CiRejected([string]$Variable, [string]$Value) {
+            Remove-Item Env:CI -ErrorAction SilentlyContinue
+            Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+            [Environment]::SetEnvironmentVariable($Variable, $Value, 'Process')
+            Remove-Item -LiteralPath .\ci-generated.json -Force -ErrorAction SilentlyContinue
+
+            $output = & pwsh -NoProfile -File .\scripts\m4_library_witness.ps1 `
+              -AppPath .\BrokeDJ.exe -EvidencePath .\ci-generated.json 2>&1
+            $exitCode = $LASTEXITCODE
+            $combined = ($output | Out-String)
+
+            if ($exitCode -eq 0) {
+              throw "The M4 witness incorrectly allowed generation for $Variable=$Value."
+            }
+            if ($combined -notmatch 'cannot be generated in CI') {
+              throw "The M4 witness failed for $Variable=$Value, but not at the CI generation guard."
+            }
+            if (Test-Path -LiteralPath .\ci-generated.json) {
+              throw "The M4 witness wrote evidence before rejecting $Variable=$Value."
+            }
           }
-          if (Test-Path -LiteralPath .\ci-generated.json) {
-            throw 'The M4 witness wrote evidence before rejecting CI generation.'
+
+          foreach ($variable in @('CI', 'GITHUB_ACTIONS')) {
+            foreach ($value in @('true', 'TRUE', '1', 'yes', 'ON')) {
+              Assert-CiRejected -Variable $variable -Value $value
+            }
           }
-          Write-Host 'CI generation guard: OK'
+
+          Remove-Item Env:CI -ErrorAction SilentlyContinue
+          Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+          Write-Host 'CI generation guard truthy matrix: OK'
           $global:LASTEXITCODE = 0
           exit 0
 
