@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include <JuceHeader.h>
 #include "LibraryDatabase.h"
+#include "M4FixtureQualification.h"
 #include "RecordingMainComponent.h"
 
 #include <array>
@@ -144,13 +145,16 @@ int runLibraryRecoverySmoke(bool restore) {
 }
 
 int runM4FixtureStateProbe() {
-    constexpr int reportSchemaVersion = 1;
+    constexpr int reportSchemaVersion = 2;
     const auto reportFile = juce::File::getCurrentWorkingDirectory()
                                 .getChildFile("BrokeDJ-m4-fixture-state.json");
 
     auto finish = [&](bool success, int exitCode, int databaseSchemaVersion,
+                      int verificationPasses,
+                      const broke::library::FilePresenceRefreshResult* initialRefresh,
                       const broke::library::FilePresenceRefreshResult* refresh,
                       const broke::library::ContentHashWorkflowSummary* workflow,
+                      bool workflowStable,
                       const juce::String& errorText = {}) {
         auto* root = new juce::DynamicObject();
         juce::var report(root);
@@ -160,6 +164,12 @@ int runM4FixtureStateProbe() {
         root->setProperty("opens_audio_device", false);
         root->setProperty("starts_audio_callback", false);
         root->setProperty("database_schema_version", databaseSchemaVersion);
+        root->setProperty("verification_passes", verificationPasses);
+        root->setProperty("initial_refresh_changed",
+                          initialRefresh != nullptr
+                              ? static_cast<juce::int64>(initialRefresh->changed)
+                              : static_cast<juce::int64>(0));
+        root->setProperty("workflow_stable", workflowStable);
 
         auto* refreshObject = new juce::DynamicObject();
         refreshObject->setProperty("scanned", refresh != nullptr ? static_cast<juce::int64>(refresh->scanned) : 0);
@@ -179,7 +189,7 @@ int runM4FixtureStateProbe() {
 
         root->setProperty("success", success);
         root->setProperty("qualification_note",
-                          "Local privacy-safe aggregate verification for the disposable M4 fixture only; no track path, title, artist, tag name, playlist name or history timestamp is serialized.");
+                          "Two-pass local privacy-safe verification for the disposable M4 fixture only; the confirmation pass must be settled and change-free, and no track path, title, artist, tag name, playlist name or history timestamp is serialized.");
         if (errorText.isNotEmpty()) root->setProperty("error", oneLine(errorText));
 
         if (!reportFile.replaceWithText(juce::JSON::toString(report, false) + "\n")) {
@@ -192,47 +202,63 @@ int runM4FixtureStateProbe() {
     const auto hashText = juce::SystemStats::getEnvironmentVariable("BROKEDJ_M4_FIXTURE_HASH", {}).trim();
     const auto contentHash = hashText.toStdString();
     if (contentHash.size() != 64) {
-        return finish(false, 30, 0, nullptr, nullptr,
+        return finish(false, 30, 0, 0, nullptr, nullptr, nullptr, false,
                       "BROKEDJ_M4_FIXTURE_HASH must contain one lowercase SHA-256 digest.");
     }
 
     broke::library::LibraryDatabase database;
     std::string error;
     if (!database.open(libraryDatabasePath(), &error)) {
-        return finish(false, 31, 0, nullptr, nullptr, juce::String::fromUTF8(error.c_str()));
+        return finish(false, 31, 0, 0, nullptr, nullptr, nullptr, false,
+                      juce::String::fromUTF8(error.c_str()));
     }
 
-    const auto refresh = database.refreshFilePresenceForContentHash(contentHash, 16, &error);
-    if (!refresh.has_value() || !error.empty()) {
-        return finish(false, 32, database.schemaVersion(),
-                      refresh ? &*refresh : nullptr, nullptr,
-                      error.empty() ? "Fixture-scoped file-presence refresh failed."
+    const auto initialRefresh = database.refreshFilePresenceForContentHash(contentHash, 16, &error);
+    if (!initialRefresh.has_value() || !error.empty()) {
+        return finish(false, 32, database.schemaVersion(), 1,
+                      initialRefresh ? &*initialRefresh : nullptr,
+                      initialRefresh ? &*initialRefresh : nullptr, nullptr, false,
+                      error.empty() ? "Initial fixture-scoped file-presence refresh failed."
+                                    : juce::String::fromUTF8(error.c_str()));
+    }
+
+    const auto initialWorkflow = database.contentHashWorkflowSummary(contentHash, &error);
+    if (!initialWorkflow.has_value() || !error.empty()) {
+        return finish(false, 33, database.schemaVersion(), 1, &*initialRefresh,
+                      &*initialRefresh, initialWorkflow ? &*initialWorkflow : nullptr, false,
+                      error.empty() ? "Initial fixture workflow summary failed."
+                                    : juce::String::fromUTF8(error.c_str()));
+    }
+
+    const auto confirmationRefresh =
+        database.refreshFilePresenceForContentHash(contentHash, 16, &error);
+    if (!confirmationRefresh.has_value() || !error.empty()) {
+        return finish(false, 35, database.schemaVersion(), 2, &*initialRefresh,
+                      confirmationRefresh ? &*confirmationRefresh : nullptr,
+                      &*initialWorkflow, false,
+                      error.empty() ? "Confirmation fixture-scoped file-presence refresh failed."
                                     : juce::String::fromUTF8(error.c_str()));
     }
 
     const auto workflow = database.contentHashWorkflowSummary(contentHash, &error);
     if (!workflow.has_value() || !error.empty()) {
-        return finish(false, 33, database.schemaVersion(), &*refresh,
-                      workflow ? &*workflow : nullptr,
-                      error.empty() ? "Fixture workflow summary failed."
+        return finish(false, 36, database.schemaVersion(), 2, &*initialRefresh,
+                      &*confirmationRefresh, workflow ? &*workflow : nullptr, false,
+                      error.empty() ? "Confirmation fixture workflow summary failed."
                                     : juce::String::fromUTF8(error.c_str()));
     }
 
-    const bool qualified = refresh->complete
-        && refresh->unresolved == 0
-        && refresh->missing == 0
-        && workflow->trackCount >= 2
-        && workflow->missingTrackCount == 0
-        && workflow->historyCount >= 1
-        && workflow->tagAssociationCount >= 1
-        && workflow->playlistMembershipCount >= 1;
+    const auto qualification = broke::library::qualification::evaluateM4FixtureQualification(
+        *initialRefresh, *initialWorkflow, *confirmationRefresh, *workflow);
 
-    if (!qualified) {
-        return finish(false, 34, database.schemaVersion(), &*refresh, &*workflow,
-                      "Disposable fixture workflow is incomplete: require >=2 connected duplicate rows, >=1 history/tag/playlist association, and zero missing/unresolved fixture rows.");
+    if (!qualification.qualified) {
+        return finish(false, 34, database.schemaVersion(), 2, &*initialRefresh,
+                      &*confirmationRefresh, &*workflow, qualification.workflowStable,
+                      "Disposable fixture workflow is not stable: require two complete passes, a change-free confirmation pass, >=2 connected duplicate rows, >=1 history/tag/playlist association, stable aggregate counts, and zero missing/unresolved fixture rows.");
     }
 
-    return finish(true, 0, database.schemaVersion(), &*refresh, &*workflow);
+    return finish(true, 0, database.schemaVersion(), 2, &*initialRefresh,
+                  &*confirmationRefresh, &*workflow, qualification.workflowStable);
 }
 
 int runDeviceProbe(bool ciSmoke) {
