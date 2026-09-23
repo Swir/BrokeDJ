@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Swir
 #include "LibraryDatabase.h"
+#include "LibraryPresenceAccounting.h"
 
 #include <sqlite3.h>
 
@@ -197,19 +198,12 @@ std::optional<FilePresenceRefreshResult> LibraryDatabase::refreshFilePresence(
             return std::nullopt;
         }
 
-        const int changes = sqlite3_changes(db);
-        if (changes == 1) {
-            ++result.changed;
-            continue;
-        }
-
-        // A zero-row conditional update means the track changed after the snapshot
-        // (for example a concurrent relocate or missing-flag mutation). Do not report
-        // the stale filesystem observation as settled: surface it as unresolved so a
-        // maintenance summary/witness can require another bounded refresh instead of
-        // silently claiming a complete reconciliation.
-        ++result.unresolved;
-        if (decision.missingNow && result.missing > 0) --result.missing;
+        const auto accounting = accountPresenceConditionalUpdate(
+            decision.missingNow, sqlite3_changes(db));
+        result.changed += accounting.changed;
+        result.unresolved += accounting.unresolved;
+        if (accounting.discardObservedMissing && result.missing > 0)
+            --result.missing;
     }
 
     if (!presenceExec(db, "COMMIT;", error)) {
