@@ -132,6 +132,9 @@ public:
     // Realtime entry point. No I/O, mutex, allocation, condition-variable notify
     // or unbounded retry. The writer polls the FIFO from its background thread.
     // A full FIFO drops the unavailable tail and records explicit evidence.
+    // Non-finite master samples are replaced with silence before they cross the
+    // PCM serialization boundary and are counted through the existing dropout
+    // evidence so a corrupted upstream block cannot be reported as a clean take.
     void capture(const float* masterLeft, const float* masterRight, int frames) noexcept {
         if (frames <= 0) return;
 
@@ -153,15 +156,24 @@ public:
         int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
         fifo.prepareToWrite(frames, start1, size1, start2, size2);
         const int accepted = size1 + size2;
-        if (size1 > 0) {
-            std::copy_n(masterLeft, size1, left.data() + start1);
-            std::copy_n(masterRight, size1, right.data() + start1);
-        }
-        if (size2 > 0) {
-            std::copy_n(masterLeft + size1, size2, left.data() + start2);
-            std::copy_n(masterRight + size1, size2, right.data() + start2);
-        }
+        std::uint64_t sanitizedFrames = 0;
+        const auto copySanitized = [&](int sourceOffset, int destinationOffset, int count) noexcept {
+            for (int i = 0; i < count; ++i) {
+                float l = masterLeft[sourceOffset + i];
+                float r = masterRight[sourceOffset + i];
+                const bool invalidLeft = !std::isfinite(l);
+                const bool invalidRight = !std::isfinite(r);
+                if (invalidLeft) l = 0.0f;
+                if (invalidRight) r = 0.0f;
+                if (invalidLeft || invalidRight) ++sanitizedFrames;
+                left[static_cast<std::size_t>(destinationOffset + i)] = l;
+                right[static_cast<std::size_t>(destinationOffset + i)] = r;
+            }
+        };
+        if (size1 > 0) copySanitized(0, start1, size1);
+        if (size2 > 0) copySanitized(size1, start2, size2);
         fifo.finishedWrite(accepted);
+        if (sanitizedFrames > 0) noteDrop(sanitizedFrames);
         if (accepted < frames) noteDrop(static_cast<std::uint64_t>(frames - accepted));
         activeCaptures.fetch_sub(1, std::memory_order_release);
     }
