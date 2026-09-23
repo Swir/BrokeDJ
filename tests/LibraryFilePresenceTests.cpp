@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "app/LibraryDatabase.h"
+#include "app/LibraryPresenceAccounting.h"
 
 #include <chrono>
 #include <filesystem>
@@ -54,6 +55,28 @@ broke::library::TrackRecord makeTrack(const std::filesystem::path& path,
     track.artist = "Presence Fixture";
     track.durationSeconds = 1.0;
     return track;
+}
+
+void testConditionalUpdateAccountingFailsClosed() {
+    const auto committedMissing = broke::library::accountPresenceConditionalUpdate(true, 1);
+    check(committedMissing.changed == 1 && committedMissing.unresolved == 0
+              && !committedMissing.discardObservedMissing,
+          "one-row guarded update is settled");
+
+    const auto racedMissing = broke::library::accountPresenceConditionalUpdate(true, 0);
+    check(racedMissing.changed == 0 && racedMissing.unresolved == 1
+              && racedMissing.discardObservedMissing,
+          "raced missing observation is unresolved and discarded from settled count");
+
+    const auto racedPresent = broke::library::accountPresenceConditionalUpdate(false, 0);
+    check(racedPresent.changed == 0 && racedPresent.unresolved == 1
+              && !racedPresent.discardObservedMissing,
+          "raced present observation is unresolved without missing correction");
+
+    const auto impossibleMultiRow = broke::library::accountPresenceConditionalUpdate(true, 2);
+    check(impossibleMultiRow.changed == 0 && impossibleMultiRow.unresolved == 1
+              && impossibleMultiRow.discardObservedMissing,
+          "unexpected guarded row count fails closed");
 }
 
 void testPagedPresenceRefreshAndMetadataRetention() {
@@ -213,6 +236,7 @@ void testInvalidCursorFailsClosed() {
 
 int main() {
     try {
+        testConditionalUpdateAccountingFailsClosed();
         testPagedPresenceRefreshAndMetadataRetention();
         testUnicodeAndNonRegularPathClassification();
         testPageSizeClampsWithoutUnboundedScan();
