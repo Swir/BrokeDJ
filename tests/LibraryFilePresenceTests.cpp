@@ -178,7 +178,9 @@ void testContentHashScopedWitnessVerification() {
 
     const auto primaryId = db.upsertTrack(makeTrack(primary, "Fixture Primary"), &error);
     const auto duplicateId = db.upsertTrack(makeTrack(duplicate, "Fixture Duplicate"), &error);
-    const auto unrelatedId = db.upsertTrack(makeTrack(unrelatedMissing, "Unrelated"), &error);
+    auto unrelated = makeTrack(unrelatedMissing, "Unrelated");
+    unrelated.artist = "Other Library Content";
+    const auto unrelatedId = db.upsertTrack(unrelated, &error);
     check(primaryId && duplicateId && unrelatedId, "insert content-hash witness fixtures");
 
     const auto fixtureRows = db.search("Fixture", 10, &error);
