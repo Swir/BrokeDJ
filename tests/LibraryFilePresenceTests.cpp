@@ -41,7 +41,9 @@ broke::library::TrackRecord makeTrack(const std::filesystem::path& path,
     broke::library::TrackRecord track;
     track.path = path.generic_string();
     track.fileSize = std::filesystem::exists(path)
-        ? static_cast<std::int64_t>(std::filesystem::file_size(path)) : 0;
+        ? static_cast<std::int64_t>(std::filesystem::is_regular_file(path)
+              ? std::filesystem::file_size(path) : 0)
+        : 0;
     track.modifiedNs = 1;
     track.title = std::move(title);
     track.artist = "Presence Fixture";
@@ -95,7 +97,8 @@ void testPagedPresenceRefreshAndMetadataRetention() {
     check(afterMove.has_value(), "refresh after source move succeeds");
     check(afterMove->scanned == 2 && afterMove->complete,
           "full refresh covers fixture library");
-    check(afterMove->changed == 1 && afterMove->missing == 2,
+    check(afterMove->changed == 1 && afterMove->missing == 2
+              && afterMove->unresolved == 0,
           "moved source becomes missing before relocate");
 
     missingRows = db.search(broke::library::LibraryDatabase::missingSearchDirective,
@@ -123,11 +126,71 @@ void testPagedPresenceRefreshAndMetadataRetention() {
     writeBytes(missing, "restored-content");
     auto restored = db.refreshFilePresence(64, 0, &error);
     check(restored.has_value(), "refresh after file return succeeds");
-    check(restored->changed == 1 && restored->missing == 0,
+    check(restored->changed == 1 && restored->missing == 0
+              && restored->unresolved == 0,
           "returned file clears stale missing flag");
     check(db.search(broke::library::LibraryDatabase::missingSearchDirective,
                     10, &error).empty(),
           "missing review becomes empty after files are available");
+}
+
+void testUnicodeAndNonRegularPathClassification() {
+    TempDirectory temp;
+    const auto unicodeFile = temp.path / std::filesystem::path(u8"muzyka-zażółć.wav");
+    const auto directoryPath = temp.path / "not-a-track.wav";
+    writeBytes(unicodeFile, "unicode-content");
+    std::filesystem::create_directories(directoryPath);
+
+    std::string error;
+    broke::library::LibraryDatabase db;
+    check(db.open(temp.path / "unicode.sqlite3", &error), "open unicode library");
+
+    const auto unicodeId = db.upsertTrack(makeTrack(unicodeFile, "Unicode"), &error);
+    const auto directoryId = db.upsertTrack(makeTrack(directoryPath, "Directory"), &error);
+    check(unicodeId && directoryId, "insert unicode/directory fixtures");
+
+    auto first = db.refreshFilePresence(64, 0, &error);
+    check(first.has_value(), "unicode/directory refresh succeeds");
+    check(first->scanned == 2 && first->complete, "unicode/directory refresh is complete");
+    check(first->changed == 1 && first->missing == 1 && first->unresolved == 0,
+          "unicode regular file stays present while directory is marked missing");
+
+    const auto missingRows = db.search(broke::library::LibraryDatabase::missingSearchDirective,
+                                       10, &error);
+    check(missingRows.size() == 1 && missingRows.front().id == *directoryId,
+          "non-regular library path is reviewable as missing");
+
+    std::filesystem::remove_all(directoryPath);
+    writeBytes(directoryPath, "now-regular-content");
+    auto repaired = db.refreshFilePresence(64, 0, &error);
+    check(repaired.has_value(), "refresh after directory replacement succeeds");
+    check(repaired->changed == 1 && repaired->missing == 0 && repaired->unresolved == 0,
+          "regular replacement clears non-regular missing state");
+
+    const auto unicodeRows = db.search("Unicode", 10, &error);
+    check(unicodeRows.size() == 1 && unicodeRows.front().id == *unicodeId,
+          "unicode path remains searchable after reconciliation");
+}
+
+void testPageSizeClampsWithoutUnboundedScan() {
+    TempDirectory temp;
+    writeBytes(temp.path / "one.wav", "one");
+    writeBytes(temp.path / "two.wav", "two");
+
+    std::string error;
+    broke::library::LibraryDatabase db;
+    check(db.open(temp.path / "clamp.sqlite3", &error), "open clamp library");
+    check(db.upsertTrack(makeTrack(temp.path / "one.wav", "One"), &error).has_value(),
+          "insert first clamp fixture");
+    check(db.upsertTrack(makeTrack(temp.path / "two.wav", "Two"), &error).has_value(),
+          "insert second clamp fixture");
+
+    const auto page = db.refreshFilePresence(0, 0, &error);
+    check(page.has_value(), "zero page request clamps to bounded minimum");
+    check(page->scanned == 1 && !page->complete && page->nextAfterTrackId > 0,
+          "zero page request does not turn into an unbounded scan");
+    check(page->changed == 0 && page->missing == 0 && page->unresolved == 0,
+          "clamped page preserves valid present state");
 }
 
 void testInvalidCursorFailsClosed() {
@@ -146,6 +209,8 @@ void testInvalidCursorFailsClosed() {
 int main() {
     try {
         testPagedPresenceRefreshAndMetadataRetention();
+        testUnicodeAndNonRegularPathClassification();
+        testPageSizeClampsWithoutUnboundedScan();
         testInvalidCursorFailsClosed();
         std::cout << "Library file-presence tests passed\n";
         return 0;
