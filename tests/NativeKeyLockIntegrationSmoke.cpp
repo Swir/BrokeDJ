@@ -158,6 +158,25 @@ void renderBlocks(MainComponent& component, int blockCount) {
     }
 }
 
+double renderPeak(MainComponent& component, int blockCount = 8) {
+    juce::AudioBuffer<float> output(2, blockFrames);
+    juce::AudioSourceChannelInfo info(&output, 0, blockFrames);
+    double peak = 0.0;
+    for (int block = 0; block < blockCount; ++block) {
+        output.clear();
+        component.getNextAudioBlock(info);
+        for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+            const auto* samples = output.getReadPointer(channel);
+            for (int frame = 0; frame < blockFrames; ++frame) {
+                const double value = static_cast<double>(samples[frame]);
+                check(std::isfinite(value), "native replacement silence render stays finite");
+                peak = std::max(peak, std::abs(value));
+            }
+        }
+    }
+    return peak;
+}
+
 struct FrequencyMeasurement final {
     double frequencyHz = 0.0;
     double rms = 0.0;
@@ -396,11 +415,11 @@ void runNativeKeyLockIntegrationSmoke() {
     check(seekRestaged.frequencyHz > 425.0 && seekRestaged.frequencyHz < 455.0,
           "paused native restage restores key lock after live waveform seek");
 
-    // Replacing a loaded clip while transport is running is a separate immutable
-    // ownership discontinuity from seek/rate/loop edits. Decode the second tone
-    // off-thread, publish it through the normal load path and prove that the old
-    // key-lock snapshot cannot bleed into the new clip. Production fallback must
-    // play the new 330 Hz source at the current 1.10x rate (~363 Hz) until pause.
+    // Replacing a loaded clip while transport is running is a stronger source
+    // ownership discontinuity than seek/rate/loop edits. Production Engine
+    // deliberately stops at the adoption boundary. The native path must preserve
+    // that fail-closed contract, emit no stale old-track audio, and bind key lock
+    // to the new 330 Hz clip only after an explicit PLAY.
     check(component.loadFileIntoDeck(0, replacement),
           "native replacement fixture import accepted while playing");
     check(pumpUntil([&] { return !component.sessionDeckLoading(0); }, 10000),
@@ -410,24 +429,22 @@ void runNativeKeyLockIntegrationSmoke() {
     renderBlocks(component, 3);
     check(component.sessionDeckDuration(0) > 7.9,
           "native replacement clip crossed Engine adoption boundary");
-    check(component.captureSessionState().decks[0].wasPlaying,
-          "native clip replacement preserves ordinary playback intent");
-    const auto replacementFallback = renderFrequency(component);
-    check(replacementFallback.frequencyHz > 348.0 && replacementFallback.frequencyHz < 378.0,
-          "live clip replacement falls back to the new source through production playback");
-    check(std::abs(replacementFallback.frequencyHz - seekRestaged.frequencyHz) > 60.0,
-          "replacement fallback cannot be stale audio from the previous key-lock snapshot");
+    check(!component.captureSessionState().decks[0].wasPlaying,
+          "native clip replacement stops playback at source-identity boundary");
+    const double replacementStoppedPeak = renderPeak(component);
+    check(replacementStoppedPeak < 1.0e-7,
+          "native clip replacement emits no stale audio before explicit PLAY");
 
     clickPlay(*play);
-    check(!component.captureSessionState().decks[0].wasPlaying,
-          "native deck paused before replacement key-lock restage");
-    renderBlocks(component, 2);
-    clickPlay(*play);
+    check(component.captureSessionState().decks[0].wasPlaying,
+          "explicit PLAY resumes native deck after clip replacement");
     const auto replacementRestaged = renderFrequency(component);
     check(replacementRestaged.frequencyHz > 315.0 && replacementRestaged.frequencyHz < 345.0,
-          "paused native restage binds key lock to the replacement clip");
+          "explicit PLAY binds key lock to the replacement clip");
     check(std::abs(replacementRestaged.frequencyHz - replacementFrequency) < 15.0,
           "replacement key-lock pitch remains near the new source frequency");
+    check(std::abs(replacementRestaged.frequencyHz - seekRestaged.frequencyHz) > 60.0,
+          "replacement playback cannot be stale audio from the previous key-lock snapshot");
 
     std::cout << std::fixed << std::setprecision(2)
               << "METRIC native_keylock_locked_hz=" << locked.frequencyHz << '\n'
@@ -438,7 +455,7 @@ void runNativeKeyLockIntegrationSmoke() {
               << "METRIC native_keylock_cue_restaged_hz=" << cueRestaged.frequencyHz << '\n'
               << "METRIC native_keylock_seek_fallback_hz=" << seekFallback.frequencyHz << '\n'
               << "METRIC native_keylock_seek_restaged_hz=" << seekRestaged.frequencyHz << '\n'
-              << "METRIC native_keylock_replacement_fallback_hz=" << replacementFallback.frequencyHz << '\n'
+              << "METRIC native_keylock_replacement_stopped_peak=" << replacementStoppedPeak << '\n'
               << "METRIC native_keylock_replacement_restaged_hz=" << replacementRestaged.frequencyHz << '\n'
               << "METRIC native_keylock_locked_rms=" << locked.rms << '\n'
               << "METRIC native_keylock_live_fallback_rms=" << fallback.rms << '\n'
@@ -448,7 +465,6 @@ void runNativeKeyLockIntegrationSmoke() {
               << "METRIC native_keylock_cue_restaged_rms=" << cueRestaged.rms << '\n'
               << "METRIC native_keylock_seek_fallback_rms=" << seekFallback.rms << '\n'
               << "METRIC native_keylock_seek_restaged_rms=" << seekRestaged.rms << '\n'
-              << "METRIC native_keylock_replacement_fallback_rms=" << replacementFallback.rms << '\n'
               << "METRIC native_keylock_replacement_restaged_rms=" << replacementRestaged.rms << '\n';
 
     component.releaseResources();
