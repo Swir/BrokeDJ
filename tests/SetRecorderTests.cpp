@@ -4,14 +4,45 @@
 #include "core/MasterPathProcessor.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <vector>
+
+namespace heap_probe {
+thread_local bool trackCallerHeap = false;
+std::atomic<std::size_t> allocations{0};
+std::atomic<std::size_t> deallocations{0};
+
+void* allocate(std::size_t size) {
+    if (trackCallerHeap) allocations.fetch_add(1, std::memory_order_relaxed);
+    if (void* pointer = std::malloc(size == 0 ? 1 : size)) return pointer;
+    throw std::bad_alloc();
+}
+
+void release(void* pointer) noexcept {
+    if (pointer != nullptr && trackCallerHeap)
+        deallocations.fetch_add(1, std::memory_order_relaxed);
+    std::free(pointer);
+}
+} // namespace heap_probe
+
+void* operator new(std::size_t size) { return heap_probe::allocate(size); }
+void* operator new[](std::size_t size) { return heap_probe::allocate(size); }
+void operator delete(void* pointer) noexcept { heap_probe::release(pointer); }
+void operator delete[](void* pointer) noexcept { heap_probe::release(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { heap_probe::release(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { heap_probe::release(pointer); }
 
 namespace {
 [[noreturn]] void fail(const char* message) {
+    heap_probe::trackCallerHeap = false;
     std::cerr << "SetRecorderTests: " << message << '\n';
     std::exit(1);
 }
@@ -42,6 +73,30 @@ void verifyWav(const juce::File& file, double expectedRate, std::int64_t expecte
     for (int channel = 0; channel < 2; ++channel)
         for (int frame = 0; frame < inspect; ++frame)
             require(std::isfinite(buffer.getSample(channel, frame)), "recorded WAV contains non-finite samples");
+}
+
+void verifySanitizedPcm(const juce::File& file, float expectedLeft, float expectedRight) {
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    require(reader != nullptr, "sanitized WAV could not be opened");
+    juce::AudioBuffer<float> buffer(2, 64);
+    require(reader->read(&buffer, 0, 64, 0, true, true), "sanitized WAV fixture could not be read");
+    require(std::abs(buffer.getSample(0, 3)) < 1.0e-7f,
+            "NaN left sample was not serialized as exact silence");
+    require(std::abs(buffer.getSample(1, 17)) < 1.0e-7f,
+            "Inf right sample was not serialized as exact silence");
+    require(std::abs(buffer.getSample(0, 4) - expectedLeft) < 1.0e-4f,
+            "sanitation changed an adjacent valid left sample");
+    require(std::abs(buffer.getSample(1, 18) - expectedRight) < 1.0e-4f,
+            "sanitation changed an adjacent valid right sample");
+}
+
+void requireReasonTotalsConsistent(const SetRecorder::Snapshot& state) {
+    require(state.droppedFrames == state.sanitizedFrames + state.omittedFrames,
+            "aggregate affected-frame telemetry does not equal reason-specific totals");
+    require(state.dropoutEvents == state.sanitizationEvents + state.omissionEvents,
+            "aggregate recording event telemetry does not equal reason-specific totals");
 }
 
 void testMasterPathTransparentBelowCeiling() {
@@ -221,11 +276,46 @@ void testCleanFinalize() {
     require(!state.recording, "recorder remained armed after stop");
     require(state.finalized, "clean recording did not finalize");
     require(state.dropoutEvents == 0 && state.droppedFrames == 0, "clean recording reported a false dropout");
+    require(state.sanitizedFrames == 0 && state.sanitizationEvents == 0,
+            "clean recording reported false sanitation evidence");
+    require(state.omittedFrames == 0 && state.omissionEvents == 0,
+            "clean recording reported false omission evidence");
+    requireReasonTotalsConsistent(state);
     require(state.writtenFrames == frames, "clean recording did not write every frame");
     require(state.destination.existsAsFile(), "clean recording final file missing");
     require(!state.recoveryFile.existsAsFile(), "clean recording left a .part recovery file");
     verifyWav(state.destination, rate, static_cast<std::int64_t>(state.writtenFrames));
     require(dir.deleteRecursively(), "could not remove clean recording fixture");
+}
+
+void testNonFiniteCaptureIsSanitizedAndReported() {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 512;
+    auto dir = freshDirectory("nonfinite");
+    const auto requested = dir.getChildFile("nonfinite.wav");
+    std::vector<float> left(frames, 0.15f), right(frames, -0.15f);
+    left[3] = std::numeric_limits<float>::quiet_NaN();
+    right[17] = std::numeric_limits<float>::infinity();
+
+    SetRecorder recorder(4096);
+    require(recorder.start(requested, rate), "non-finite recording failed to start");
+    recorder.capture(left.data(), right.data(), frames);
+    recorder.stop();
+    const auto state = recorder.snapshot();
+    require(state.finalized, "sanitized non-finite recording did not finalize");
+    require(state.writtenFrames == frames, "sanitized recording changed timeline length");
+    require(state.dropoutEvents == 1,
+            "non-finite source block did not surface one aggregate recording event");
+    require(state.droppedFrames == 2,
+            "non-finite source frames were not counted as affected recording frames");
+    require(state.sanitizationEvents == 1 && state.sanitizedFrames == 2,
+            "non-finite source frames were not isolated in sanitation telemetry");
+    require(state.omissionEvents == 0 && state.omittedFrames == 0,
+            "timeline-preserving sanitation was incorrectly counted as an omission");
+    requireReasonTotalsConsistent(state);
+    verifyWav(state.destination, rate, frames);
+    verifySanitizedPcm(state.destination, 0.15f, -0.15f);
+    require(dir.deleteRecursively(), "could not remove non-finite recording fixture");
 }
 
 void testOverflowIsMeasuredNotBlocking() {
@@ -239,16 +329,101 @@ void testOverflowIsMeasuredNotBlocking() {
     require(recorder.start(requested, rate), "overflow recording failed to start");
     // One callback-sized submission is deliberately larger than the entire FIFO.
     // prepareToWrite can therefore accept at most 4096 frames regardless of writer
-    // scheduling, making dropout evidence deterministic without sleeping.
+    // scheduling, making omission evidence deterministic without sleeping.
     recorder.capture(left.data(), right.data(), frames);
     recorder.stop();
     const auto state = recorder.snapshot();
     require(state.finalized, "overflow fixture did not preserve a valid finalized WAV");
-    require(state.dropoutEvents >= 1, "overflow was not counted as a dropout event");
-    require(state.droppedFrames >= 4096, "overflow did not account for the unavailable FIFO tail");
-    require(state.writtenFrames > 0 && state.writtenFrames <= 4096, "overflow wrote an impossible frame count");
+    require(state.dropoutEvents == 1, "overflow was not counted as one aggregate recording event");
+    require(state.droppedFrames == 4096, "overflow did not account for the unavailable FIFO tail");
+    require(state.omissionEvents == 1 && state.omittedFrames == 4096,
+            "FIFO overflow was not isolated in omission telemetry");
+    require(state.sanitizationEvents == 0 && state.sanitizedFrames == 0,
+            "clean overflow fixture reported false sanitation evidence");
+    requireReasonTotalsConsistent(state);
+    require(state.writtenFrames == 4096, "overflow did not preserve the full FIFO-resident prefix");
     verifyWav(state.destination, rate, static_cast<std::int64_t>(state.writtenFrames));
     require(dir.deleteRecursively(), "could not remove overflow recording fixture");
+}
+
+void testSanitizationAndOverflowRemainDistinguishable() {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 8192;
+    auto dir = freshDirectory("mixed-integrity");
+    const auto requested = dir.getChildFile("mixed.wav");
+    std::vector<float> left(frames, 0.2f), right(frames, -0.2f);
+    left[3] = std::numeric_limits<float>::quiet_NaN();
+    right[17] = -std::numeric_limits<float>::infinity();
+
+    SetRecorder recorder(4096);
+    require(recorder.start(requested, rate), "mixed integrity recording failed to start");
+    recorder.capture(left.data(), right.data(), frames);
+    recorder.stop();
+    const auto state = recorder.snapshot();
+    require(state.finalized, "mixed integrity fixture did not finalize");
+    require(state.writtenFrames == 4096, "mixed integrity fixture wrote an impossible prefix length");
+    require(state.sanitizationEvents == 1 && state.sanitizedFrames == 2,
+            "mixed fixture lost sanitation reason evidence");
+    require(state.omissionEvents == 1 && state.omittedFrames == 4096,
+            "mixed fixture lost FIFO omission reason evidence");
+    require(state.dropoutEvents == 2 && state.droppedFrames == 4098,
+            "mixed fixture aggregate telemetry does not cover both failure classes");
+    requireReasonTotalsConsistent(state);
+    verifyWav(state.destination, rate, static_cast<std::int64_t>(state.writtenFrames));
+    verifySanitizedPcm(state.destination, 0.2f, -0.2f);
+    require(dir.deleteRecursively(), "could not remove mixed integrity recording fixture");
+}
+
+void testCaptureCallbackUsesNoCallerHeap() {
+    constexpr double rate = 48000.0;
+    constexpr int blockFrames = 256;
+    constexpr int blocks = 64;
+    auto dir = freshDirectory("callback-heap");
+    const auto requested = dir.getChildFile("heap.wav");
+    std::array<float, blockFrames> left{};
+    std::array<float, blockFrames> right{};
+    for (int frame = 0; frame < blockFrames; ++frame) {
+        left[static_cast<std::size_t>(frame)] = 0.10f;
+        right[static_cast<std::size_t>(frame)] = -0.10f;
+    }
+
+    SetRecorder recorder(65536);
+    require(recorder.start(requested, rate), "callback heap fixture failed to start");
+    for (int warmup = 0; warmup < 8; ++warmup)
+        recorder.capture(left.data(), right.data(), blockFrames);
+
+    heap_probe::allocations.store(0, std::memory_order_relaxed);
+    heap_probe::deallocations.store(0, std::memory_order_relaxed);
+    const auto started = std::chrono::steady_clock::now();
+    heap_probe::trackCallerHeap = true;
+    for (int block = 0; block < blocks; ++block)
+        recorder.capture(left.data(), right.data(), blockFrames);
+    heap_probe::trackCallerHeap = false;
+    const auto finished = std::chrono::steady_clock::now();
+
+    const auto measuredAllocations = heap_probe::allocations.load(std::memory_order_relaxed);
+    const auto measuredDeallocations = heap_probe::deallocations.load(std::memory_order_relaxed);
+    recorder.stop();
+    const auto state = recorder.snapshot();
+    require(measuredAllocations == 0, "SetRecorder::capture allocated on the caller/audio thread");
+    require(measuredDeallocations == 0, "SetRecorder::capture deallocated on the caller/audio thread");
+    require(state.dropoutEvents == 0 && state.droppedFrames == 0,
+            "heap-contract fixture unexpectedly overflowed or sanitized input");
+    requireReasonTotalsConsistent(state);
+    require(state.finalized, "callback heap fixture did not finalize");
+
+    const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count();
+    const double nsPerFrame = static_cast<double>(elapsedNs)
+        / static_cast<double>(blocks * blockFrames);
+    require(elapsedNs > 0 && std::isfinite(nsPerFrame) && nsPerFrame > 0.0,
+            "capture timing diagnostic is invalid");
+    std::cout << "METRIC set_recorder_capture_blocks=" << blocks
+              << " frames_per_block=" << blockFrames
+              << " ns_per_frame=" << nsPerFrame
+              << " caller_heap_allocations=" << measuredAllocations
+              << " caller_heap_deallocations=" << measuredDeallocations
+              << " timing_is_diagnostic_only=1\n";
+    require(dir.deleteRecursively(), "could not remove callback heap fixture");
 }
 
 void testLateDestinationIsNeverOverwritten() {
@@ -292,7 +467,10 @@ int main() {
     testBoothRoutingUsesProtectedMasterAndIndependentLevel();
     testBoothDisabledClearsDedicatedOutputs();
     testCleanFinalize();
+    testNonFiniteCaptureIsSanitizedAndReported();
     testOverflowIsMeasuredNotBlocking();
+    testSanitizationAndOverflowRemainDistinguishable();
+    testCaptureCallbackUsesNoCallerHeap();
     testLateDestinationIsNeverOverwritten();
     testInvalidStartFailsClosed();
     std::cout << "SetRecorderTests passed\n";
