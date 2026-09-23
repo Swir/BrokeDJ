@@ -28,6 +28,11 @@ struct TempDirectory final {
     }
 };
 
+std::string pathUtf8(const std::filesystem::path& path) {
+    const auto value = path.generic_u8string();
+    return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+}
+
 void writeBytes(const std::filesystem::path& path, std::string_view bytes) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -39,7 +44,7 @@ void writeBytes(const std::filesystem::path& path, std::string_view bytes) {
 broke::library::TrackRecord makeTrack(const std::filesystem::path& path,
                                       std::string title) {
     broke::library::TrackRecord track;
-    track.path = path.generic_string();
+    track.path = pathUtf8(path);
     track.fileSize = std::filesystem::exists(path)
         ? static_cast<std::int64_t>(std::filesystem::is_regular_file(path)
               ? std::filesystem::file_size(path) : 0)
