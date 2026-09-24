@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Create and verify the BrokeDJ staged Windows development-artifact contract.
+"""Create and verify BrokeDJ Windows development and portable-artifact contracts.
 
-The contract is deterministic: it records only source/version identity and sorted
-file metadata. It does not record timestamps, machine names or local paths.
-The create step also emits a deterministic portable ZIP plus a SHA-256 sidecar;
-those outer files are derived from, but are not members of, the staged manifest.
+The development contract is deterministic and records only source/version identity
+plus sorted file metadata. The portable Beta Preview is a deterministic runtime
+subset rooted at ``BrokeDJ/``; source archives and development verifier metadata
+remain in the outer development artifact instead of being copied into the user
+portable ZIP.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ PORTABLE_SUM_NAME = f"{PORTABLE_ZIP_NAME}.sha256"
 PORTABLE_FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 PORTABLE_MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
 PORTABLE_FILE_MODE = (stat.S_IFREG | 0o644) << 16
+PORTABLE_STAGE_PREFIX = "BrokeDJ/"
 
 REQUIRED_PATHS = (
     "BrokeDJ/BrokeDJ.exe",
@@ -48,6 +50,14 @@ REQUIRED_PATHS = (
     "VERIFY-PACKAGE.py",
 )
 
+PORTABLE_REQUIRED_PATHS = tuple(path for path in REQUIRED_PATHS if path.startswith(PORTABLE_STAGE_PREFIX))
+PORTABLE_FORBIDDEN_ROOT_FILES = {
+    "BrokeDJ-source.zip",
+    MANIFEST_NAME,
+    SUMS_NAME,
+    "VERIFY-PACKAGE.py",
+}
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(
     r"project\s*\(\s*BrokeDJ\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)",
@@ -56,7 +66,7 @@ VERSION_RE = re.compile(
 
 
 class ContractError(RuntimeError):
-    """Raised when the staged artifact violates the package contract."""
+    """Raised when a staged or portable artifact violates its contract."""
 
 
 def _sha256(path: Path) -> str:
@@ -112,7 +122,7 @@ def _read_project_version(cmake_file: Path) -> str:
 def _validate_commit(commit: str) -> str:
     value = commit.strip().lower()
     if SHA_RE.fullmatch(value) is None:
-        raise ContractError("source commit must be a full 40-character lowercase/uppercase hexadecimal SHA")
+        raise ContractError("source commit must be a full 40-character hexadecimal SHA")
     return value
 
 
@@ -120,17 +130,15 @@ def _required_missing(paths: set[str]) -> list[str]:
     return sorted(path for path in REQUIRED_PATHS if path not in paths)
 
 
+def _portable_required_missing(paths: set[str]) -> list[str]:
+    return sorted(path for path in PORTABLE_REQUIRED_PATHS if path not in paths)
+
+
 def _entries(root: Path) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for path in _payload_files(root):
         rel = _relative(root, path)
-        result.append(
-            {
-                "path": rel,
-                "bytes": path.stat().st_size,
-                "sha256": _sha256(path),
-            }
-        )
+        result.append({"path": rel, "bytes": path.stat().st_size, "sha256": _sha256(path)})
     return result
 
 
@@ -143,13 +151,24 @@ def _portable_root(version: str) -> str:
 
 
 def _portable_members(root: Path) -> list[Path]:
-    files = _payload_files(root)
-    for derived in (MANIFEST_NAME, SUMS_NAME):
-        path = root / derived
-        if not path.is_file():
-            raise ContractError(f"cannot create portable archive before {derived} exists")
-        files.append(path)
+    """Return only the staged BrokeDJ runtime tree for the consumer ZIP."""
+    files = [
+        path
+        for path in _payload_files(root)
+        if _relative(root, path).startswith(PORTABLE_STAGE_PREFIX)
+    ]
+    rels = {_relative(root, path) for path in files}
+    missing = _portable_required_missing(rels)
+    if missing:
+        raise ContractError("portable runtime subset is missing required staged files: " + ", ".join(missing))
     return sorted(files, key=lambda item: _relative(root, item))
+
+
+def _portable_identity(root: Path) -> dict[str, tuple[int, str]]:
+    return {
+        _relative(root, path): (path.stat().st_size, _sha256(path))
+        for path in _portable_members(root)
+    }
 
 
 def _write_portable_archive(root: Path, version: str) -> None:
@@ -183,6 +202,79 @@ def _validate_portable_member(name: str, prefix: str) -> PurePosixPath:
     return path
 
 
+def _verify_extracted_portable_payload(
+    staged_root: Path,
+    extracted_root: Path,
+    *,
+    version: str,
+) -> None:
+    staged_root = staged_root.resolve()
+    extracted_root = extracted_root.resolve()
+    expected_name = _portable_root(version)
+    if extracted_root.name != expected_name:
+        raise ContractError(
+            f"extracted portable root must be named {expected_name}, got {extracted_root.name}"
+        )
+    if not extracted_root.is_dir():
+        raise ContractError(f"extracted portable root does not exist: {extracted_root}")
+
+    expected_identity = _portable_identity(staged_root)
+    expected_paths = set(expected_identity)
+    actual_paths: set[str] = set()
+    total_bytes = 0
+
+    for path in extracted_root.rglob("*"):
+        if path.is_symlink():
+            raise ContractError(
+                f"extracted portable contains a symbolic link: {_relative(extracted_root, path)}"
+            )
+        if not path.is_file():
+            continue
+        rel = _relative(extracted_root, path)
+        if rel in PORTABLE_FORBIDDEN_ROOT_FILES:
+            raise ContractError(f"development-only file leaked into portable root: {rel}")
+        actual_paths.add(rel)
+        total_bytes += path.stat().st_size
+        if total_bytes > PORTABLE_MAX_UNCOMPRESSED_BYTES:
+            raise ContractError("extracted portable exceeds the bounded uncompressed-size limit")
+
+    missing = sorted(expected_paths - actual_paths)
+    extras = sorted(actual_paths - expected_paths)
+    if missing or extras:
+        pieces: list[str] = []
+        if missing:
+            pieces.append("missing=" + ", ".join(missing))
+        if extras:
+            pieces.append("extra=" + ", ".join(extras))
+        raise ContractError("extracted portable file set differs from staged runtime subset: " + "; ".join(pieces))
+
+    for rel, (expected_size, expected_digest) in expected_identity.items():
+        path = extracted_root / rel
+        if path.stat().st_size != expected_size:
+            raise ContractError(f"extracted portable size differs from staged runtime: {rel}")
+        if _sha256(path) != expected_digest:
+            raise ContractError(f"extracted portable content differs from staged runtime: {rel}")
+
+
+def verify_extracted_portable(
+    staged_root: Path,
+    extracted_root: Path,
+    *,
+    expected_commit: str | None = None,
+    expected_version: str | None = None,
+) -> dict[str, object]:
+    """Verify an already extracted consumer ZIP against its staged runtime source."""
+    manifest = verify_contract(
+        staged_root,
+        expected_commit=expected_commit,
+        expected_version=expected_version,
+        verify_portable=True,
+    )
+    version = str(manifest["version"])
+    _verify_extracted_portable_payload(staged_root, extracted_root, version=version)
+    return manifest
+
+
 def _verify_portable_archive(root: Path, *, commit: str, version: str) -> None:
     archive = root / PORTABLE_ZIP_NAME
     sidecar = root / PORTABLE_SUM_NAME
@@ -197,22 +289,22 @@ def _verify_portable_archive(root: Path, *, commit: str, version: str) -> None:
         raise ContractError(f"{PORTABLE_SUM_NAME} does not match the portable archive")
 
     prefix = _portable_root(version)
-    staged_members = {_relative(root, path): path for path in _portable_members(root)}
-    expected_files = set(staged_members)
-    expected_identity = {
-        rel: (path.stat().st_size, _sha256(path)) for rel, path in staged_members.items()
-    }
+    expected_identity = _portable_identity(root)
+    expected_files = set(expected_identity)
     seen: set[str] = set()
     total_uncompressed = 0
 
     with zipfile.ZipFile(archive, "r") as handle:
-        for info in handle.infolist():
+        infos = handle.infolist()
+        for info in infos:
             if info.is_dir():
                 raise ContractError(f"portable archive contains an unexpected directory entry: {info.filename}")
             if info.flag_bits & 0x1:
                 raise ContractError(f"portable archive contains an encrypted member: {info.filename}")
             member = _validate_portable_member(info.filename, prefix)
             rel = PurePosixPath(*member.parts[1:]).as_posix()
+            if rel in PORTABLE_FORBIDDEN_ROOT_FILES:
+                raise ContractError(f"development-only file leaked into portable archive: {rel}")
             if rel in seen:
                 raise ContractError(f"portable archive contains duplicate member: {rel}")
             mode = (info.external_attr >> 16) & 0o170000
@@ -230,14 +322,15 @@ def _verify_portable_archive(root: Path, *, commit: str, version: str) -> None:
                 raise ContractError("portable archive exceeds the bounded uncompressed-size limit")
 
             expected = expected_identity.get(rel)
-            if expected is not None:
-                expected_size, expected_digest = expected
-                if info.file_size != expected_size:
-                    raise ContractError(f"portable archive member size differs from staged package: {rel}")
-                with handle.open(info, "r") as source:
-                    archive_digest = _sha256_stream(source)
-                if archive_digest != expected_digest:
-                    raise ContractError(f"portable archive member content differs from staged package: {rel}")
+            if expected is None:
+                continue
+            expected_size, expected_digest = expected
+            if info.file_size != expected_size:
+                raise ContractError(f"portable archive member size differs from staged runtime: {rel}")
+            with handle.open(info, "r") as source:
+                archive_digest = _sha256_stream(source)
+            if archive_digest != expected_digest:
+                raise ContractError(f"portable archive member content differs from staged runtime: {rel}")
 
         if seen != expected_files:
             missing = sorted(expected_files - seen)
@@ -247,23 +340,18 @@ def _verify_portable_archive(root: Path, *, commit: str, version: str) -> None:
                 pieces.append("missing=" + ", ".join(missing))
             if extras:
                 pieces.append("extra=" + ", ".join(extras))
-            raise ContractError("portable archive member set does not match staged package: " + "; ".join(pieces))
+            raise ContractError("portable archive member set does not match staged runtime subset: " + "; ".join(pieces))
 
         with tempfile.TemporaryDirectory(prefix="brokedj-portable-verify-") as tmp:
             extracted_root = Path(tmp) / prefix
-            for info in handle.infolist():
+            for info in infos:
                 member = _validate_portable_member(info.filename, prefix)
                 rel = PurePosixPath(*member.parts[1:])
                 destination = extracted_root.joinpath(*rel.parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with handle.open(info, "r") as source, destination.open("wb") as output:
                     shutil.copyfileobj(source, output)
-            verify_contract(
-                extracted_root,
-                expected_commit=commit,
-                expected_version=version,
-                verify_portable=False,
-            )
+            _verify_extracted_portable_payload(root, extracted_root, version=version)
 
 
 def create_contract(root: Path, commit: str, version: str) -> None:
@@ -296,7 +384,7 @@ def create_contract(root: Path, commit: str, version: str) -> None:
         "file_count": len(entries),
         "files": entries,
         "qualification_note": (
-            "Integrity, deterministic portable packaging and staged no-build-tree launch contract only; "
+            "Development-artifact integrity plus deterministic runtime-subset portable packaging; "
             "not clean-machine, audio-device, controller, latency, listening, or live-performance qualification."
         ),
     }
@@ -383,11 +471,9 @@ def verify_contract(
 
     for entry in manifest_entries:
         path = root / str(entry["path"])
-        actual_size = path.stat().st_size
-        if actual_size != entry["bytes"]:
+        if path.stat().st_size != entry["bytes"]:
             raise ContractError(f"size mismatch for {entry['path']}")
-        actual_digest = _sha256(path)
-        if actual_digest != entry["sha256"]:
+        if _sha256(path) != entry["sha256"]:
             raise ContractError(f"SHA-256 mismatch for {entry['path']}")
 
     source_commit_file = root / SOURCE_COMMIT_PATH
@@ -420,6 +506,13 @@ def _write_fixture_payload(root: Path, commit: str) -> None:
             path.write_bytes(("fixture:" + rel).encode("utf-8"))
 
 
+def _extract_portable(root: Path, version: str, destination: Path) -> Path:
+    prefix = _portable_root(version)
+    with zipfile.ZipFile(root / PORTABLE_ZIP_NAME, "r") as handle:
+        handle.extractall(destination)
+    return destination / prefix
+
+
 def _rewrite_archive_metadata(archive: Path, *, date_time: tuple[int, int, int, int, int, int]) -> None:
     replacement = archive.with_suffix(".metadata-test.zip")
     with zipfile.ZipFile(archive, "r") as source, zipfile.ZipFile(
@@ -437,22 +530,40 @@ def _rewrite_archive_metadata(archive: Path, *, date_time: tuple[int, int, int, 
 
 def self_test() -> None:
     commit = "0123456789abcdef0123456789abcdef01234567"
+    version = "0.1.0"
     with tempfile.TemporaryDirectory(prefix="brokedj-package-contract-") as tmp:
-        root = Path(tmp) / "artifact"
+        tmp_path = Path(tmp)
+        root = tmp_path / "artifact"
         root.mkdir()
         _write_fixture_payload(root, commit)
 
-        create_contract(root, commit, "0.1.0")
+        create_contract(root, commit, version)
         first_archive = (root / PORTABLE_ZIP_NAME).read_bytes()
         first_digest = _sha256(root / PORTABLE_ZIP_NAME)
-        verified = verify_contract(root, expected_commit=commit, expected_version="0.1.0")
+        verified = verify_contract(root, expected_commit=commit, expected_version=version)
         if verified.get("file_count") != len(REQUIRED_PATHS):
             raise ContractError("self-test manifest count did not match fixture count")
 
-        create_contract(root, commit, "0.1.0")
+        with zipfile.ZipFile(root / PORTABLE_ZIP_NAME, "r") as handle:
+            prefix = _portable_root(version) + "/"
+            rels = {
+                PurePosixPath(info.filename).relative_to(_portable_root(version)).as_posix()
+                for info in handle.infolist()
+            }
+            if any(rel in PORTABLE_FORBIDDEN_ROOT_FILES for rel in rels):
+                raise ContractError("self-test portable leaked development-only root files")
+            if not rels or any(not rel.startswith(PORTABLE_STAGE_PREFIX) for rel in rels):
+                raise ContractError("self-test portable was not limited to the staged BrokeDJ runtime tree")
+            if any(not info.filename.startswith(prefix) for info in handle.infolist()):
+                raise ContractError("self-test portable member escaped versioned root")
+
+        extracted = _extract_portable(root, version, tmp_path / "extract-ok")
+        verify_extracted_portable(root, extracted, expected_commit=commit, expected_version=version)
+
+        create_contract(root, commit, version)
         if (root / PORTABLE_ZIP_NAME).read_bytes() != first_archive or _sha256(root / PORTABLE_ZIP_NAME) != first_digest:
             raise ContractError("self-test portable archive is not deterministic for identical input")
-        verify_contract(root, expected_commit=commit, expected_version="0.1.0")
+        verify_contract(root, expected_commit=commit, expected_version=version)
 
         tampered = root / "BrokeDJ" / "README.md"
         tampered.write_text("tampered", encoding="utf-8")
@@ -461,10 +572,30 @@ def self_test() -> None:
         except ContractError:
             pass
         else:
-            raise ContractError("self-test failed to detect a tampered payload")
+            raise ContractError("self-test failed to detect a tampered staged payload")
 
         _write_fixture_payload(root, commit)
-        create_contract(root, commit, "0.1.0")
+        create_contract(root, commit, version)
+        extracted_bad = _extract_portable(root, version, tmp_path / "extract-tamper")
+        (extracted_bad / "BrokeDJ" / "README.md").write_text("tampered after extraction", encoding="utf-8")
+        try:
+            verify_extracted_portable(root, extracted_bad, expected_commit=commit)
+        except ContractError:
+            pass
+        else:
+            raise ContractError("self-test failed to reject tampered extracted portable")
+
+        extracted_extra = _extract_portable(root, version, tmp_path / "extract-extra")
+        (extracted_extra / "VERIFY-PACKAGE.py").write_text("leak", encoding="utf-8")
+        try:
+            verify_extracted_portable(root, extracted_extra, expected_commit=commit)
+        except ContractError:
+            pass
+        else:
+            raise ContractError("self-test failed to reject development-only file in extracted portable")
+
+        _write_fixture_payload(root, commit)
+        create_contract(root, commit, version)
         malicious = root / PORTABLE_ZIP_NAME
         with zipfile.ZipFile(malicious, "a", compression=zipfile.ZIP_DEFLATED) as handle:
             handle.writestr("../escape.txt", b"bad")
@@ -479,12 +610,12 @@ def self_test() -> None:
             raise ContractError("self-test failed to reject portable archive path traversal")
 
         _write_fixture_payload(root, commit)
-        create_contract(root, commit, "0.1.0")
-        divergent_root = Path(tmp) / "divergent-artifact"
+        create_contract(root, commit, version)
+        divergent_root = tmp_path / "divergent-artifact"
         divergent_root.mkdir()
         _write_fixture_payload(divergent_root, commit)
         (divergent_root / "BrokeDJ" / "README.md").write_text("self-consistent divergent payload", encoding="utf-8")
-        create_contract(divergent_root, commit, "0.1.0")
+        create_contract(divergent_root, commit, version)
         shutil.copyfile(divergent_root / PORTABLE_ZIP_NAME, root / PORTABLE_ZIP_NAME)
         shutil.copyfile(divergent_root / PORTABLE_SUM_NAME, root / PORTABLE_SUM_NAME)
         try:
@@ -492,10 +623,10 @@ def self_test() -> None:
         except ContractError:
             pass
         else:
-            raise ContractError("self-test failed to reject a self-consistent archive that differs from staged payload")
+            raise ContractError("self-test failed to reject archive that differs from staged runtime")
 
         _write_fixture_payload(root, commit)
-        create_contract(root, commit, "0.1.0")
+        create_contract(root, commit, version)
         metadata_archive = root / PORTABLE_ZIP_NAME
         _rewrite_archive_metadata(metadata_archive, date_time=(1981, 1, 1, 0, 0, 0))
         (root / PORTABLE_SUM_NAME).write_text(
@@ -513,19 +644,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    create = sub.add_parser("create", help="create deterministic manifest, hashes and portable ZIP")
+    create = sub.add_parser("create", help="create development manifest/hashes plus runtime-subset portable ZIP")
     create.add_argument("--root", type=Path, required=True, help="artifact root (normally dist)")
     create.add_argument("--commit", required=True, help="full source commit SHA")
     version_source = create.add_mutually_exclusive_group(required=True)
     version_source.add_argument("--version", help="explicit BrokeDJ semantic version")
     version_source.add_argument("--cmake", type=Path, help="read BrokeDJ version from CMakeLists.txt")
 
-    verify = sub.add_parser("verify", help="verify manifest, hashes, portable ZIP and required payload")
+    verify = sub.add_parser("verify", help="verify development manifest, hashes, portable ZIP and required payload")
     verify.add_argument("--root", type=Path, required=True, help="artifact root")
     verify.add_argument("--expected-commit", help="require this exact source commit SHA")
     verify.add_argument("--expected-version", help="require this exact semantic version")
 
-    sub.add_parser("self-test", help="run deterministic create/tamper/archive-safety regression checks")
+    extracted = sub.add_parser(
+        "verify-extracted-portable",
+        help="verify an extracted portable root against the staged runtime subset",
+    )
+    extracted.add_argument("--root", type=Path, required=True, help="full staged development-artifact root")
+    extracted.add_argument("--extracted-root", type=Path, required=True, help="versioned root extracted from the portable ZIP")
+    extracted.add_argument("--expected-commit", help="require this exact source commit SHA")
+    extracted.add_argument("--expected-version", help="require this exact semantic version")
+
+    sub.add_parser("self-test", help="run deterministic create/tamper/archive/runtime-subset regression checks")
     return parser
 
 
@@ -546,9 +686,20 @@ def main(argv: list[str] | None = None) -> int:
                 expected_version=args.expected_version,
             )
             print(
-                "verified BrokeDJ staged artifact and portable bundle: "
-                f"{manifest['file_count']} files, version {manifest['version']}, "
+                "verified BrokeDJ staged artifact and runtime-subset portable bundle: "
+                f"{manifest['file_count']} staged files, version {manifest['version']}, "
                 f"commit {manifest['source_commit']}"
+            )
+        elif args.command == "verify-extracted-portable":
+            manifest = verify_extracted_portable(
+                args.root,
+                args.extracted_root,
+                expected_commit=args.expected_commit,
+                expected_version=args.expected_version,
+            )
+            print(
+                "verified extracted BrokeDJ runtime subset: "
+                f"version {manifest['version']}, commit {manifest['source_commit']}"
             )
         else:
             self_test()
