@@ -8,7 +8,9 @@ The witness prepares its own disposable synthetic WAV workspace, so personal mus
 
 The witness script never starts fixture playback. Keep system/headphone volume conservative if you choose to start the fixture for the History check. The fixture workspace exists only for the current run and is removed when the script exits. Its local paths are printed for operator guidance but are never written into accepted evidence. BrokeDJ must not delete or overwrite source media while exercising duplicate review, missing-file handling, relocation, backup/restore or session persistence.
 
-The accepted witness file stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. The evidence schema remains closed and rejects unexpected fields.
+The accepted witness file stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps, fixed witness-contract identifiers and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. The evidence schema remains closed and rejects unexpected fields.
+
+Accepted M4 evidence is **schema 2**. It contains the fixed `witness` object `interactionBinding = tracked-exact-app-process-v1` and `fixtureStateVerification = two-pass-stable-aggregate-v1`. Schema 1 predates exact ownership of the interactive BrokeDJ process and is intentionally rejected by the M4 validator and Beta composition. Existing schema-1 M4 evidence must be regenerated with this witness; changing the version number by hand does not satisfy the closed schema or exact-app checks.
 
 A second, temporary verification report is generated **after** the human workflow and before evidence is accepted. The witness passes the synthetic fixture SHA-256 to the exact BrokeDJ executable through a process-only environment variable and launches `BrokeDJ.exe --m4-fixture-state`. The app performs two bounded fixture-scoped presence passes around two aggregate database snapshots. The first pass may repair a stale persisted missing flag; the confirmation pass must be complete, report zero missing/unresolved rows, make **zero further state changes**, and observe the same aggregate workflow counts as the first snapshot. This narrows the filesystem/database race window without claiming atomicity with an external filesystem mutation that happens after verification. The app serializes counts only: track count, missing-track count, history count, tag-association count and playlist-membership count plus bounded reconciliation counts. It does not serialize source paths, titles, artists, tag names, playlist names or history timestamps. The temporary report is deleted after validation and is not copied into the accepted witness file.
 
@@ -88,7 +90,7 @@ The verifier requires all of the following before evidence can be written:
 
 Because the fixture SHA-256 is unique per run, stale synthetic rows from an earlier run cannot satisfy or poison this check. The targeted refresh cannot update unrelated user tracks. A file or database mutation observed between the two passes fails closed and requires a retry after the state settles. No finite verifier can prevent a new external filesystem mutation after its final pass, so this is stability evidence for the verification window rather than a claim of atomic filesystem state. If the app report is malformed, incomplete, reports a different mode, opens audio, returns a non-zero result or fails any aggregate/stability condition, the witness writes no accepted evidence.
 
-When the connected verifier passes, the recorder serializes the normal witness candidate to a temporary file, validates the closed evidence schema plus executable fingerprint, and only then replaces the final evidence path. A failed or interrupted new run therefore does not deliberately overwrite an earlier accepted witness with incomplete data.
+When the connected verifier passes, the recorder serializes the schema-2 witness candidate to a temporary file, validates the closed evidence schema, exact process-binding identifiers and executable fingerprint, and only then replaces the final evidence path. A failed or interrupted new run therefore does not deliberately overwrite an earlier accepted witness with incomplete data.
 
 ## Validate saved evidence
 
@@ -110,7 +112,7 @@ From a source checkout:
   -ValidateExisting
 ```
 
-`-ValidateExisting` validates the exact BrokeDJ M4 field set, schema/scope, Windows 11 x64 environment fields, strict JSON integer/string/boolean types, privacy flags and every required workflow result. It recalculates the selected executable filename, file version and SHA-256 and requires all three to match the saved evidence. The JSON is still an auditable user witness record, not a digital signature or proof that a person performed an action.
+`-ValidateExisting` accepts schema 2 only. It validates the exact BrokeDJ M4 field set, scope, required exact-process/two-pass witness identifiers, Windows 11 x64 environment fields, strict JSON integer/string/boolean types, privacy flags and every required workflow result. It recalculates the selected executable filename, file version and SHA-256 and requires all three to match the saved evidence. Schema-1 M4 evidence is deliberately rejected because it cannot demonstrate the newer interactive-process ownership contract. The JSON is still an auditable user witness record, not a digital signature or proof that a person performed an action.
 
 ## Acceptance boundary
 
@@ -118,4 +120,4 @@ Automated CI covers SQLite migrations, bounded search, tags/playlists/history, c
 
 The connected verifier plus exact-process ownership strengthen the manual witness by checking real persisted application state for the current synthetic fixture and by binding the manual workflow to the same executable whose fingerprint enters evidence. They still do not establish real audio-device behavior, physical cue isolation, controller timing, listening quality or live reliability.
 
-M4 may be marked complete only after accepted evidence is reviewed against the exact app build and there is no unresolved critical library/session regression. `docs/progress.json` must remain unchanged until that review is real.
+M4 may be marked complete only after accepted schema-2 evidence is reviewed against the exact app build and there is no unresolved critical library/session regression. `docs/progress.json` must remain unchanged until that review is real.
