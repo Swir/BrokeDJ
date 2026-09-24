@@ -29,6 +29,7 @@ PORTABLE_ZIP_NAME = "BrokeDJ-Beta-Preview-Windows-x64.zip"
 PORTABLE_SUM_NAME = f"{PORTABLE_ZIP_NAME}.sha256"
 PORTABLE_FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 PORTABLE_MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
+PORTABLE_FILE_MODE = (stat.S_IFREG | 0o644) << 16
 
 REQUIRED_PATHS = (
     "BrokeDJ/BrokeDJ.exe",
@@ -63,6 +64,13 @@ def _sha256(path: Path) -> str:
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+
+def _sha256_stream(handle) -> str:
+    digest = hashlib.sha256()
+    for block in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(block)
     return digest.hexdigest()
 
 
@@ -157,7 +165,7 @@ def _write_portable_archive(root: Path, version: str) -> None:
             info = zipfile.ZipInfo(f"{prefix}/{rel}", PORTABLE_FIXED_TIME)
             info.create_system = 3
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            info.external_attr = PORTABLE_FILE_MODE
             info.flag_bits = 0
             handle.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
@@ -189,7 +197,11 @@ def _verify_portable_archive(root: Path, *, commit: str, version: str) -> None:
         raise ContractError(f"{PORTABLE_SUM_NAME} does not match the portable archive")
 
     prefix = _portable_root(version)
-    expected_files = {_relative(root, path) for path in _portable_members(root)}
+    staged_members = {_relative(root, path): path for path in _portable_members(root)}
+    expected_files = set(staged_members)
+    expected_identity = {
+        rel: (path.stat().st_size, _sha256(path)) for rel, path in staged_members.items()
+    }
     seen: set[str] = set()
     total_uncompressed = 0
 
@@ -206,10 +218,26 @@ def _verify_portable_archive(root: Path, *, commit: str, version: str) -> None:
             mode = (info.external_attr >> 16) & 0o170000
             if mode == stat.S_IFLNK:
                 raise ContractError(f"portable archive contains a symbolic link: {rel}")
+            if info.date_time != PORTABLE_FIXED_TIME:
+                raise ContractError(f"portable archive member has non-deterministic timestamp metadata: {rel}")
+            if info.compress_type != zipfile.ZIP_DEFLATED:
+                raise ContractError(f"portable archive member has unexpected compression method: {rel}")
+            if info.create_system != 3 or info.external_attr != PORTABLE_FILE_MODE:
+                raise ContractError(f"portable archive member has non-deterministic file metadata: {rel}")
             seen.add(rel)
             total_uncompressed += info.file_size
             if total_uncompressed > PORTABLE_MAX_UNCOMPRESSED_BYTES:
                 raise ContractError("portable archive exceeds the bounded uncompressed-size limit")
+
+            expected = expected_identity.get(rel)
+            if expected is not None:
+                expected_size, expected_digest = expected
+                if info.file_size != expected_size:
+                    raise ContractError(f"portable archive member size differs from staged package: {rel}")
+                with handle.open(info, "r") as source:
+                    archive_digest = _sha256_stream(source)
+                if archive_digest != expected_digest:
+                    raise ContractError(f"portable archive member content differs from staged package: {rel}")
 
         if seen != expected_files:
             missing = sorted(expected_files - seen)
@@ -392,6 +420,21 @@ def _write_fixture_payload(root: Path, commit: str) -> None:
             path.write_bytes(("fixture:" + rel).encode("utf-8"))
 
 
+def _rewrite_archive_metadata(archive: Path, *, date_time: tuple[int, int, int, int, int, int]) -> None:
+    replacement = archive.with_suffix(".metadata-test.zip")
+    with zipfile.ZipFile(archive, "r") as source, zipfile.ZipFile(
+        replacement, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as output:
+        for original in source.infolist():
+            info = zipfile.ZipInfo(original.filename, date_time)
+            info.create_system = original.create_system
+            info.compress_type = original.compress_type
+            info.external_attr = original.external_attr
+            info.flag_bits = 0
+            output.writestr(info, source.read(original), compress_type=original.compress_type, compresslevel=9)
+    replacement.replace(archive)
+
+
 def self_test() -> None:
     commit = "0123456789abcdef0123456789abcdef01234567"
     with tempfile.TemporaryDirectory(prefix="brokedj-package-contract-") as tmp:
@@ -434,6 +477,36 @@ def self_test() -> None:
             pass
         else:
             raise ContractError("self-test failed to reject portable archive path traversal")
+
+        _write_fixture_payload(root, commit)
+        create_contract(root, commit, "0.1.0")
+        divergent_root = Path(tmp) / "divergent-artifact"
+        divergent_root.mkdir()
+        _write_fixture_payload(divergent_root, commit)
+        (divergent_root / "BrokeDJ" / "README.md").write_text("self-consistent divergent payload", encoding="utf-8")
+        create_contract(divergent_root, commit, "0.1.0")
+        shutil.copyfile(divergent_root / PORTABLE_ZIP_NAME, root / PORTABLE_ZIP_NAME)
+        shutil.copyfile(divergent_root / PORTABLE_SUM_NAME, root / PORTABLE_SUM_NAME)
+        try:
+            verify_contract(root, expected_commit=commit)
+        except ContractError:
+            pass
+        else:
+            raise ContractError("self-test failed to reject a self-consistent archive that differs from staged payload")
+
+        _write_fixture_payload(root, commit)
+        create_contract(root, commit, "0.1.0")
+        metadata_archive = root / PORTABLE_ZIP_NAME
+        _rewrite_archive_metadata(metadata_archive, date_time=(1981, 1, 1, 0, 0, 0))
+        (root / PORTABLE_SUM_NAME).write_text(
+            f"{_sha256(metadata_archive)}  {metadata_archive.name}\n", encoding="utf-8", newline="\n"
+        )
+        try:
+            verify_contract(root, expected_commit=commit)
+        except ContractError:
+            pass
+        else:
+            raise ContractError("self-test failed to reject non-deterministic portable archive metadata")
 
 
 def build_parser() -> argparse.ArgumentParser:
