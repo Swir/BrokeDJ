@@ -70,8 +70,7 @@ public:
             const float proportion = broke::MeterBallistics::normalisedDb(snapshot.holdDb);
             const float y = area.getBottom() - proportion * area.getHeight();
             graphics.setColour(juce::Colours::white.withAlpha(0.90f));
-            graphics.drawHorizontalLine(static_cast<int>(std::round(y)),
-                                        area.getX(), area.getRight(), 1.35f);
+            graphics.fillRect(area.getX(), y - 0.7f, area.getWidth(), 1.4f);
         }
     }
 
@@ -93,7 +92,7 @@ private:
 
     static juce::String dbText(float db) {
         return db <= broke::MeterBallistics::floorDb + 0.01f
-            ? juce::String("≤ ") + juce::String(broke::MeterBallistics::floorDb, 0) + " dBFS"
+            ? juce::String("<= ") + juce::String(broke::MeterBallistics::floorDb, 0) + " dBFS"
             : juce::String(db, 1) + " dBFS";
     }
 
