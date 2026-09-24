@@ -6,6 +6,16 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
+## Active runtime-only packaging checkpoint
+
+- Active branch: `fix/beta-runtime-only-staging`; work is not merged until the exact final head is green.
+- Audit of the latest exact-`main` Beta Preview artifact from Build and test #548 found that the staged package still carried JUCE's developer install tree: 3,415 files under `BrokeDJ/include/` (~50.97 MiB uncompressed), `juceaide.exe` (~7.29 MiB) under `BrokeDJ/bin/JUCE-9.0.2/`, and JUCE CMake-package files under `BrokeDJ/lib/cmake/JUCE-9.0.2/`. The existing package contract correctly verified those bytes because they were part of the staged tree, so integrity checks alone did not make the payload runtime-only.
+- The Windows preset now loads `cmake/RuntimeInstallPolicy.cmake`. The policy leaves JUCE build/link targets available but marks the JUCE subdirectory `EXCLUDE_FROM_ALL` for install purposes, preventing its SDK/build-helper install rules from entering BrokeDJ's standalone runtime package.
+- A deferred install-time guard fails closed if any `include/JUCE-*`, `lib/cmake/JUCE-*`, or `bin/JUCE-*` developer payload is still present after staging. This protects future JUCE pin changes from silently reintroducing the bloat.
+- Local validation completed before push: the preset JSON parses, the dependency-free core configures successfully, and an isolated CMake fixture proved both that `EXCLUDE_FROM_ALL` suppresses dependency install rules and that the deferred guard executes after subdirectory install scripts.
+- Remaining gate for this checkpoint: exact-head GitHub Windows build/package smoke must prove the real JUCE 9.0.2 staged artifact is clean, then the resulting artifact must be inspected for payload count/size and forbidden paths before merge.
+- This packaging hardening does not change the M0–M9 roadmap count and does not satisfy any physical M1–M4 hardware/listening witness.
+
 ## Merged deck/theme checkpoint — PR #106
 
 - `main` now includes squash-merged PR **#106** as `acf7ecc099348870701f821cc6550c491f44c7f4` (`Add circular decks and selectable first-Beta themes`). The exact qualified PR head was `72b5ca011543dac6120c61d6e5aefa0cda87b59f`; the preceding product-code checkpoint was `9bdf53caff9b49d7558fe87bbb53d41e51bc90c0`.
