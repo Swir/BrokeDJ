@@ -1,0 +1,44 @@
+name: Beta witness runner tool
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: beta-witness-runner-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-tool-contract:
+    name: Windows / runner contract
+    runs-on: windows-2022
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: PowerShell 7 fixture self-test
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File .\scripts\beta_witness_runner.ps1 -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 runner self-test failed: $LASTEXITCODE" }
+      - name: Windows PowerShell 5.1 fixture self-test
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -File .\scripts\beta_witness_runner.ps1 -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 runner self-test failed: $LASTEXITCODE" }
+      - name: Reject unattended generation before AppPath resolution
+        shell: pwsh
+        run: |
+          $env:CI = 'true'
+          $output = (& pwsh -NoProfile -File .\scripts\beta_witness_runner.ps1 `
+            -AppPath '.\this-file-must-not-exist\BrokeDJ.exe' 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          if ($code -eq 0) { throw 'Runner unexpectedly allowed CI evidence generation.' }
+          if ($output -notmatch 'Human-controlled Beta witness generation cannot run in CI') {
+            throw "Runner did not fail at the CI boundary before AppPath resolution. Output: $output"
+          }
+          if ($output -match 'Cannot find path|does not exist') {
+            throw "Runner touched the deliberately missing AppPath before refusing CI generation. Output: $output"
+          }

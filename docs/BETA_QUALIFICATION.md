@@ -23,6 +23,22 @@ Run from the staged BrokeDJ folder containing the exact executable and the packa
 
 The four milestone evidence files must already have been produced by their packaged, human-controlled witness procedures on Windows 11 x64. The Beta orchestrator re-runs every validator before it writes anything. Older M4 schema-1 evidence is intentionally rejected because it predates tracked ownership of the interactive BrokeDJ process.
 
+## Guided M1–M4 runner
+
+For the current first-Beta campaign, a matching source checkout also provides [`scripts/beta_witness_runner.ps1`](../scripts/beta_witness_runner.ps1) and [`BETA_WITNESS_RUNNER.md`](BETA_WITNESS_RUNNER.md). The runner coordinates the existing M1–M4 tools around one exact `BrokeDJ.exe` and one evidence directory, validates already-completed evidence before reusing it and invokes this canonical qualifier only after all four witnesses pass.
+
+The runner does **not** replace any acceptance criterion. It never starts M2/M3 playback, microphone input or recording, and it refuses human-evidence generation in CI before resolving `AppPath`. M2/M3 remain explicit listening/session attestations and M1/M4 retain their existing interactive witness procedures.
+
+Example from a matching source checkout:
+
+```powershell
+pwsh -NoProfile -File .\scripts\beta_witness_runner.ps1 `
+  -AppPath 'C:\BrokeDJ-Beta-Test\BrokeDJ\BrokeDJ.exe' `
+  -EvidenceDirectory 'C:\BrokeDJ-Beta-Test\evidence'
+```
+
+Use `-StatusOnly` to validate whatever evidence already exists without generating new evidence, or `-ValidateExisting` to revalidate a completed composed qualification. See the runner guide for the exact safety and exit-code contract.
+
 ## Generate the Beta qualification summary
 
 Run the packaged script from either PowerShell 7 **or the built-in Windows PowerShell 5.1** in the staged BrokeDJ directory. The orchestrator launches each M1–M4 validator with the same PowerShell edition that launched the orchestrator, so a clean Windows 11 machine does not need PowerShell 7 solely for qualification.
