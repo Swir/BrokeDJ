@@ -72,10 +72,16 @@ try {
         Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force -Path $tempDirectory | Out-Null
 
-        # Invoke the PowerShell helper in-process. It throws on capture/smoke failure;
-        # do not inspect $LASTEXITCODE here because script invocation is not a native
-        # process and a stale/null native exit code would create a false failure.
-        & $captureScript -ExePath $resolvedExe -OutputDirectory $tempDirectory -TimeoutSeconds $TimeoutSeconds
+        # capture_ui_smoke.ps1 defines a small Win32 helper type. Run each theme
+        # capture in a fresh pwsh process so Add-Type has isolated type state and
+        # the native exit code can be checked unambiguously.
+        & pwsh -NoProfile -File $captureScript `
+            -ExePath $resolvedExe `
+            -OutputDirectory $tempDirectory `
+            -TimeoutSeconds $TimeoutSeconds
+        if ($LASTEXITCODE -ne 0) {
+            throw "Theme UI capture failed for $($theme.name): $LASTEXITCODE"
+        }
 
         $source = Join-Path $tempDirectory 'BrokeDJ-ui-workstation-class.png'
         if (-not (Test-Path -LiteralPath $source)) {
