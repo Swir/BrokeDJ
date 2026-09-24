@@ -32,10 +32,20 @@ jobs:
         shell: pwsh
         run: |
           $env:CI = 'true'
-          $output = (& pwsh -NoProfile -File .\scripts\beta_witness_runner.ps1 `
-            -AppPath '.\this-file-must-not-exist\BrokeDJ.exe' 2>&1 | Out-String)
-          $code = $LASTEXITCODE
-          if ($code -eq 0) { throw 'Runner unexpectedly allowed CI evidence generation.' }
+          $stdout = Join-Path $env:RUNNER_TEMP 'beta-runner-ci-refusal.stdout.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'beta-runner-ci-refusal.stderr.txt'
+          $script = (Resolve-Path '.\scripts\beta_witness_runner.ps1').Path
+          $pwsh = (Get-Command pwsh).Source
+          $process = Start-Process -FilePath $pwsh -ArgumentList @(
+            '-NoProfile',
+            '-File', $script,
+            '-AppPath', '.\this-file-must-not-exist\BrokeDJ.exe'
+          ) -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $output = @(
+            Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue
+          ) -join "`n"
+          if ($process.ExitCode -eq 0) { throw 'Runner unexpectedly allowed CI evidence generation.' }
           if ($output -notmatch 'Human-controlled Beta witness generation cannot run in CI') {
             throw "Runner did not fail at the CI boundary before AppPath resolution. Output: $output"
           }
