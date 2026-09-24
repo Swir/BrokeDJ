@@ -207,7 +207,7 @@ jobs:
           $env:BROKEDJ_EXTRACTED_ROOT = $portableRoot
           $env:BROKEDJ_EXPECTED_COMMIT = '${{ github.event.pull_request.head.sha || github.sha }}'
           $verifyInner = "import importlib.util, os, pathlib; root=pathlib.Path(os.environ['BROKEDJ_EXTRACTED_ROOT']); spec=importlib.util.spec_from_file_location('brokedj_package_verify', root/'VERIFY-PACKAGE.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.verify_contract(root, expected_commit=os.environ['BROKEDJ_EXPECTED_COMMIT'], verify_portable=False); print('verified extracted portable payload')"
-          python -c $verifyInner
+          python -B -c $verifyInner
           if ($LASTEXITCODE -ne 0) { throw 'Extracted portable payload verification failed' }
 
           Push-Location $appDir
@@ -251,7 +251,7 @@ jobs:
           Remove-Item (Join-Path $appDir 'BrokeDJ-gui-smoke.json') -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $appDir 'BrokeDJ-device-probe.txt') -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $appDir 'BrokeDJ-device-probe.json') -ErrorAction SilentlyContinue
-          python -c $verifyInner
+          python -B -c $verifyInner
           if ($LASTEXITCODE -ne 0) { throw 'Post-smoke extracted portable payload verification failed' }
       - name: Confirm staged M2 listening witness cannot generate evidence in CI
         shell: pwsh
