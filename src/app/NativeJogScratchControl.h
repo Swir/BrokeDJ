@@ -58,14 +58,24 @@ public:
         platter.setDoubleClickReturnValue(true, 0.0);
         platter.setScrollWheelEnabled(false);
         platter.setTooltip(localText(
-            "Platter: hold and drag for bounded scratch playback. Left = reverse, centre = stopped, right = forward; release restores the pre-touch transport. Right-click this platter to choose the BrokeDJ accent theme. Slip and Beat Loop own transport and block scratch fail-closed. This is not hardware-qualified vinyl emulation.",
-            "Talerz: przytrzymaj i przeciągaj, aby scratchować w bezpiecznym zakresie. Lewo = wstecz, środek = stop, prawo = do przodu; puszczenie przywraca transport. Kliknij talerz prawym przyciskiem, aby wybrać motyw akcentów BrokeDJ. Slip i Beat Loop mają pierwszeństwo i bezpiecznie blokują scratch. To nie jest jeszcze sprzętowo zweryfikowana emulacja winylu."));
+            "Platter: hold and drag for bounded scratch playback. Drag toward reverse/forward and release to restore the pre-touch transport. Right-click this platter to choose the BrokeDJ accent theme. Slip and Beat Loop own transport and block scratch fail-closed. This is not hardware-qualified vinyl emulation.",
+            "Talerz: przytrzymaj i przeciągaj, aby scratchować w bezpiecznym zakresie; puszczenie przywraca transport sprzed dotknięcia. Kliknij talerz prawym przyciskiem, aby wybrać motyw akcentów BrokeDJ. Slip i Beat Loop mają pierwszeństwo i bezpiecznie blokują scratch. To nie jest jeszcze sprzętowo zweryfikowana emulacja winylu."));
         addAndMakeVisible(platter);
 
         platter.onThemeMenu = [this] { BrokeThemeManager::showMenu(platter); };
         platter.onDragStart = [this] { beginGesture(); };
         platter.onValueChange = [this] { applyVelocity(); };
         platter.onDragEnd = [this] { endGesture(); };
+
+        if (deck == 0) {
+            themeButton.setButtonText(localText("THEME", "MOTYW"));
+            themeButton.setName(localText("BrokeDJ accent theme", "Motyw akcentów BrokeDJ"));
+            themeButton.setTooltip(localText(
+                "Choose the workstation accent theme. This changes presentation only; audio, transport and session state are untouched.",
+                "Wybierz motyw akcentów stanowiska. Zmienia tylko wygląd; audio, transport i stan sesji pozostają bez zmian."));
+            themeButton.onClick = [this] { BrokeThemeManager::showMenu(themeButton); };
+            addAndMakeVisible(themeButton);
+        }
 
         host.addAndMakeVisible(*this);
         anchor.addComponentListener(this);
@@ -95,7 +105,13 @@ public:
 
     void resized() override {
         auto area = getLocalBounds();
-        state.setBounds(area.removeFromTop(std::min(14, area.getHeight())));
+        auto header = area.removeFromTop(std::min(17, area.getHeight()));
+        if (deck == 0) {
+            themeButton.setBounds(header.removeFromRight(std::min(46, header.getWidth())).reduced(1, 0));
+            state.setBounds(header);
+        } else {
+            state.setBounds(header);
+        }
         auto wheelArea = area.reduced(2, 1);
         const int diameter = std::max(1, std::min(wheelArea.getWidth(), wheelArea.getHeight()));
         platter.setBounds(juce::Rectangle<int>(diameter, diameter).withCentre(wheelArea.getCentre()));
@@ -112,7 +128,7 @@ private:
     void setState(State next) {
         switch (next) {
             case State::ready:
-                state.setText(localText("JOG / THEME", "JOG / MOTYW"), juce::dontSendNotification);
+                state.setText(localText("JOG READY", "JOG GOTOWY"), juce::dontSendNotification);
                 state.setColour(juce::Label::textColourId, juce::Colour{0xff8199b8});
                 break;
             case State::active:
@@ -226,8 +242,8 @@ private:
         if (adjustingLayout) return;
         const juce::ScopedValueSetter<bool> guard(adjustingLayout, true);
         auto waveformBounds = anchor.getBounds();
-        constexpr int controlWidth = 82;
-        constexpr int minimumWaveformWidth = 180;
+        constexpr int controlWidth = 94;
+        constexpr int minimumWaveformWidth = 170;
         constexpr int minimumControlHeight = 50;
         if (waveformBounds.getHeight() < minimumControlHeight
             || waveformBounds.getWidth() < minimumWaveformWidth + controlWidth) {
@@ -254,6 +270,7 @@ private:
     broke::JogScratchController controller;
     juce::Label state;
     BrokePlatterSlider platter;
+    juce::TextButton themeButton;
     bool gestureActive = false;
     bool adjustingLayout = false;
     double gestureDuration = 0.0;
