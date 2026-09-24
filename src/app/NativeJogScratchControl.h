@@ -15,7 +15,7 @@
 
 // A real circular performance surface rather than a generic rotary knob. The
 // slider still owns JUCE keyboard/mouse interaction, while paint is presentation
-// only and reads the currently applied accent-theme colours from the component.
+// only and reads the currently applied accent-theme palette directly.
 class BrokePlatterSlider final : public juce::Slider {
 public:
     std::function<void()> onThemeMenu;
@@ -36,10 +36,15 @@ public:
         juce::Rectangle<float> platterBounds(0.0f, 0.0f, diameter, diameter);
         platterBounds.setCentre(area.getCentre());
 
-        const auto outline = findColour(juce::Slider::rotarySliderOutlineColourId);
-        const auto accent = findColour(juce::Slider::rotarySliderFillColourId);
-        const auto marker = findColour(juce::Slider::thumbColourId);
-        const auto face = getLookAndFeel().findColour(juce::TextButton::buttonColourId);
+        // Read the active palette directly instead of relying on inherited JUCE
+        // Slider colour IDs. The first Windows theme witness exposed that the
+        // custom-painted platter could otherwise retain Electric Blue while the
+        // surrounding workstation had already changed to Ultraviolet or Ember.
+        const auto theme = BrokeThemeManager::palette(BrokeThemeManager::currentTheme());
+        const auto outline = theme.outline;
+        const auto accent = theme.accent;
+        const auto marker = theme.accentAlt;
+        const auto face = theme.surfaceRaised;
         const auto alpha = isEnabled() ? 1.0f : 0.46f;
 
         graphics.setColour(juce::Colours::black.withAlpha(0.48f * alpha));
