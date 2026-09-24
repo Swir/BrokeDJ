@@ -66,13 +66,9 @@ public:
     [[nodiscard]] static int requestedOutputChannels(const juce::XmlElement& state,
                                                      int fallback = 2) noexcept {
         const int boundedFallback = std::clamp(fallback, 2, 4);
-        if (!state.hasAttribute("audioDeviceOutChans")) return boundedFallback;
-
         juce::BigInteger channels;
-        channels.parseString(state.getStringAttribute("audioDeviceOutChans"), 2);
-        const int highest = channels.getHighestBit();
-        if (highest < 0) return boundedFallback;
-        return std::clamp(highest + 1, 2, 4);
+        if (!parseOutputMask(state, channels)) return boundedFallback;
+        return channels.countNumberOfSetBits();
     }
 
     [[nodiscard]] static bool matchesCurrentSetup(const juce::XmlElement& state,
@@ -82,10 +78,11 @@ public:
         const auto setup = manager.getAudioDeviceSetup();
         const auto* current = manager.getCurrentAudioDevice();
 
-        if (expectedName.isEmpty())
-            return current == nullptr || setup.outputDeviceName.isEmpty();
-        if (current == nullptr || !setup.outputDeviceName.equalsIgnoreCase(expectedName))
+        if (expectedName.isEmpty()) {
+            if (current != nullptr || setup.outputDeviceName.isNotEmpty()) return false;
+        } else if (current == nullptr || !setup.outputDeviceName.equalsIgnoreCase(expectedName)) {
             return false;
+        }
 
         const auto expectedType = state.getStringAttribute("deviceType");
         if (expectedType.isNotEmpty()
@@ -102,10 +99,30 @@ public:
             const int expectedBuffer = state.getIntAttribute("audioDeviceBufferSize", 0);
             if (expectedBuffer > 0 && setup.bufferSize != expectedBuffer) return false;
         }
+        if (state.hasAttribute("audioDeviceOutChans")) {
+            juce::BigInteger expectedChannels;
+            if (!parseOutputMask(state, expectedChannels)
+                || setup.useDefaultOutputChannels
+                || setup.outputChannels != expectedChannels) {
+                return false;
+            }
+        }
         return true;
     }
 
 private:
+    [[nodiscard]] static bool parseOutputMask(const juce::XmlElement& state,
+                                              juce::BigInteger& channels) noexcept {
+        if (!state.hasAttribute("audioDeviceOutChans")) return false;
+        const auto mask = state.getStringAttribute("audioDeviceOutChans").trim();
+        if (mask.isEmpty() || mask.length() > 256 || !mask.containsOnly("01")) return false;
+
+        channels.clear();
+        channels.parseString(mask, 2);
+        const int active = channels.countNumberOfSetBits();
+        return active >= 2 && active <= 4;
+    }
+
     [[nodiscard]] static std::unique_ptr<juce::XmlElement> sanitise(
         const juce::XmlElement& source, bool requireSchema) {
         if (!source.hasTagName("DEVICESETUP")) return {};
@@ -115,22 +132,29 @@ private:
         }
 
         auto result = std::make_unique<juce::XmlElement>("DEVICESETUP");
-        const auto copyString = [&](const char* name) {
-            if (source.hasAttribute(name)) result->setAttribute(name, source.getStringAttribute(name));
-        };
-        const auto copyDouble = [&](const char* name) {
-            if (source.hasAttribute(name)) result->setAttribute(name, source.getDoubleAttribute(name));
-        };
-        const auto copyInt = [&](const char* name) {
-            if (source.hasAttribute(name)) result->setAttribute(name, source.getIntAttribute(name));
+        const auto copyBoundedString = [&](const char* name) {
+            if (!source.hasAttribute(name)) return;
+            const auto value = source.getStringAttribute(name);
+            if (value.length() <= 1024) result->setAttribute(name, value);
         };
 
-        copyString("deviceType");
-        copyString("audioDeviceName");
-        copyString("audioOutputDeviceName");
-        copyDouble("audioDeviceRate");
-        copyInt("audioDeviceBufferSize");
-        copyString("audioDeviceOutChans");
+        copyBoundedString("deviceType");
+        copyBoundedString("audioOutputDeviceName");
+
+        if (source.hasAttribute("audioDeviceRate")) {
+            const double rate = source.getDoubleAttribute("audioDeviceRate", 0.0);
+            if (std::isfinite(rate) && rate > 0.0) result->setAttribute("audioDeviceRate", rate);
+        }
+        if (source.hasAttribute("audioDeviceBufferSize")) {
+            const int buffer = source.getIntAttribute("audioDeviceBufferSize", 0);
+            if (buffer > 0 && buffer <= 1048576)
+                result->setAttribute("audioDeviceBufferSize", buffer);
+        }
+
+        juce::BigInteger outputChannels;
+        if (parseOutputMask(source, outputChannels))
+            result->setAttribute("audioDeviceOutChans", outputChannels.toString(2));
+
         result->setAttribute("brokedjStateVersion", schemaVersion);
         return result;
     }
@@ -165,8 +189,9 @@ protected:
         juce::AudioAppComponent::setAudioChannels(
             numInputChannels, requestedOutputs, saved.get());
 
-        // JUCE can fall back to the default device when a saved device/rate is
-        // unavailable. Do not keep replaying a stale identity on every launch.
+        // JUCE can fall back to the default device when a saved device/rate,
+        // buffer size, or explicit output-channel selection is unavailable.
+        // Do not keep replaying a stale identity on every launch.
         if (saved && !AudioDeviceStateStore::matchesCurrentSetup(*saved, deviceManager))
             static_cast<void>(stateStore.clear());
 

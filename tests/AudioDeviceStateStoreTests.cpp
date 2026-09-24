@@ -33,6 +33,7 @@ int main() {
     source.setAttribute("deviceType", "Fixture Backend");
     source.setAttribute("audioOutputDeviceName", "Fixture Output");
     source.setAttribute("audioInputDeviceName", "PRIVATE MIC MUST NOT PERSIST");
+    source.setAttribute("audioDeviceName", "PRIVATE LEGACY DEVICE MUST NOT PERSIST");
     source.setAttribute("audioDeviceRate", 48000.0);
     source.setAttribute("audioDeviceBufferSize", 256);
     source.setAttribute("audioDeviceOutChans", "1111");
@@ -48,6 +49,7 @@ int main() {
     expect(raw.contains("Fixture Output"), "output identity must be retained locally");
     expect(!raw.contains("PRIVATE MIC"), "input-device identity must be stripped");
     expect(!raw.contains("PRIVATE MIDI"), "MIDI identity must be stripped");
+    expect(!raw.contains("PRIVATE LEGACY"), "legacy combined device identity must be stripped");
     expect(!raw.contains("MIDIINPUT"), "MIDI child state must be stripped");
     expect(raw.contains("brokedjStateVersion=\"1\""), "state schema marker must be written");
 
@@ -65,6 +67,8 @@ int main() {
                "four-output cue layout must request four channels on restore");
         expect(!loaded->hasAttribute("audioInputDeviceName"),
                "loaded state must never expose stripped input identity");
+        expect(!loaded->hasAttribute("audioDeviceName"),
+               "loaded state must not expose legacy combined-device identity");
     }
 
     juce::XmlElement stereo("DEVICESETUP");
@@ -82,12 +86,62 @@ int main() {
 
     juce::XmlElement sparse("DEVICESETUP");
     sparse.setAttribute("audioDeviceOutChans", "1001");
-    expect(AudioDeviceStateStore::requestedOutputChannels(sparse, 2) == 4,
-           "sparse channel 4 selection must retain a four-channel maximum");
+    expect(AudioDeviceStateStore::requestedOutputChannels(sparse, 4) == 2,
+           "non-contiguous physical outputs must be counted by active channels, not highest bit");
+
+    juce::XmlElement highQuad("DEVICESETUP");
+    highQuad.setAttribute("audioDeviceOutChans", "11110000");
+    expect(AudioDeviceStateStore::requestedOutputChannels(highQuad, 2) == 4,
+           "four selected physical outputs must restore as four logical channels");
+
+    juce::XmlElement oneChannel("DEVICESETUP");
+    oneChannel.setAttribute("audioDeviceOutChans", "1");
+    expect(AudioDeviceStateStore::requestedOutputChannels(oneChannel, 3) == 3,
+           "mono explicit output must fail closed to the bounded caller fallback");
+
+    juce::XmlElement tooMany("DEVICESETUP");
+    tooMany.setAttribute("audioDeviceOutChans", "11111");
+    expect(AudioDeviceStateStore::requestedOutputChannels(tooMany, 2) == 2,
+           "more than four explicit outputs must fail closed to the bounded fallback");
+
+    juce::XmlElement malformedMask("DEVICESETUP");
+    malformedMask.setAttribute("audioDeviceOutChans", "11oops");
+    expect(AudioDeviceStateStore::requestedOutputChannels(malformedMask, 4) == 4,
+           "malformed output masks must fail closed instead of being partially parsed");
 
     juce::XmlElement noMask("DEVICESETUP");
     expect(AudioDeviceStateStore::requestedOutputChannels(noMask, 3) == 3,
            "missing channel mask must keep bounded caller fallback");
+
+    juce::XmlElement unsafe("DEVICESETUP");
+    unsafe.setAttribute("audioOutputDeviceName", "Unsafe Fixture");
+    unsafe.setAttribute("audioDeviceOutChans", "11111");
+    unsafe.setAttribute("audioDeviceRate", -1.0);
+    unsafe.setAttribute("audioDeviceBufferSize", -64);
+    expect(store.store(unsafe), "unsafe optional fields must be sanitised rather than corrupting state");
+    loaded = store.load();
+    expect(loaded != nullptr, "sanitised unsafe state must remain loadable");
+    if (loaded) {
+        expect(!loaded->hasAttribute("audioDeviceOutChans"),
+               "unsupported >4-channel mask must not survive sanitisation");
+        expect(!loaded->hasAttribute("audioDeviceRate"),
+               "non-positive sample rate must not survive sanitisation");
+        expect(!loaded->hasAttribute("audioDeviceBufferSize"),
+               "non-positive buffer size must not survive sanitisation");
+    }
+
+    juce::XmlElement sparseStored("DEVICESETUP");
+    sparseStored.setAttribute("audioOutputDeviceName", "Sparse Fixture");
+    sparseStored.setAttribute("audioDeviceOutChans", "1001");
+    expect(store.store(sparseStored), "valid sparse physical output selection must persist");
+    loaded = store.load();
+    expect(loaded != nullptr, "sparse output state must load");
+    if (loaded) {
+        expect(loaded->getStringAttribute("audioDeviceOutChans") == "1001",
+               "valid physical output mask must be preserved exactly");
+        expect(AudioDeviceStateStore::requestedOutputChannels(*loaded, 4) == 2,
+               "sparse two-output state must request two logical channels");
+    }
 
     expect(stateFile.replaceWithText("<DEVICESETUP audioOutputDeviceName=\"x\"/>"),
            "schema-less fixture write failed");
