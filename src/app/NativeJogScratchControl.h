@@ -3,22 +3,34 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "ThemeManager.h"
 #include "core/Engine.h"
 #include "core/JogScratchController.h"
 #include "core/PerformanceDeckOwner.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 
-// Compact native platter strip for one deck. It deliberately owns only the
-// message-thread interaction surface; audio continues through the production
-// Engine transport and its existing smoothing/de-click path.
-//
-// The control is self-positioning relative to the deck waveform so it can be
-// composed into the existing DeckPanel without duplicating layout policy. A
-// dedicated PerformanceDeckOwner facade reads/writes the same authoritative
-// Engine atomics and loop-region state as the rest of the deck. The underlying
-// JogScratchController remains the single policy for bounded scratch ownership.
+class BrokePlatterSlider final : public juce::Slider {
+public:
+    std::function<void()> onThemeMenu;
+
+    void mouseDown(const juce::MouseEvent& event) override {
+        if (event.mods.isPopupMenu()) {
+            if (onThemeMenu) onThemeMenu();
+            return;
+        }
+        juce::Slider::mouseDown(event);
+    }
+};
+
+// Native platter surface for one deck. It owns message-thread interaction only;
+// audio continues through the production Engine transport and its existing
+// smoothing/de-click path. The compact rotary surface reserves horizontal space
+// beside the waveform instead of stealing vertical waveform height, so the jog
+// control remains visible in the first-Beta workstation layout.
 class NativeJogScratchControl final : public juce::Component,
                                       private juce::ComponentListener,
                                       private juce::Timer {
@@ -30,26 +42,27 @@ public:
         : host(deckHost), anchor(waveformAnchor), engine(targetEngine), deck(deckIndex),
           performanceOwner(targetEngine, deckIndex),
           controller(targetEngine, performanceOwner, deckIndex) {
-        state.setJustificationType(juce::Justification::centredLeft);
+        state.setJustificationType(juce::Justification::centred);
         state.setColour(juce::Label::textColourId, juce::Colour{0xffdcecff});
-        state.setFont(juce::Font(juce::FontOptions(10.5f)));
+        state.setFont(juce::Font(juce::FontOptions(9.5f).withStyle("Bold")));
+        state.setInterceptsMouseClicks(false, false);
         setState(State::ready);
         addAndMakeVisible(state);
 
-        platter.setName(localText("Jog / Scratch", "Jog / Scratch"));
-        platter.setSliderStyle(juce::Slider::LinearHorizontal);
-        platter.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 20);
+        platter.setName(localText("Jog / Scratch / Theme", "Jog / Scratch / Motyw"));
+        platter.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+        platter.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         platter.setRange(-broke::JogScratchController::maxAudibleSpeed,
                           broke::JogScratchController::maxAudibleSpeed, 0.01);
         platter.setValue(0.0, juce::dontSendNotification);
-        platter.setNumDecimalPlacesToDisplay(2);
         platter.setDoubleClickReturnValue(true, 0.0);
         platter.setScrollWheelEnabled(false);
         platter.setTooltip(localText(
-            "Hold and drag for bounded platter playback: left = reverse, centre = stopped, right = forward. Release restores the pre-touch transport. Slip and Beat Loop own transport and block scratch fail-closed. This is not hardware-qualified vinyl emulation.",
-            "Przytrzymaj i przeciągaj: lewo = wstecz, środek = stop, prawo = do przodu. Puszczenie przywraca transport sprzed dotknięcia. Slip i Beat Loop mają pierwszeństwo i bezpiecznie blokują scratch. To nie jest jeszcze sprzętowo zweryfikowana emulacja winylu."));
+            "Platter: hold and drag for bounded scratch playback. Left = reverse, centre = stopped, right = forward; release restores the pre-touch transport. Right-click this platter to choose the BrokeDJ accent theme. Slip and Beat Loop own transport and block scratch fail-closed. This is not hardware-qualified vinyl emulation.",
+            "Talerz: przytrzymaj i przeciągaj, aby scratchować w bezpiecznym zakresie. Lewo = wstecz, środek = stop, prawo = do przodu; puszczenie przywraca transport. Kliknij talerz prawym przyciskiem, aby wybrać motyw akcentów BrokeDJ. Slip i Beat Loop mają pierwszeństwo i bezpiecznie blokują scratch. To nie jest jeszcze sprzętowo zweryfikowana emulacja winylu."));
         addAndMakeVisible(platter);
 
+        platter.onThemeMenu = [this] { BrokeThemeManager::showMenu(platter); };
         platter.onDragStart = [this] { beginGesture(); };
         platter.onValueChange = [this] { applyVelocity(); };
         platter.onDragEnd = [this] { endGesture(); };
@@ -82,8 +95,10 @@ public:
 
     void resized() override {
         auto area = getLocalBounds();
-        state.setBounds(area.removeFromLeft(104));
-        platter.setBounds(area.reduced(2, 1));
+        state.setBounds(area.removeFromTop(std::min(14, area.getHeight())));
+        auto wheelArea = area.reduced(2, 1);
+        const int diameter = std::max(1, std::min(wheelArea.getWidth(), wheelArea.getHeight()));
+        platter.setBounds(juce::Rectangle<int>(diameter, diameter).withCentre(wheelArea.getCentre()));
     }
 
 private:
@@ -97,7 +112,7 @@ private:
     void setState(State next) {
         switch (next) {
             case State::ready:
-                state.setText(localText("JOG READY", "JOG GOTOWY"), juce::dontSendNotification);
+                state.setText(localText("JOG / THEME", "JOG / MOTYW"), juce::dontSendNotification);
                 state.setColour(juce::Label::textColourId, juce::Colour{0xff8199b8});
                 break;
             case State::active:
@@ -211,16 +226,20 @@ private:
         if (adjustingLayout) return;
         const juce::ScopedValueSetter<bool> guard(adjustingLayout, true);
         auto waveformBounds = anchor.getBounds();
-        constexpr int stripHeight = 34;
-        constexpr int minimumWaveformHeight = 38;
-        if (waveformBounds.getHeight() <= stripHeight + minimumWaveformHeight) {
+        constexpr int controlWidth = 82;
+        constexpr int minimumWaveformWidth = 180;
+        constexpr int minimumControlHeight = 50;
+        if (waveformBounds.getHeight() < minimumControlHeight
+            || waveformBounds.getWidth() < minimumWaveformWidth + controlWidth) {
             setVisible(false);
             return;
         }
+
         setVisible(true);
-        auto strip = waveformBounds.removeFromBottom(stripHeight);
+        auto platterBounds = waveformBounds.removeFromRight(controlWidth);
+        waveformBounds.removeFromRight(std::min(4, waveformBounds.getWidth()));
         anchor.setBounds(waveformBounds);
-        setBounds(strip.reduced(1, 2));
+        setBounds(platterBounds.reduced(1, 0));
     }
 
     void componentMovedOrResized(juce::Component& component, bool, bool wasResized) override {
@@ -234,7 +253,7 @@ private:
     broke::PerformanceDeckOwner performanceOwner;
     broke::JogScratchController controller;
     juce::Label state;
-    juce::Slider platter;
+    BrokePlatterSlider platter;
     bool gestureActive = false;
     bool adjustingLayout = false;
     double gestureDuration = 0.0;
