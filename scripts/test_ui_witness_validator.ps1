@@ -19,7 +19,8 @@ function New-BrokeDJSyntheticWitness {
         [Parameter(Mandatory = $true)] [string]$Path,
         [Parameter(Mandatory = $true)] [int]$Width,
         [Parameter(Mandatory = $true)] [int]$Height,
-        [Parameter(Mandatory = $true)] [bool]$Blank
+        [Parameter(Mandatory = $true)] [bool]$Blank,
+        [switch]$DeadRightQuarter
     )
 
     $bitmap = New-Object System.Drawing.Bitmap($Width, $Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -75,6 +76,16 @@ function New-BrokeDJSyntheticWitness {
                 $brightBrush.Dispose()
             }
         }
+
+        if ($DeadRightQuarter) {
+            $dead = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Black)
+            try {
+                $x = [int][Math]::Floor($Width * 0.74)
+                $graphics.FillRectangle($dead, $x, 36, $Width - $x, $Height - 36)
+            }
+            finally { $dead.Dispose() }
+        }
+
         $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     }
     finally {
@@ -92,8 +103,9 @@ function Write-BrokeDJManifest {
         opens_audio_device = $false
         smoke_success = $true
         smoke_exercised_requested_1600x900 = $true
-        compact = [ordered]@{ file = 'compact.png'; width = 1066; height = 839; bytes = 8192; print_window_flag = 2 }
-        workstation = [ordered]@{ file = 'workstation.png'; width = 1616; height = 939; bytes = 8192; print_window_flag = 2; capture_class = 'requested-1600-class' }
+        capture_settle_milliseconds = 90
+        compact = [ordered]@{ file = 'compact.png'; width = 1066; height = 839; bytes = 8192; print_window_flag = 2; stable_frame = $true }
+        workstation = [ordered]@{ file = 'workstation.png'; width = 1616; height = 939; bytes = 8192; print_window_flag = 2; capture_class = 'requested-1600-class'; stable_frame = $true }
         observed_window_sizes = @()
         qualification_note = 'Synthetic validator self-test fixture only.'
     }
@@ -110,8 +122,23 @@ try {
         throw "UI witness validator rejected its deterministic positive self-test fixture: $LASTEXITCODE"
     }
     $positive = Get-Content -LiteralPath (Join-Path $root 'BrokeDJ-ui-quality.json') -Raw | ConvertFrom-Json
-    if ($positive.success -ne $true) {
-        throw 'UI witness validator positive self-test did not report success=true.'
+    if ($positive.success -ne $true -or $positive.schema_version -ne 2) {
+        throw 'UI witness validator positive self-test did not report schema-2 success=true.'
+    }
+
+    # Reproduce the exact class of regression that motivated the new gate: a
+    # native 1600-class window containing an otherwise plausible old-size frame
+    # plus a dead black strip on the right. Global colour metrics alone used to
+    # accept this capture; the independent right-quarter coverage must reject it.
+    New-BrokeDJSyntheticWitness -Path (Join-Path $root 'workstation.png') -Width 1616 -Height 939 -Blank $false -DeadRightQuarter
+    & pwsh -NoProfile -File $resolvedValidator -WitnessDirectory $root -SampleStep 6 *> $null
+    if ($LASTEXITCODE -eq 0) {
+        throw 'UI witness validator accepted the deterministic partial-width workstation negative fixture.'
+    }
+    $partial = Get-Content -LiteralPath (Join-Path $root 'BrokeDJ-ui-quality.json') -Raw | ConvertFrom-Json
+    if ($partial.success -ne $false -or @($partial.failures).Count -lt 1 -or
+        [double]$partial.workstation.right_quarter_non_black_fraction -ge 0.80) {
+        throw 'UI witness validator partial-width negative did not preserve the full-surface failure evidence.'
     }
 
     New-BrokeDJSyntheticWitness -Path (Join-Path $root 'compact.png') -Width 1066 -Height 839 -Blank $true
@@ -119,14 +146,14 @@ try {
 
     & pwsh -NoProfile -File $resolvedValidator -WitnessDirectory $root -SampleStep 6 *> $null
     if ($LASTEXITCODE -eq 0) {
-        throw 'UI witness validator accepted the deterministic all-black negative fixture.'
+        throw 'UI witness validator accepted the deterministic all-dark negative fixture.'
     }
     $negative = Get-Content -LiteralPath (Join-Path $root 'BrokeDJ-ui-quality.json') -Raw | ConvertFrom-Json
     if ($negative.success -ne $false -or @($negative.failures).Count -lt 1) {
-        throw 'UI witness validator negative self-test did not preserve failure diagnostics.'
+        throw 'UI witness validator all-dark negative self-test did not preserve failure diagnostics.'
     }
 
-    Write-Host 'BrokeDJ UI witness validator self-test passed (positive accepted, blank negative rejected).'
+    Write-Host 'BrokeDJ UI witness validator self-test passed (positive accepted, partial-width and all-dark negatives rejected).'
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
