@@ -8,7 +8,10 @@ param(
     [string]$OutputDirectory = "ui-snapshots",
 
     [ValidateRange(5, 120)]
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+
+    [ValidateRange(40, 500)]
+    [int]$StableCaptureMilliseconds = 90
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,8 +44,25 @@ public static class BrokeDJNativeWindowCapture
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UpdateWindow(IntPtr hWnd);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmFlush();
 }
 "@
+
+function Sync-BrokeDJWindowPresentation {
+    param([Parameter(Mandatory = $true)] [IntPtr]$Handle)
+    # UpdateWindow requests any pending paint synchronously on the UI thread. DwmFlush
+    # then waits for the current DWM composition batch. Neither call opens audio or
+    # changes application state; they only keep the pixel witness from sampling the
+    # transient old-size frame immediately after a native resize.
+    [void][BrokeDJNativeWindowCapture]::UpdateWindow($Handle)
+    try { [void][BrokeDJNativeWindowCapture]::DwmFlush() } catch { }
+}
 
 function Save-BrokeDJWindowPng {
     param(
@@ -50,6 +70,7 @@ function Save-BrokeDJWindowPng {
         [Parameter(Mandatory = $true)] [string]$Path
     )
 
+    Sync-BrokeDJWindowPresentation -Handle $Handle
     $rect = New-Object BrokeDJNativeWindowCapture+RECT
     if (-not [BrokeDJNativeWindowCapture]::GetWindowRect($Handle, [ref]$rect)) {
         return $null
@@ -95,6 +116,7 @@ function Save-BrokeDJWindowPng {
                     height = $height
                     bytes = $file.Length
                     print_window_flag = $flag
+                    stable_frame = $true
                 }
             }
             Remove-Item -LiteralPath $Path -ErrorAction SilentlyContinue
@@ -119,6 +141,7 @@ $candidate = $null
 $candidateArea = 0L
 $observations = @()
 $seenSizes = @{}
+$sizeFirstSeen = @{}
 
 try {
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -132,26 +155,35 @@ try {
                 $width = $rect.Right - $rect.Left
                 $height = $rect.Bottom - $rect.Top
                 $sizeKey = "${width}x${height}"
+                $now = [DateTime]::UtcNow
                 if (-not $seenSizes.ContainsKey($sizeKey)) {
                     $seenSizes[$sizeKey] = $true
+                    $sizeFirstSeen[$sizeKey] = $now
                     Write-Host "Observed BrokeDJ window: $sizeKey"
                     $observations += [pscustomobject]@{ width = $width; height = $height }
                 }
-
-                if ($null -eq $compact -and $width -ge 1040 -and $width -le 1160 -and $height -ge 760) {
-                    $compact = Save-BrokeDJWindowPng -Handle $handle -Path $compactPath
+                if (-not $sizeFirstSeen.ContainsKey($sizeKey)) {
+                    $sizeFirstSeen[$sizeKey] = $now
                 }
 
-                if ($null -eq $workstation -and $width -ge 1500 -and $height -ge 780) {
-                    $workstation = Save-BrokeDJWindowPng -Handle $handle -Path $workstationPath
-                }
+                $stableForMs = ($now - [DateTime]$sizeFirstSeen[$sizeKey]).TotalMilliseconds
+                $settled = $stableForMs -ge $StableCaptureMilliseconds
+                if ($settled) {
+                    if ($null -eq $compact -and $width -ge 1040 -and $width -le 1160 -and $height -ge 760) {
+                        $compact = Save-BrokeDJWindowPng -Handle $handle -Path $compactPath
+                    }
 
-                $area = [int64]$width * [int64]$height
-                if ($width -ge 1240 -and $height -ge 760 -and $area -gt $candidateArea) {
-                    $newCandidate = Save-BrokeDJWindowPng -Handle $handle -Path $candidatePath
-                    if ($null -ne $newCandidate) {
-                        $candidate = $newCandidate
-                        $candidateArea = $area
+                    if ($null -eq $workstation -and $width -ge 1500 -and $height -ge 780) {
+                        $workstation = Save-BrokeDJWindowPng -Handle $handle -Path $workstationPath
+                    }
+
+                    $area = [int64]$width * [int64]$height
+                    if ($width -ge 1240 -and $height -ge 760 -and $area -gt $candidateArea) {
+                        $newCandidate = Save-BrokeDJWindowPng -Handle $handle -Path $candidatePath
+                        if ($null -ne $newCandidate) {
+                            $candidate = $newCandidate
+                            $candidateArea = $area
+                        }
                     }
                 }
             }
@@ -197,13 +229,13 @@ try {
     }
 
     if ($null -eq $compact -or -not (Test-Path -LiteralPath $compactPath)) {
-        throw ('Compact 1050x800-class window was not captured. Observed: ' + (($seenSizes.Keys | Sort-Object) -join ', '))
+        throw ('Compact 1050x800-class window was not captured after the stable-frame dwell. Observed: ' + (($seenSizes.Keys | Sort-Object) -join ', '))
     }
 
     $workstationCaptureClass = 'requested-1600-class'
     if ($null -eq $workstation -or -not (Test-Path -LiteralPath $workstationPath)) {
         if ($null -eq $candidate -or -not (Test-Path -LiteralPath $candidatePath)) {
-            throw ('Workstation-class window was not captured. Observed: ' + (($seenSizes.Keys | Sort-Object) -join ', '))
+            throw ('Workstation-class window was not captured after the stable-frame dwell. Observed: ' + (($seenSizes.Keys | Sort-Object) -join ', '))
         }
         Move-Item -LiteralPath $candidatePath -Destination $workstationPath -Force
         $workstation = [pscustomobject]@{
@@ -212,6 +244,7 @@ try {
             height = $candidate.height
             bytes = (Get-Item -LiteralPath $workstationPath).Length
             print_window_flag = $candidate.print_window_flag
+            stable_frame = $true
         }
         $workstationCaptureClass = 'largest-observed-window-fallback'
     }
@@ -227,12 +260,14 @@ try {
         smoke_success = $true
         smoke_exercised_requested_1600x900 = $true
         smoke_workstation_geometry_steps = [int]$smoke.workstation_step_count
+        capture_settle_milliseconds = $StableCaptureMilliseconds
         compact = [ordered]@{
             file = [System.IO.Path]::GetFileName($compact.path)
             width = $compact.width
             height = $compact.height
             bytes = $compact.bytes
             print_window_flag = $compact.print_window_flag
+            stable_frame = $true
         }
         workstation = [ordered]@{
             file = [System.IO.Path]::GetFileName($workstation.path)
@@ -241,14 +276,15 @@ try {
             bytes = $workstation.bytes
             print_window_flag = $workstation.print_window_flag
             capture_class = $workstationCaptureClass
+            stable_frame = $true
         }
         observed_window_sizes = @($observations)
-        qualification_note = 'Windows Server runner pixel and native component-geometry witness for layout regression review only. The smoke also requests 1600x900 even when the hosted display clamps native window bounds. This does not certify Windows 11 HiDPI quality, manual usability, audio behavior, controller behavior, or live readiness.'
+        qualification_note = 'Windows Server runner pixel and native component-geometry witness for settled layout regression review only. Captures are delayed until each native size is stable and pending window composition is flushed. This does not certify Windows 11 HiDPI quality, manual usability, audio behavior, controller behavior, or live readiness.'
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
-    Write-Host "Captured compact witness: $($compact.width)x$($compact.height), $($compact.bytes) bytes"
-    Write-Host "Captured workstation witness: $($workstation.width)x$($workstation.height), $($workstation.bytes) bytes ($workstationCaptureClass)"
+    Write-Host "Captured settled compact witness: $($compact.width)x$($compact.height), $($compact.bytes) bytes"
+    Write-Host "Captured settled workstation witness: $($workstation.width)x$($workstation.height), $($workstation.bytes) bytes ($workstationCaptureClass)"
 }
 finally {
     if ($process -and -not $process.HasExited) {
