@@ -6,13 +6,27 @@ This witness closes the remaining manual interaction gate for BrokeDJ's M4 libra
 
 The witness prepares its own disposable synthetic WAV workspace, so personal music is not required. Each run creates a **new content identity**: a quiet 48 kHz stereo 16-bit PCM 440 Hz tone carries a tiny random per-run nonce inside the generated samples, and the duplicate is copied byte-for-byte from that primary file. This prevents stale rows from an older witness run from sharing the current fixture SHA-256 while still giving duplicate detection an exact byte-identical pair.
 
-The script itself never starts playback. Keep system/headphone volume conservative if you choose to start the fixture for the History check. The fixture workspace exists only for the current run and is removed when the script exits. Its local paths are printed for operator guidance but are never written into accepted evidence. BrokeDJ must not delete or overwrite source media while exercising duplicate review, missing-file handling, relocation, backup/restore or session persistence.
+The witness script never starts fixture playback. Keep system/headphone volume conservative if you choose to start the fixture for the History check. The fixture workspace exists only for the current run and is removed when the script exits. Its local paths are printed for operator guidance but are never written into accepted evidence. BrokeDJ must not delete or overwrite source media while exercising duplicate review, missing-file handling, relocation, backup/restore or session persistence.
 
 The accepted witness file stores only Windows build/architecture, BrokeDJ executable filename/version/SHA-256, timestamps and boolean pass/fail results. It deliberately does not ask for track names, track paths, screenshots, account data or source music. The evidence schema remains closed and rejects unexpected fields.
 
 A second, temporary verification report is generated **after** the human workflow and before evidence is accepted. The witness passes the synthetic fixture SHA-256 to the exact BrokeDJ executable through a process-only environment variable and launches `BrokeDJ.exe --m4-fixture-state`. The app performs two bounded fixture-scoped presence passes around two aggregate database snapshots. The first pass may repair a stale persisted missing flag; the confirmation pass must be complete, report zero missing/unresolved rows, make **zero further state changes**, and observe the same aggregate workflow counts as the first snapshot. This narrows the filesystem/database race window without claiming atomicity with an external filesystem mutation that happens after verification. The app serializes counts only: track count, missing-track count, history count, tag-association count and playlist-membership count plus bounded reconciliation counts. It does not serialize source paths, titles, artists, tag names, playlist names or history timestamps. The temporary report is deleted after validation and is not copied into the accepted witness file.
 
-Evidence generation is rejected before resolving or launching `AppPath` when either `CI` or `GITHUB_ACTIONS` has a common truthy value (`1`, `true`, `yes`, `on`, case-insensitive). `-ValidateExisting` remains usable in CI. `-FixtureSelfTest` creates two independent disposable fixtures, proves that each run gets a different content hash while each primary/duplicate pair remains byte-identical, validates the fixture WAV contract and exercises positive/negative two-pass aggregate/stability report validation. It creates no human qualification evidence.
+Evidence generation is rejected before resolving or launching `AppPath` when either `CI` or `GITHUB_ACTIONS` has a common truthy value (`1`, `true`, `yes`, `on`, case-insensitive). `-ValidateExisting` remains usable in CI. `-FixtureSelfTest` creates two independent disposable fixtures, proves that each run gets a different content hash while each primary/duplicate pair remains byte-identical, validates the fixture WAV contract, validates exact-app path identity behavior, and exercises positive/negative two-pass aggregate/stability report validation. It creates no human qualification evidence.
+
+## Exact application ownership
+
+The witness now owns the interactive application instance used for all eight manual checks instead of trusting the operator to launch an arbitrary BrokeDJ copy.
+
+Before the interactive phase it requires **zero existing `BrokeDJ.exe` processes**, runs the no-audio preflight against the selected `AppPath`, checks again that no BrokeDJ process was left behind, and then launches exactly that fingerprinted executable itself. The returned process ID is tracked for the entire manual workflow. Before and after every manual answer the script verifies that:
+
+- the tracked process is still alive;
+- its executable path still matches the selected `AppPath` using case-insensitive canonical path comparison;
+- no second `BrokeDJ.exe` process is running.
+
+If the tracked app exits early, a second copy appears, or the process path cannot be verified, the witness fails closed and writes no new evidence. After the eight checks pass, the operator closes the **witness-launched** window. The script waits up to two minutes for that exact process to exit and refuses fixture-state verification while any BrokeDJ process remains. A failure cleanup only closes/terminates the process that this witness launched; it does not terminate an unrelated pre-existing instance because such instances are rejected before launch.
+
+This process binding removes the previous ambiguity where a correctly fingerprinted evidence file could still rely on manual interaction performed in a different BrokeDJ copy. It still does not prove the truth of a human `yes` answer; the connected fixture-state verifier remains the persisted-state cross-check.
 
 ## Prepare
 
@@ -35,15 +49,19 @@ Before asking manual questions, the recorder fails closed unless it can:
 1. reject unattended CI generation;
 2. confirm Windows 11 build 22000+ on an x64 OS from an x64 PowerShell process;
 3. resolve exactly `BrokeDJ.exe` and fingerprint its version plus SHA-256;
-4. run that executable with `--smoke-test` in a disposable directory;
-5. validate the no-audio GUI/resize report;
-6. create and validate the per-run-unique primary WAV, its byte-identical duplicate and relocation directory.
+4. confirm no BrokeDJ process is already running;
+5. run that executable with `--smoke-test` in a disposable directory;
+6. validate the no-audio GUI/resize report;
+7. create and validate the per-run-unique primary WAV, its byte-identical duplicate and relocation directory;
+8. launch exactly the selected `AppPath` and pin the manual workflow to that single tracked process.
 
 The automatic preflight catches a broken executable, deterministic resize/geometry regression or malformed fixture before the longer workflow. It does **not** replace manual Windows usability/HiDPI review.
 
 ## Required checks
 
-1. **Launch and resize** — the app launches on Windows 11 and remains usable through meaningful window-size changes; critical deck, mixer and library controls do not overlap or disappear.
+Keep the witness-launched BrokeDJ window open for checks 1–8 and do not start another BrokeDJ copy.
+
+1. **Launch and resize** — the witness-launched app remains usable through meaningful window-size changes; critical deck, mixer and library controls do not overlap or disappear.
 2. **Import and search** — import the generated primary fixture and confirm bounded library search finds it.
 3. **Tags and playlists** — edit a tag on the fixture; create a playlist; add/remove/browse membership; refresh and confirm persistence. Finish with at least one tag association and at least one playlist membership still attached to the fixture so the aggregate verifier can prove retention.
 4. **History** — start the generated fixture once under normal user control and verify a local History entry appears. The script itself never starts playback.
@@ -52,11 +70,11 @@ The automatic preflight catches a broken executable, deterministic resize/geomet
 7. **Library backup/restore** — create a backup, make a harmless metadata change, restore the backup and verify the previous state returns.
 8. **Session save/load** — save a four-deck/mixer session, alter controls, reload it and verify expected state is restored. Restored decks must remain paused until explicit Play.
 
-A failed manual check is a real M4 blocker. If any answer is `no`, generation stops before creating or replacing evidence.
+A failed manual check is a real M4 blocker. If any answer is `no`, generation stops before creating or replacing evidence. Process ownership is checked around every answer, so closing the tracked app early or opening another BrokeDJ copy is also a blocker.
 
 ## Connected fixture-state verification
 
-After all eight answers pass, the recorder asks you to close BrokeDJ and wait for it to exit so SQLite state is settled. It then launches the **same fingerprinted executable** in the no-audio `--m4-fixture-state` mode. That mode opens only the local BrokeDJ library database and uses the fixture-scoped M4 primitives; no application window or audio device is opened and no callback starts.
+After all eight answers pass, the recorder explicitly tells you to close the witness-launched BrokeDJ window. It waits for that exact process to exit and requires that no other BrokeDJ process remains before opening the database verifier. It then launches the **same fingerprinted executable** in the no-audio `--m4-fixture-state` mode. That mode opens only the local BrokeDJ library database and uses the fixture-scoped M4 primitives; no application window or audio device is opened and no callback starts.
 
 The verifier requires all of the following before evidence can be written:
 
@@ -68,7 +86,7 @@ The verifier requires all of the following before evidence can be written:
 - at least two fixture rows share the current run's exact SHA-256;
 - at least one History entry, tag association and playlist membership exist for that fixture content identity.
 
-Because the fixture SHA-256 is unique per run, stale synthetic rows from an earlier run cannot satisfy or poison this check. The targeted refresh cannot update unrelated user tracks. A file or database mutation observed between the two passes now fails closed and requires a retry after the state settles. No finite verifier can prevent a new external filesystem mutation after its final pass, so this is stability evidence for the verification window rather than a claim of atomic filesystem state. If the app report is malformed, incomplete, reports a different mode, opens audio, returns a non-zero result or fails any aggregate/stability condition, the witness writes no accepted evidence.
+Because the fixture SHA-256 is unique per run, stale synthetic rows from an earlier run cannot satisfy or poison this check. The targeted refresh cannot update unrelated user tracks. A file or database mutation observed between the two passes fails closed and requires a retry after the state settles. No finite verifier can prevent a new external filesystem mutation after its final pass, so this is stability evidence for the verification window rather than a claim of atomic filesystem state. If the app report is malformed, incomplete, reports a different mode, opens audio, returns a non-zero result or fails any aggregate/stability condition, the witness writes no accepted evidence.
 
 When the connected verifier passes, the recorder serializes the normal witness candidate to a temporary file, validates the closed evidence schema plus executable fingerprint, and only then replaces the final evidence path. A failed or interrupted new run therefore does not deliberately overwrite an earlier accepted witness with incomplete data.
 
@@ -98,6 +116,6 @@ From a source checkout:
 
 Automated CI covers SQLite migrations, bounded search, tags/playlists/history, content hashing, duplicate/missing directives, paged and fixture-scoped file-presence reconciliation, two-pass fixture stability qualification, moved-file rebinding, privacy-safe fixture aggregate counts, waveform/analysis cache ownership, bounded session snapshots and native library backup/restore recovery against synthetic data. Filesystem probes and SQLite maintenance stay outside the audio callback.
 
-The connected verifier strengthens the manual witness by checking real persisted application state for the current synthetic fixture instead of relying only on eight yes/no answers. It still does not establish real audio-device behavior, physical cue isolation, controller timing, listening quality or live reliability.
+The connected verifier plus exact-process ownership strengthen the manual witness by checking real persisted application state for the current synthetic fixture and by binding the manual workflow to the same executable whose fingerprint enters evidence. They still do not establish real audio-device behavior, physical cue isolation, controller timing, listening quality or live reliability.
 
 M4 may be marked complete only after accepted evidence is reviewed against the exact app build and there is no unresolved critical library/session regression. `docs/progress.json` must remain unchanged until that review is real.
