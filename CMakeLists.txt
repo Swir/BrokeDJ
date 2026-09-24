@@ -345,6 +345,20 @@ if(BROKEDJ_BUILD_APP)
         target_link_libraries(brokedj_library_runtime_store_tests PRIVATE brokedj_library)
         add_test(NAME library_runtime_store COMMAND brokedj_library_runtime_store_tests)
         set_tests_properties(library_runtime_store PROPERTIES TIMEOUT 60)
+
+        add_executable(brokedj_audio_device_state_store_tests tests/AudioDeviceStateStoreTests.cpp)
+        target_include_directories(brokedj_audio_device_state_store_tests PRIVATE src)
+        target_compile_definitions(brokedj_audio_device_state_store_tests PRIVATE
+            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+        target_link_libraries(brokedj_audio_device_state_store_tests PRIVATE juce::juce_audio_utils)
+        if(MSVC)
+            target_compile_options(brokedj_audio_device_state_store_tests PRIVATE /W4 /permissive- /utf-8)
+        else()
+            target_compile_options(brokedj_audio_device_state_store_tests PRIVATE
+                -Wall -Wextra -Wpedantic -Wconversion)
+        endif()
+        add_test(NAME audio_device_state_store COMMAND brokedj_audio_device_state_store_tests)
+        set_tests_properties(audio_device_state_store PROPERTIES TIMEOUT 30)
     endif()
 
     juce_add_gui_app(BrokeDJ PRODUCT_NAME "BrokeDJ" COMPANY_NAME "Swir"
