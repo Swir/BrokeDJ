@@ -483,11 +483,11 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
     $data = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
 
     Assert-ExactProperties -Object $data -Expected @(
-        'schema', 'project', 'scope', 'generatedUtc', 'environment', 'app', 'checks', 'privacy'
+        'schema', 'project', 'scope', 'generatedUtc', 'environment', 'app', 'witness', 'checks', 'privacy'
     ) -Context 'evidence'
 
     $schema = Assert-IntegerProperty -Object $data -Name 'schema' -Minimum 1 -Context 'evidence'
-    if ($schema -ne 1) { throw 'Unsupported M4 witness schema.' }
+    if ($schema -ne 2) { throw 'Unsupported M4 witness schema. Regenerate evidence with the exact-process-bound witness.' }
     $project = Assert-StringProperty -Object $data -Name 'project' -Context 'evidence'
     $scope = Assert-StringProperty -Object $data -Name 'scope' -Context 'evidence'
     if ($project -ne 'BrokeDJ' -or $scope -ne 'M4-library-workflow') {
@@ -527,6 +527,16 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp) {
     if ($evidenceFileName -ne $expectedFingerprint.fileName) { throw 'Evidence executable filename does not match AppPath.' }
     if ($evidenceVersion -ne $expectedFingerprint.fileVersion) { throw 'Evidence executable version does not match AppPath.' }
     if ($evidenceHash.ToLowerInvariant() -ne $expectedFingerprint.sha256) { throw 'Evidence executable SHA-256 does not match AppPath.' }
+
+    Assert-ExactProperties -Object $data.witness -Expected @('interactionBinding', 'fixtureStateVerification') -Context 'witness'
+    $interactionBinding = Assert-StringProperty -Object $data.witness -Name 'interactionBinding' -Context 'witness'
+    $fixtureStateVerification = Assert-StringProperty -Object $data.witness -Name 'fixtureStateVerification' -Context 'witness'
+    if ($interactionBinding -ne 'tracked-exact-app-process-v1') {
+        throw 'M4 evidence does not prove the required tracked exact-app interaction binding.'
+    }
+    if ($fixtureStateVerification -ne 'two-pass-stable-aggregate-v1') {
+        throw 'M4 evidence does not prove the required two-pass stable fixture-state verification contract.'
+    }
 
     $requiredChecks = @(
         'launchAndResize',
@@ -690,7 +700,7 @@ try {
     Invoke-FixtureStateProbe -App $app -ContentHash $fixture.ContentHash
 
     $evidence = [ordered]@{
-        schema = 1
+        schema = 2
         project = 'BrokeDJ'
         scope = 'M4-library-workflow'
         generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -700,6 +710,10 @@ try {
             processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
         }
         app = $appFingerprint
+        witness = [ordered]@{
+            interactionBinding = 'tracked-exact-app-process-v1'
+            fixtureStateVerification = 'two-pass-stable-aggregate-v1'
+        }
         checks = $checks
         privacy = [ordered]@{
             containsTrackPaths = $false
