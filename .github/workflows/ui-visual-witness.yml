@@ -43,7 +43,8 @@ jobs:
           pwsh -NoProfile -File scripts/capture_ui_smoke.ps1 `
             -ExePath $exe `
             -OutputDirectory 'build/windows/ui-visual-witness' `
-            -TimeoutSeconds 30
+            -TimeoutSeconds 30 `
+            -StableCaptureMilliseconds 90
           if ($LASTEXITCODE -ne 0) { throw "UI visual witness failed: $LASTEXITCODE" }
 
       - name: Validate visual witness contract
@@ -56,8 +57,11 @@ jobs:
               $manifest.plays_audio -ne $false -or
               $manifest.opens_audio_device -ne $false -or
               $manifest.smoke_success -ne $true -or
-              $manifest.smoke_exercised_requested_1600x900 -ne $true) {
-            throw 'UI visual witness manifest failed schema/safety validation.'
+              $manifest.smoke_exercised_requested_1600x900 -ne $true -or
+              $manifest.capture_settle_milliseconds -lt 40 -or
+              $manifest.compact.stable_frame -ne $true -or
+              $manifest.workstation.stable_frame -ne $true) {
+            throw 'UI visual witness manifest failed settled-frame schema/safety validation.'
           }
           if ($manifest.compact.width -lt 1040 -or $manifest.compact.height -lt 760 -or $manifest.compact.bytes -lt 4096) {
             throw 'Compact UI witness dimensions/payload are invalid.'
@@ -73,19 +77,21 @@ jobs:
           }
           Copy-Item 'BrokeDJ-gui-smoke.json' "$root/BrokeDJ-gui-smoke.json"
 
-      - name: Gate blank, corrupt and palette-regressed captures
+      - name: Gate blank, corrupt, palette and full-surface regressions
         shell: pwsh
         run: |
           $root = 'build/windows/ui-visual-witness'
           pwsh -NoProfile -File scripts/validate_ui_witness.ps1 -WitnessDirectory $root
           if ($LASTEXITCODE -ne 0) { throw "UI pixel quality gate failed: $LASTEXITCODE" }
           $quality = Get-Content "$root/BrokeDJ-ui-quality.json" -Raw | ConvertFrom-Json
-          if ($quality.schema_version -ne 1 -or
+          if ($quality.schema_version -ne 2 -or
               $quality.mode -ne 'windows-ui-pixel-quality-gate' -or
               $quality.plays_audio -ne $false -or
               $quality.opens_audio_device -ne $false -or
-              $quality.success -ne $true) {
-            throw 'UI pixel quality report failed schema/safety validation.'
+              $quality.success -ne $true -or
+              $quality.workstation.right_quarter_non_black_fraction -lt 0.80 -or
+              $quality.workstation.bottom_quarter_non_black_fraction -lt 0.80) {
+            throw 'UI pixel quality report failed schema/full-surface validation.'
           }
 
       - name: Upload Windows UI visual witness
