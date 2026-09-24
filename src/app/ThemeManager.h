@@ -69,6 +69,8 @@ public:
     }
 
     // Startup restore. A missing/corrupt setting fails closed to Electric Blue.
+    // BROKEDJ_UI_THEME_OVERRIDE is intentionally an automation-only visual-witness
+    // hook. It changes startup presentation without writing the user's settings.
     static void applyPersisted(juce::Component& root) {
         applyInternal(root, loadTheme());
     }
@@ -122,6 +124,12 @@ private:
     }
 
     static Theme loadTheme() {
+        const auto overrideToken = juce::SystemStats::getEnvironmentVariable(
+            "BROKEDJ_UI_THEME_OVERRIDE", {}).trim().toLowerCase();
+        if (overrideToken == "electric-blue") return Theme::electricBlue;
+        if (overrideToken == "ultraviolet") return Theme::ultraviolet;
+        if (overrideToken == "ember") return Theme::ember;
+
         juce::PropertiesFile settings(settingsOptions());
         if (!settings.isValidFile()) return Theme::electricBlue;
         return sanitiseTheme(settings.getIntValue("uiAccentTheme",
