@@ -35,13 +35,9 @@ function Assert-HumanGenerationAllowed {
 }
 
 function Assert-Windows11X64 {
-    if ($env:OS -ne 'Windows_NT') {
-        throw 'The Beta witness runner requires Windows 11.'
-    }
+    if ($env:OS -ne 'Windows_NT') { throw 'The Beta witness runner requires Windows 11.' }
     $build = [Environment]::OSVersion.Version.Build
-    if ($build -lt 22000) {
-        throw "Windows 11 build 22000 or newer is required (detected $build)."
-    }
+    if ($build -lt 22000) { throw "Windows 11 build 22000 or newer is required (detected $build)." }
     $osArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
     $processArch = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
     if ($osArch -ne 'X64' -or $processArch -ne 'X64') {
@@ -52,77 +48,53 @@ function Assert-Windows11X64 {
 function Resolve-App([string]$Path) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $item = Get-Item -LiteralPath $resolved
-    if ($item.PSIsContainer -or $item.Name -cne 'BrokeDJ.exe') {
-        throw 'AppPath must point to BrokeDJ.exe.'
-    }
+    if ($item.PSIsContainer -or $item.Name -cne 'BrokeDJ.exe') { throw 'AppPath must point to BrokeDJ.exe.' }
     return $item
 }
 
 function Resolve-EvidenceDirectory([string]$Path, [bool]$Create) {
     if (-not (Test-Path -LiteralPath $Path)) {
-        if (-not $Create) {
-            throw "Evidence directory does not exist: $Path"
-        }
+        if (-not $Create) { throw "Evidence directory does not exist: $Path" }
         New-Item -ItemType Directory -Force -Path $Path | Out-Null
     }
-    $resolved = (Resolve-Path -LiteralPath $Path).Path
-    $item = Get-Item -LiteralPath $resolved
-    if (-not $item.PSIsContainer) {
-        throw 'EvidenceDirectory must be a directory.'
-    }
+    $item = Get-Item -LiteralPath (Resolve-Path -LiteralPath $Path).Path
+    if (-not $item.PSIsContainer) { throw 'EvidenceDirectory must be a directory.' }
     return $item.FullName
 }
 
-function Resolve-ToolScript(
-    [string]$AppDirectory,
-    [string]$PackagedName,
-    [string]$RepositoryName
-) {
+function Resolve-ToolScript([string]$AppDirectory, [string]$PackagedName, [string]$RepositoryName) {
     $candidates = @(
         (Join-Path $AppDirectory $PackagedName),
         (Join-Path $PSScriptRoot $RepositoryName)
     )
     foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return (Resolve-Path -LiteralPath $candidate).Path
-        }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
     throw "Required witness tool is missing: $PackagedName / $RepositoryName"
 }
 
-function Resolve-Guide(
-    [string]$AppDirectory,
-    [string]$PackagedName,
-    [string]$RepositoryRelativePath
-) {
+function Resolve-Guide([string]$AppDirectory, [string]$PackagedName, [string]$RepositoryRelativePath) {
     $packaged = Join-Path $AppDirectory $PackagedName
-    if (Test-Path -LiteralPath $packaged -PathType Leaf) {
-        return (Resolve-Path -LiteralPath $packaged).Path
-    }
+    if (Test-Path -LiteralPath $packaged -PathType Leaf) { return (Resolve-Path -LiteralPath $packaged).Path }
     $repositoryRoot = Split-Path -Parent $PSScriptRoot
     $candidate = Join-Path $repositoryRoot $RepositoryRelativePath
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-        return (Resolve-Path -LiteralPath $candidate).Path
-    }
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     return $null
 }
 
 function Get-PowerShellHostPath {
     $hostName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
     $candidate = Join-Path $PSHOME $hostName
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-        throw "Unable to locate the current PowerShell host: $candidate"
-    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw "Unable to locate current PowerShell host: $candidate" }
     return (Resolve-Path -LiteralPath $candidate).Path
 }
 
 function Invoke-ChildScript([string]$ScriptPath, [string[]]$Arguments) {
     $hostPath = Get-PowerShellHostPath
-    $allArguments = @('-NoProfile', '-File', $ScriptPath) + $Arguments
-    & $hostPath @allArguments
+    & $hostPath @('-NoProfile', '-File', $ScriptPath) @Arguments
     $code = $LASTEXITCODE
     if ($code -ne 0) {
-        throw "Tool failed with exit code $code: $([System.IO.Path]::GetFileName($ScriptPath))"
+        throw "Tool failed with exit code ${code}: $([System.IO.Path]::GetFileName($ScriptPath))"
     }
 }
 
@@ -150,18 +122,14 @@ function Read-IntegerAtLeast([string]$Question, [int]$Minimum) {
     while ($true) {
         $raw = (Read-Host "$Question (minimum $Minimum)").Trim()
         $value = 0
-        if ([int]::TryParse($raw, [ref]$value) -and $value -ge $Minimum) {
-            return $value
-        }
+        if ([int]::TryParse($raw, [ref]$value) -and $value -ge $Minimum) { return $value }
         Write-Host "Enter an integer greater than or equal to $Minimum."
     }
 }
 
 function Assert-AllConfirmations([System.Collections.IDictionary]$Answers, [string]$Scope) {
     foreach ($entry in $Answers.GetEnumerator()) {
-        if (-not [bool]$entry.Value) {
-            throw "$Scope was not attested completely; no new accepted evidence will be published by the underlying witness tool."
-        }
+        if (-not [bool]$entry.Value) { throw "$Scope was not attested completely; no accepted evidence will be published." }
     }
 }
 
@@ -169,51 +137,32 @@ function Test-ProbeContract([string]$ProbePath) {
     if (-not (Test-Path -LiteralPath $ProbePath -PathType Leaf)) { return $false }
     try {
         $data = Get-Content -LiteralPath $ProbePath -Raw | ConvertFrom-Json
-        if ($data.schema_version -ne 2) { return $false }
-        if ($data.plays_audio -ne $false) { return $false }
-        if ($data.calls_device_open -ne $false) { return $false }
-        if ($data.starts_audio_callback -ne $false) { return $false }
-        if ($data.safety_invariants_ok -ne $true) { return $false }
-        return $true
-    } catch {
-        return $false
-    }
+        return ($data.schema_version -eq 2 -and
+                $data.plays_audio -eq $false -and
+                $data.calls_device_open -eq $false -and
+                $data.starts_audio_callback -eq $false -and
+                $data.safety_invariants_ok -eq $true)
+    } catch { return $false }
 }
 
-function Ensure-SilentDeviceProbe(
-    [System.IO.FileInfo]$App,
-    [string]$Directory,
-    [string]$ProbePath
-) {
+function Ensure-SilentDeviceProbe([System.IO.FileInfo]$App, [string]$Directory, [string]$ProbePath) {
     if (Test-ProbeContract -ProbePath $ProbePath) {
         Write-Step 'Existing full device probe passes the non-opening safety contract.'
         return
     }
-
-    Write-Step 'Generating the full silent device-capability probe; this does not open an audio device or start playback.'
-    $textPath = Join-Path $Directory 'BrokeDJ-device-probe.txt'
+    Write-Step 'Generating the full silent device-capability probe; no audio device is opened and no playback starts.'
     Remove-Item -LiteralPath $ProbePath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $textPath -Force -ErrorAction SilentlyContinue
-    $process = Start-Process -FilePath $App.FullName -ArgumentList '--device-probe' `
-        -WorkingDirectory $Directory -PassThru
+    Remove-Item -LiteralPath (Join-Path $Directory 'BrokeDJ-device-probe.txt') -Force -ErrorAction SilentlyContinue
+    $process = Start-Process -FilePath $App.FullName -ArgumentList '--device-probe' -WorkingDirectory $Directory -PassThru
     if (-not $process.WaitForExit(30000)) {
         try { $process.Kill() } catch { }
         throw 'BrokeDJ --device-probe did not finish within 30 seconds.'
     }
-    if ($process.ExitCode -ne 0) {
-        throw "BrokeDJ --device-probe failed with exit code $($process.ExitCode)."
-    }
-    if (-not (Test-ProbeContract -ProbePath $ProbePath)) {
-        throw 'The generated device probe did not satisfy the non-opening safety contract.'
-    }
+    if ($process.ExitCode -ne 0) { throw "BrokeDJ --device-probe failed with exit code $($process.ExitCode)." }
+    if (-not (Test-ProbeContract -ProbePath $ProbePath)) { throw 'Generated device probe failed the non-opening safety contract.' }
 }
 
-function Test-Witness(
-    [string]$ScriptPath,
-    [System.IO.FileInfo]$App,
-    [string]$EvidencePath,
-    [string]$ProbePath = ''
-) {
+function Test-Witness([string]$ScriptPath, [System.IO.FileInfo]$App, [string]$EvidencePath, [string]$ProbePath = '') {
     if (-not (Test-Path -LiteralPath $EvidencePath -PathType Leaf)) { return $false }
     $arguments = @('-AppPath', $App.FullName, '-EvidencePath', $EvidencePath, '-ValidateExisting')
     if (-not [string]::IsNullOrWhiteSpace($ProbePath)) {
@@ -229,172 +178,105 @@ function Test-Witness(
     }
 }
 
-function Invoke-M1(
-    [string]$ScriptPath,
-    [System.IO.FileInfo]$App,
-    [System.Collections.IDictionary]$Paths
-) {
+function Invoke-M1([string]$ScriptPath, [System.IO.FileInfo]$App, [System.Collections.IDictionary]$Paths) {
     if (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M1 -ProbePath $Paths.Probe) {
         Write-Step 'M1 hardware witness is already valid for this executable.'
         return
     }
-    Write-Step 'Starting M1 human hardware witness. The existing witness owns all manual questions and keeps audio actions user-controlled.'
-    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments @(
-        '-AppPath', $App.FullName,
-        '-ProbePath', $Paths.Probe,
-        '-EvidencePath', $Paths.M1
-    )
-    if (-not (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M1 -ProbePath $Paths.Probe)) {
-        throw 'M1 witness did not validate after generation.'
-    }
+    Write-Step 'Starting the canonical M1 human hardware witness.'
+    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments @('-AppPath', $App.FullName, '-ProbePath', $Paths.Probe, '-EvidencePath', $Paths.M1)
+    if (-not (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M1 -ProbePath $Paths.Probe)) { throw 'M1 witness did not validate after generation.' }
 }
 
-function Invoke-M2(
-    [string]$ScriptPath,
-    [string]$GuidePath,
-    [System.IO.FileInfo]$App,
-    [System.Collections.IDictionary]$Paths
-) {
+function Invoke-M2([string]$ScriptPath, [string]$GuidePath, [System.IO.FileInfo]$App, [System.Collections.IDictionary]$Paths) {
     if (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M2) {
         Write-Step 'M2 key-lock listening witness is already valid for this executable.'
         return
     }
-
-    Write-Step 'M2 requires a human listening review. The runner never starts playback or changes volume.'
-    if (-not [string]::IsNullOrWhiteSpace($GuidePath)) {
-        Write-Host "Guide: $GuidePath"
-    }
-    Write-Host "Normal baseline command: & '$($App.FullName)'"
-    Write-Host "Key-lock research command: & '$($App.FullName)' --key-lock-research"
-    [void](Read-Host 'Complete the documented A/B listening procedure with conservative hardware volume, close BrokeDJ, then press Enter')
-
-    $trackCount = Read-IntegerAtLeast -Question 'How many representative user-owned/licensed tracks were reviewed?' -Minimum 3
+    Write-Step 'M2 needs human listening. This runner never starts playback or changes volume.'
+    if (-not [string]::IsNullOrWhiteSpace($GuidePath)) { Write-Host "Guide: $GuidePath" }
+    Write-Host "Normal baseline: & '$($App.FullName)'"
+    Write-Host "Key-lock research: & '$($App.FullName)' --key-lock-research"
+    [void](Read-Host 'Complete the documented A/B listening procedure, close BrokeDJ, then press Enter')
+    $trackCount = Read-IntegerAtLeast 'Representative user-owned/licensed track count' 3
     $answers = [ordered]@{
-        UserOwnedOrLicensed = Read-YesNo 'Were all reviewed tracks user-owned or otherwise licensed for testing?'
+        UserOwnedOrLicensed = Read-YesNo 'Were all reviewed tracks user-owned or otherwise licensed?'
         NormalBaselineReviewed = Read-YesNo 'Was normal playback reviewed as the baseline?'
-        SlowKeyLockReviewed = Read-YesNo 'Was key lock reviewed at a slower deck rate?'
-        FastKeyLockReviewed = Read-YesNo 'Was key lock reviewed at a faster deck rate?'
-        TransportFallbackReviewed = Read-YesNo 'Were seek/loop/rate-change fallback and paused restage reviewed?'
+        SlowKeyLockReviewed = Read-YesNo 'Was key lock reviewed at a slower rate?'
+        FastKeyLockReviewed = Read-YesNo 'Was key lock reviewed at a faster rate?'
+        TransportFallbackReviewed = Read-YesNo 'Were seek/loop/rate fallback and paused restage reviewed?'
         PitchStabilityAcceptable = Read-YesNo 'Was pitch stability acceptable on the reviewed material?'
         NoCriticalArtifactsObserved = Read-YesNo 'Were no critical audible artifacts observed?'
-        RuntimeErrorReview = Read-YesNo 'Was the BrokeDJ runtime log reviewed for unexpected key-lock errors?'
+        RuntimeErrorReview = Read-YesNo 'Was the runtime log reviewed for unexpected key-lock errors?'
     }
-    Assert-AllConfirmations -Answers $answers -Scope 'M2 listening review'
-
-    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments @(
-        '-AppPath', $App.FullName,
-        '-EvidencePath', $Paths.M2,
-        '-RepresentativeTrackCount', [string]$trackCount,
-        '-UserOwnedOrLicensed',
-        '-NormalBaselineReviewed',
-        '-SlowKeyLockReviewed',
-        '-FastKeyLockReviewed',
-        '-TransportFallbackReviewed',
-        '-PitchStabilityAcceptable',
-        '-NoCriticalArtifactsObserved',
-        '-RuntimeErrorReview'
-    )
-    if (-not (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M2)) {
-        throw 'M2 witness did not validate after generation.'
-    }
+    Assert-AllConfirmations $answers 'M2 listening review'
+    $args = @('-AppPath', $App.FullName, '-EvidencePath', $Paths.M2,
+              '-RepresentativeTrackCount', [string]$trackCount,
+              '-UserOwnedOrLicensed', '-NormalBaselineReviewed', '-SlowKeyLockReviewed',
+              '-FastKeyLockReviewed', '-TransportFallbackReviewed', '-PitchStabilityAcceptable',
+              '-NoCriticalArtifactsObserved', '-RuntimeErrorReview')
+    Invoke-ChildScript $ScriptPath $args
+    if (-not (Test-Witness $ScriptPath $App $Paths.M2)) { throw 'M2 witness did not validate after generation.' }
 }
 
-function Invoke-M3(
-    [string]$ScriptPath,
-    [string]$GuidePath,
-    [System.IO.FileInfo]$App,
-    [System.Collections.IDictionary]$Paths
-) {
+function Invoke-M3([string]$ScriptPath, [string]$GuidePath, [System.IO.FileInfo]$App, [System.Collections.IDictionary]$Paths) {
     if (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M3) {
         Write-Step 'M3 mixer/recording witness is already valid for this executable.'
         return
     }
-
-    Write-Step 'M3 requires a user-controlled mixer/recording/listening session. The runner never starts playback, microphone input or recording.'
-    if (-not [string]::IsNullOrWhiteSpace($GuidePath)) {
-        Write-Host "Guide: $GuidePath"
-    }
-    [void](Read-Host 'Complete the documented M3 session with conservative hardware volume, close BrokeDJ, then press Enter')
-
-    $minutes = Read-IntegerAtLeast -Question 'How many continuous minutes were qualified?' -Minimum 60
-    $trackCount = Read-IntegerAtLeast -Question 'How many representative user-owned/licensed tracks were used?' -Minimum 3
+    Write-Step 'M3 needs a user-controlled mixer/recording session. This runner never starts playback, microphone input or recording.'
+    if (-not [string]::IsNullOrWhiteSpace($GuidePath)) { Write-Host "Guide: $GuidePath" }
+    [void](Read-Host 'Complete the documented M3 session, close BrokeDJ, then press Enter')
+    $minutes = Read-IntegerAtLeast 'Continuous qualified minutes' 60
+    $trackCount = Read-IntegerAtLeast 'Representative user-owned/licensed track count' 3
     $answers = [ordered]@{
-        UserOwnedOrLicensed = Read-YesNo 'Were all source tracks user-owned or otherwise licensed for testing?'
+        UserOwnedOrLicensed = Read-YesNo 'Were all source tracks user-owned or otherwise licensed?'
         EqListeningReviewed = Read-YesNo 'Was EQ behavior reviewed by listening?'
         GainStagingReviewed = Read-YesNo 'Was gain staging reviewed?'
-        CrossfaderLawsReviewed = Read-YesNo 'Were the crossfader laws reviewed?'
-        LimiterBehaviorReviewed = Read-YesNo 'Was the output safety/limiter behavior reviewed without calling it transparent?'
+        CrossfaderLawsReviewed = Read-YesNo 'Were crossfader laws reviewed?'
+        LimiterBehaviorReviewed = Read-YesNo 'Was output safety/limiter behavior reviewed without calling it transparent?'
         MicrophoneInputReviewed = Read-YesNo 'Was microphone input reviewed on the intended hardware?'
         DuckingReviewed = Read-YesNo 'Was microphone ducking reviewed?'
         BoothRoutingReviewed = Read-YesNo 'Was Booth routing reviewed where supported?'
-        CueIsolationPreserved = Read-YesNo 'Was private Cue isolation preserved on the intended outputs?'
+        CueIsolationPreserved = Read-YesNo 'Was private Cue isolation preserved?'
         RecordingCreated = Read-YesNo 'Was a set recording created?'
-        RecordingPlaybackReviewed = Read-YesNo 'Was the resulting recording played back and reviewed?'
-        ZeroRecordingDropoutsObserved = Read-YesNo 'Were zero recording dropouts observed for the qualified session?'
+        RecordingPlaybackReviewed = Read-YesNo 'Was that recording played back and reviewed?'
+        ZeroRecordingDropoutsObserved = Read-YesNo 'Were zero recording dropouts observed?'
         RuntimeErrorReview = Read-YesNo 'Was the runtime log reviewed for unexpected mixer/recording errors?'
     }
-    Assert-AllConfirmations -Answers $answers -Scope 'M3 mixer/recording review'
-
-    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments @(
-        '-AppPath', $App.FullName,
-        '-EvidencePath', $Paths.M3,
-        '-ContinuousSessionMinutes', [string]$minutes,
-        '-RepresentativeTrackCount', [string]$trackCount,
-        '-UserOwnedOrLicensed',
-        '-EqListeningReviewed',
-        '-GainStagingReviewed',
-        '-CrossfaderLawsReviewed',
-        '-LimiterBehaviorReviewed',
-        '-MicrophoneInputReviewed',
-        '-DuckingReviewed',
-        '-BoothRoutingReviewed',
-        '-CueIsolationPreserved',
-        '-RecordingCreated',
-        '-RecordingPlaybackReviewed',
-        '-ZeroRecordingDropoutsObserved',
-        '-RuntimeErrorReview'
-    )
-    if (-not (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M3)) {
-        throw 'M3 witness did not validate after generation.'
-    }
+    Assert-AllConfirmations $answers 'M3 mixer/recording review'
+    $args = @('-AppPath', $App.FullName, '-EvidencePath', $Paths.M3,
+              '-ContinuousSessionMinutes', [string]$minutes,
+              '-RepresentativeTrackCount', [string]$trackCount,
+              '-UserOwnedOrLicensed', '-EqListeningReviewed', '-GainStagingReviewed',
+              '-CrossfaderLawsReviewed', '-LimiterBehaviorReviewed', '-MicrophoneInputReviewed',
+              '-DuckingReviewed', '-BoothRoutingReviewed', '-CueIsolationPreserved',
+              '-RecordingCreated', '-RecordingPlaybackReviewed', '-ZeroRecordingDropoutsObserved',
+              '-RuntimeErrorReview')
+    Invoke-ChildScript $ScriptPath $args
+    if (-not (Test-Witness $ScriptPath $App $Paths.M3)) { throw 'M3 witness did not validate after generation.' }
 }
 
-function Invoke-M4(
-    [string]$ScriptPath,
-    [System.IO.FileInfo]$App,
-    [System.Collections.IDictionary]$Paths
-) {
+function Invoke-M4([string]$ScriptPath, [System.IO.FileInfo]$App, [System.Collections.IDictionary]$Paths) {
     if (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M4) {
         Write-Step 'M4 connected library/session witness is already valid for this executable.'
         return
     }
-    Write-Step 'Starting the exact-process-bound M4 library/session witness. It launches only the selected BrokeDJ.exe and keeps all interactive actions human-controlled.'
-    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments @(
-        '-AppPath', $App.FullName,
-        '-EvidencePath', $Paths.M4
-    )
-    if (-not (Test-Witness -ScriptPath $ScriptPath -App $App -EvidencePath $Paths.M4)) {
-        throw 'M4 witness did not validate after generation.'
-    }
+    Write-Step 'Starting the canonical exact-process-bound M4 library/session witness.'
+    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments @('-AppPath', $App.FullName, '-EvidencePath', $Paths.M4)
+    if (-not (Test-Witness $ScriptPath $App $Paths.M4)) { throw 'M4 witness did not validate after generation.' }
 }
 
-function Invoke-Qualification(
-    [string]$ScriptPath,
-    [System.IO.FileInfo]$App,
-    [System.Collections.IDictionary]$Paths,
-    [switch]$ExistingOnly
-) {
-    $arguments = @(
-        '-AppPath', $App.FullName,
-        '-ProbePath', $Paths.Probe,
-        '-M1EvidencePath', $Paths.M1,
-        '-M2EvidencePath', $Paths.M2,
-        '-M3EvidencePath', $Paths.M3,
-        '-M4EvidencePath', $Paths.M4,
-        '-QualificationPath', $Paths.Qualification
-    )
-    if ($ExistingOnly) { $arguments += '-ValidateExisting' }
-    Invoke-ChildScript -ScriptPath $ScriptPath -Arguments $arguments
+function Invoke-Qualification([string]$ScriptPath, [System.IO.FileInfo]$App, [System.Collections.IDictionary]$Paths, [switch]$ExistingOnly) {
+    $args = @('-AppPath', $App.FullName,
+              '-ProbePath', $Paths.Probe,
+              '-M1EvidencePath', $Paths.M1,
+              '-M2EvidencePath', $Paths.M2,
+              '-M3EvidencePath', $Paths.M3,
+              '-M4EvidencePath', $Paths.M4,
+              '-QualificationPath', $Paths.Qualification)
+    if ($ExistingOnly) { $args += '-ValidateExisting' }
+    Invoke-ChildScript $ScriptPath $args
 }
 
 function Invoke-FixtureSelfTest {
@@ -407,17 +289,18 @@ function Invoke-FixtureSelfTest {
         (Test-TruthyEnvironmentValue $null)) {
         throw 'Truthy environment parsing self-test failed.'
     }
-
-    $paths = Get-EvidencePaths -Directory 'C:\BrokeDJ evidence'
-    if ([System.IO.Path]::GetFileName($paths.Probe) -cne 'BrokeDJ-device-probe.json' -or
-        [System.IO.Path]::GetFileName($paths.M1) -cne 'BrokeDJ-M1-Hardware-Witness.json' -or
-        [System.IO.Path]::GetFileName($paths.M2) -cne 'BrokeDJ-M2-keylock-listening.json' -or
-        [System.IO.Path]::GetFileName($paths.M3) -cne 'BrokeDJ-M3-mixer-recording.json' -or
-        [System.IO.Path]::GetFileName($paths.M4) -cne 'BrokeDJ-M4-Library-Witness.json' -or
-        [System.IO.Path]::GetFileName($paths.Qualification) -cne 'BrokeDJ-Beta-Qualification.json') {
-        throw 'Canonical evidence file-name self-test failed.'
+    $paths = Get-EvidencePaths 'C:\BrokeDJ evidence'
+    $expected = @{
+        Probe = 'BrokeDJ-device-probe.json'
+        M1 = 'BrokeDJ-M1-Hardware-Witness.json'
+        M2 = 'BrokeDJ-M2-keylock-listening.json'
+        M3 = 'BrokeDJ-M3-mixer-recording.json'
+        M4 = 'BrokeDJ-M4-Library-Witness.json'
+        Qualification = 'BrokeDJ-Beta-Qualification.json'
     }
-
+    foreach ($key in $expected.Keys) {
+        if ([System.IO.Path]::GetFileName($paths[$key]) -cne $expected[$key]) { throw "Canonical evidence name self-test failed: $key" }
+    }
     $required = @(
         @('M1-HARDWARE-WITNESS.ps1', 'm1_hardware_witness.ps1'),
         @('M2-KEYLOCK-LISTENING-WITNESS.ps1', 'm2_keylock_listening_witness.ps1'),
@@ -426,10 +309,7 @@ function Invoke-FixtureSelfTest {
         @('BETA-QUALIFICATION.ps1', 'beta_qualification.ps1')
     )
     foreach ($pair in $required) {
-        $resolved = Resolve-ToolScript -AppDirectory $PSScriptRoot -PackagedName $pair[0] -RepositoryName $pair[1]
-        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
-            throw "Tool-resolution self-test failed: $($pair[1])"
-        }
+        [void](Resolve-ToolScript $PSScriptRoot $pair[0] $pair[1])
     }
     Write-Host 'Beta witness runner fixture self-test: PASS'
 }
@@ -439,69 +319,61 @@ try {
         Invoke-FixtureSelfTest
         exit 0
     }
+    if ($StatusOnly -and $ValidateExisting) { throw 'Use either -StatusOnly or -ValidateExisting, not both.' }
 
-    if ($StatusOnly -and $ValidateExisting) {
-        throw 'Use either -StatusOnly or -ValidateExisting, not both.'
-    }
-
-    # Generation is deliberately rejected before resolving or hashing AppPath.
-    if (-not $StatusOnly -and -not $ValidateExisting) {
-        Assert-HumanGenerationAllowed
-    }
+    # Human evidence generation is refused before AppPath is resolved or hashed.
+    if (-not $StatusOnly -and -not $ValidateExisting) { Assert-HumanGenerationAllowed }
     Assert-Windows11X64
 
-    $app = Resolve-App -Path $AppPath
-    $evidenceDir = Resolve-EvidenceDirectory -Path $EvidenceDirectory -Create (-not $StatusOnly -and -not $ValidateExisting)
-    $paths = Get-EvidencePaths -Directory $evidenceDir
+    $app = Resolve-App $AppPath
+    $createEvidenceDir = (-not $StatusOnly -and -not $ValidateExisting)
+    $evidenceDir = Resolve-EvidenceDirectory $EvidenceDirectory $createEvidenceDir
+    $paths = Get-EvidencePaths $evidenceDir
+    $appDir = $app.Directory.FullName
 
-    $m1Script = Resolve-ToolScript -AppDirectory $app.Directory.FullName -PackagedName 'M1-HARDWARE-WITNESS.ps1' -RepositoryName 'm1_hardware_witness.ps1'
-    $m2Script = Resolve-ToolScript -AppDirectory $app.Directory.FullName -PackagedName 'M2-KEYLOCK-LISTENING-WITNESS.ps1' -RepositoryName 'm2_keylock_listening_witness.ps1'
-    $m3Script = Resolve-ToolScript -AppDirectory $app.Directory.FullName -PackagedName 'M3-MIXER-RECORDING-WITNESS.ps1' -RepositoryName 'm3_mixer_recording_witness.ps1'
-    $m4Script = Resolve-ToolScript -AppDirectory $app.Directory.FullName -PackagedName 'M4-LIBRARY-WITNESS.ps1' -RepositoryName 'm4_library_witness.ps1'
-    $qualificationScript = Resolve-ToolScript -AppDirectory $app.Directory.FullName -PackagedName 'BETA-QUALIFICATION.ps1' -RepositoryName 'beta_qualification.ps1'
-
-    $m2Guide = Resolve-Guide -AppDirectory $app.Directory.FullName -PackagedName 'M2-KEYLOCK-LISTENING-WITNESS.md' -RepositoryRelativePath 'docs/M2_KEYLOCK_LISTENING_WITNESS.md'
-    $m3Guide = Resolve-Guide -AppDirectory $app.Directory.FullName -PackagedName 'M3-MIXER-RECORDING-WITNESS.md' -RepositoryRelativePath 'docs/M3_MIXER_RECORDING_WITNESS.md'
+    $m1Script = Resolve-ToolScript $appDir 'M1-HARDWARE-WITNESS.ps1' 'm1_hardware_witness.ps1'
+    $m2Script = Resolve-ToolScript $appDir 'M2-KEYLOCK-LISTENING-WITNESS.ps1' 'm2_keylock_listening_witness.ps1'
+    $m3Script = Resolve-ToolScript $appDir 'M3-MIXER-RECORDING-WITNESS.ps1' 'm3_mixer_recording_witness.ps1'
+    $m4Script = Resolve-ToolScript $appDir 'M4-LIBRARY-WITNESS.ps1' 'm4_library_witness.ps1'
+    $qualificationScript = Resolve-ToolScript $appDir 'BETA-QUALIFICATION.ps1' 'beta_qualification.ps1'
+    $m2Guide = Resolve-Guide $appDir 'M2-KEYLOCK-LISTENING-WITNESS.md' 'docs/M2_KEYLOCK_LISTENING_WITNESS.md'
+    $m3Guide = Resolve-Guide $appDir 'M3-MIXER-RECORDING-WITNESS.md' 'docs/M3_MIXER_RECORDING_WITNESS.md'
 
     if ($ValidateExisting) {
-        Invoke-Qualification -ScriptPath $qualificationScript -App $app -Paths $paths -ExistingOnly
+        Invoke-Qualification $qualificationScript $app $paths -ExistingOnly
         Write-Step 'Existing first-Beta qualification is VALID for the exact executable and evidence set.'
         exit 0
     }
 
     if ($StatusOnly) {
-        $probeValid = Test-ProbeContract -ProbePath $paths.Probe
-        $m1Valid = Test-Witness -ScriptPath $m1Script -App $app -EvidencePath $paths.M1 -ProbePath $paths.Probe
-        $m2Valid = Test-Witness -ScriptPath $m2Script -App $app -EvidencePath $paths.M2
-        $m3Valid = Test-Witness -ScriptPath $m3Script -App $app -EvidencePath $paths.M3
-        $m4Valid = Test-Witness -ScriptPath $m4Script -App $app -EvidencePath $paths.M4
+        $probeValid = Test-ProbeContract $paths.Probe
+        $m1Valid = Test-Witness $m1Script $app $paths.M1 $paths.Probe
+        $m2Valid = Test-Witness $m2Script $app $paths.M2
+        $m3Valid = Test-Witness $m3Script $app $paths.M3
+        $m4Valid = Test-Witness $m4Script $app $paths.M4
         $qualificationValid = $false
-        if ($probeValid -and $m1Valid -and $m2Valid -and $m3Valid -and $m4Valid -and
-            (Test-Path -LiteralPath $paths.Qualification -PathType Leaf)) {
+        if ($probeValid -and $m1Valid -and $m2Valid -and $m3Valid -and $m4Valid -and (Test-Path -LiteralPath $paths.Qualification -PathType Leaf)) {
             try {
-                Invoke-Qualification -ScriptPath $qualificationScript -App $app -Paths $paths -ExistingOnly
+                Invoke-Qualification $qualificationScript $app $paths -ExistingOnly
                 $qualificationValid = $true
-            } catch {
-                Write-Warning $_.Exception.Message
-            }
+            } catch { Write-Warning $_.Exception.Message }
         }
-        Write-Host ('Probe={0} M1={1} M2={2} M3={3} M4={4} Qualification={5}' -f `
-            $probeValid, $m1Valid, $m2Valid, $m3Valid, $m4Valid, $qualificationValid)
+        Write-Host ('Probe={0} M1={1} M2={2} M3={3} M4={4} Qualification={5}' -f $probeValid, $m1Valid, $m2Valid, $m3Valid, $m4Valid, $qualificationValid)
         if ($qualificationValid) { exit 0 }
         exit 3
     }
 
     Write-Step "Qualification executable: $($app.FullName)"
     Write-Step "Evidence directory: $evidenceDir"
-    Ensure-SilentDeviceProbe -App $app -Directory $evidenceDir -ProbePath $paths.Probe
-    Invoke-M1 -ScriptPath $m1Script -App $app -Paths $paths
-    Invoke-M2 -ScriptPath $m2Script -GuidePath $m2Guide -App $app -Paths $paths
-    Invoke-M3 -ScriptPath $m3Script -GuidePath $m3Guide -App $app -Paths $paths
-    Invoke-M4 -ScriptPath $m4Script -App $app -Paths $paths
+    Ensure-SilentDeviceProbe $app $evidenceDir $paths.Probe
+    Invoke-M1 $m1Script $app $paths
+    Invoke-M2 $m2Script $m2Guide $app $paths
+    Invoke-M3 $m3Script $m3Guide $app $paths
+    Invoke-M4 $m4Script $app $paths
 
-    Write-Step 'All M1-M4 witness files validate against the exact executable. Creating the composed first-Beta qualification summary.'
-    Invoke-Qualification -ScriptPath $qualificationScript -App $app -Paths $paths
-    Invoke-Qualification -ScriptPath $qualificationScript -App $app -Paths $paths -ExistingOnly
+    Write-Step 'All M1-M4 witness files validate. Creating and revalidating the composed first-Beta qualification summary.'
+    Invoke-Qualification $qualificationScript $app $paths
+    Invoke-Qualification $qualificationScript $app $paths -ExistingOnly
     Write-Step 'FIRST BETA MANUAL QUALIFICATION: COMPLETE for this exact candidate. Public release gates still apply.'
     exit 0
 } catch {
