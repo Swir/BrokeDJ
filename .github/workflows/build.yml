@@ -141,6 +141,9 @@ jobs:
           Copy-Item docs/M3_MIXER_RECORDING_WITNESS.md dist/BrokeDJ/M3-MIXER-RECORDING-WITNESS.md
           Copy-Item scripts/m4_library_witness.ps1 dist/BrokeDJ/M4-LIBRARY-WITNESS.ps1
           Copy-Item docs/M4_LIBRARY_WITNESS.md dist/BrokeDJ/M4-LIBRARY-WITNESS.md
+          Copy-Item scripts/beta_witness_runner.ps1 dist/BrokeDJ/BETA-WITNESS-RUNNER.ps1
+          Copy-Item docs/BETA_WITNESS_RUNNER.md dist/BrokeDJ/BETA-WITNESS-RUNNER.md
+          Copy-Item scripts/start_beta_qualification.cmd dist/BrokeDJ/START-BETA-QUALIFICATION.cmd
           Copy-Item scripts/beta_qualification.ps1 dist/BrokeDJ/BETA-QUALIFICATION.ps1
           Copy-Item docs/BETA_QUALIFICATION.md dist/BrokeDJ/BETA-QUALIFICATION.md
           Copy-Item docs/BETA_PREVIEW.md dist/BrokeDJ/BETA-PREVIEW.md
@@ -181,6 +184,9 @@ jobs:
           if (-not (Test-Path 'package/BrokeDJ/M3-MIXER-RECORDING-WITNESS.md')) { throw 'Packaged M3 mixer/recording witness guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.ps1')) { throw 'Packaged M4 witness script missing' }
           if (-not (Test-Path 'package/BrokeDJ/M4-LIBRARY-WITNESS.md')) { throw 'Packaged M4 witness guide missing' }
+          if (-not (Test-Path 'package/BrokeDJ/BETA-WITNESS-RUNNER.ps1')) { throw 'Packaged Beta witness runner missing' }
+          if (-not (Test-Path 'package/BrokeDJ/BETA-WITNESS-RUNNER.md')) { throw 'Packaged Beta witness runner guide missing' }
+          if (-not (Test-Path 'package/BrokeDJ/START-BETA-QUALIFICATION.cmd')) { throw 'Packaged Beta qualification launcher missing' }
           if (-not (Test-Path 'package/BrokeDJ/BETA-QUALIFICATION.ps1')) { throw 'Packaged Beta qualification script missing' }
           if (-not (Test-Path 'package/BrokeDJ/BETA-QUALIFICATION.md')) { throw 'Packaged Beta qualification guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/BETA-PREVIEW.md')) { throw 'Packaged Beta Preview guide missing' }
@@ -208,6 +214,13 @@ jobs:
             --root package --extracted-root $portableRoot `
             --expected-commit '${{ github.event.pull_request.head.sha || github.sha }}'
           if ($LASTEXITCODE -ne 0) { throw 'Extracted runtime-subset portable verification failed' }
+
+          & pwsh -NoProfile -File (Join-Path $appDir 'BETA-WITNESS-RUNNER.ps1') -FixtureSelfTest
+          if ($LASTEXITCODE -ne 0) { throw 'Portable Beta witness runner fixture self-test failed' }
+          $launcher = Get-Content -LiteralPath (Join-Path $appDir 'START-BETA-QUALIFICATION.cmd') -Raw
+          if ($launcher -notmatch 'BETA-WITNESS-RUNNER\.ps1' -or $launcher -notmatch 'BrokeDJ\.exe') {
+            throw 'Portable Beta qualification launcher is not bound to the packaged runner/executable names'
+          }
 
           Push-Location $appDir
           try {

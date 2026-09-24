@@ -4,6 +4,14 @@
 
 The runner is intended for the current **first usable Windows 11 x64 Beta** qualification scope. M5+ remains outside this flow.
 
+## Packaged one-click flow
+
+Smoke-qualified Beta Preview archives now contain the runner, this guide and `START-BETA-QUALIFICATION.cmd` beside `BrokeDJ.exe`. After extracting the portable ZIP, a Windows 11 x64 tester can start the guided M1-M4 sequence by double-clicking `START-BETA-QUALIFICATION.cmd`.
+
+The launcher does not change the PowerShell execution policy and does not grant itself elevated privileges. It invokes the packaged `BETA-WITNESS-RUNNER.ps1` against the `BrokeDJ.exe` in the same directory and stores accepted evidence under `%USERPROFILE%\Documents\BrokeDJ-Beta-Evidence`. Existing accepted evidence is kept when a later step is stopped or rejected.
+
+This launcher is convenience only. It does not auto-approve a check, start ordinary playback, enable a microphone, begin recording or make a public release. Every physical/listening attestation remains user-controlled in the canonical witness scripts.
+
 ## Safety and evidence boundary
 
 The runner deliberately keeps audio decisions with the tester:
@@ -33,6 +41,8 @@ C:\BrokeDJ-Beta-Test\
   BrokeDJ\
     BrokeDJ.exe
     SOURCE-COMMIT.txt
+    START-BETA-QUALIFICATION.cmd
+    BETA-WITNESS-RUNNER.ps1
     M1-HARDWARE-WITNESS.ps1
     M2-KEYLOCK-LISTENING-WITNESS.ps1
     M3-MIXER-RECORDING-WITNESS.ps1
@@ -46,7 +56,7 @@ The evidence directory is local test state. Review it before sharing. The witnes
 
 ## Run the full manual sequence
 
-From the matching source checkout:
+For the packaged candidate, use `START-BETA-QUALIFICATION.cmd` or invoke the packaged runner directly. From the matching source checkout:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\beta_witness_runner.ps1 `
@@ -99,6 +109,8 @@ pwsh -NoProfile -File .\scripts\beta_witness_runner.ps1 `
 
 ## CI self-test boundary
 
-The runner contains a prompt-free `-FixtureSelfTest` used only to verify its fixed file-name/tool-resolution and CI-environment parsing logic. Repository CI also launches a separate child process with `CI=true` and a deliberately missing `AppPath`; the expected failure must be the CI-generation refusal, proving that unattended generation is rejected before a candidate executable can be resolved or hashed.
+The runner contains a prompt-free `-FixtureSelfTest` used only to verify its fixed file-name/tool-resolution and CI-environment parsing logic. The Windows package-smoke job runs that self-test **from the extracted portable ZIP**, so a Beta Preview cannot pass packaging smoke if the archive omitted the runner or any canonical M1-M4/Beta tool that it resolves. The same job verifies that the packaged launcher names the local runner and executable.
+
+Repository CI also launches a separate child process with `CI=true` and a deliberately missing `AppPath`; the expected failure must be the CI-generation refusal, proving that unattended generation is rejected before a candidate executable can be resolved or hashed.
 
 Those checks validate orchestration behavior only. They cannot substitute for a Windows 11 tester, physical audio outputs, representative listening material, microphone/recording review or the connected M4 library/session procedure.
