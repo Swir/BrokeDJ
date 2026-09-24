@@ -159,10 +159,10 @@ jobs:
           include-hidden-files: true
 
   package-smoke:
-    name: Windows x64 / staged artifact smoke
+    name: Windows x64 / staged + portable artifact smoke
     needs: windows
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -184,6 +184,75 @@ jobs:
           if (-not (Test-Path 'package/BrokeDJ/BETA-QUALIFICATION.ps1')) { throw 'Packaged Beta qualification script missing' }
           if (-not (Test-Path 'package/BrokeDJ/BETA-QUALIFICATION.md')) { throw 'Packaged Beta qualification guide missing' }
           if (-not (Test-Path 'package/BrokeDJ/BETA-PREVIEW.md')) { throw 'Packaged Beta Preview guide missing' }
+      - name: Extract portable ZIP and run relocated no-audio smoke
+        shell: pwsh
+        run: |
+          $archive = Resolve-Path 'package/BrokeDJ-Beta-Preview-Windows-x64.zip'
+          $extractBase = Join-Path $PWD 'portable smoke Świr path'
+          Remove-Item -LiteralPath $extractBase -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extractBase | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractBase -Force
+
+          $entries = @(Get-ChildItem -LiteralPath $extractBase -Force)
+          if ($entries.Count -ne 1 -or -not $entries[0].PSIsContainer) {
+            throw 'Portable archive did not extract to exactly one versioned root directory'
+          }
+          $portableRoot = $entries[0].FullName
+          $appDir = Join-Path $portableRoot 'BrokeDJ'
+          $exe = Join-Path $appDir 'BrokeDJ.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw 'Portable archive did not contain BrokeDJ/BrokeDJ.exe'
+          }
+
+          $env:BROKEDJ_EXTRACTED_ROOT = $portableRoot
+          $env:BROKEDJ_EXPECTED_COMMIT = '${{ github.event.pull_request.head.sha || github.sha }}'
+          $verifyInner = "import importlib.util, os, pathlib; root=pathlib.Path(os.environ['BROKEDJ_EXTRACTED_ROOT']); spec=importlib.util.spec_from_file_location('brokedj_package_verify', root/'VERIFY-PACKAGE.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.verify_contract(root, expected_commit=os.environ['BROKEDJ_EXPECTED_COMMIT'], verify_portable=False); print('verified extracted portable payload')"
+          python -c $verifyInner
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted portable payload verification failed' }
+
+          Push-Location $appDir
+          try {
+            Remove-Item 'BrokeDJ-gui-smoke.json' -ErrorAction SilentlyContinue
+            Remove-Item 'BrokeDJ-device-probe.txt' -ErrorAction SilentlyContinue
+            Remove-Item 'BrokeDJ-device-probe.json' -ErrorAction SilentlyContinue
+
+            $gui = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -WorkingDirectory $appDir -PassThru
+            if (-not $gui.WaitForExit(30000)) { $gui.Kill(); throw 'Portable GUI smoke test timed out' }
+            if ($gui.ExitCode -ne 0) { throw "Portable GUI smoke failed: $($gui.ExitCode)" }
+            $smoke = Get-Content 'BrokeDJ-gui-smoke.json' -Raw | ConvertFrom-Json
+            if ($smoke.schema_version -ne 1 -or
+                $smoke.mode -ne 'native-resize-lifecycle' -or
+                $smoke.plays_audio -ne $false -or
+                $smoke.opens_audio_device -ne $false -or
+                $smoke.success -ne $true -or
+                $smoke.step_count -ne 4 -or
+                @($smoke.steps).Count -ne 4) {
+              throw 'Portable GUI smoke report failed contract validation'
+            }
+
+            $probe = Start-Process -FilePath $exe -ArgumentList '--device-probe-ci' -WorkingDirectory $appDir -PassThru -Wait
+            if ($probe.ExitCode -ne 0) { throw "Portable device probe failed: $($probe.ExitCode)" }
+            $probeJson = Get-Content 'BrokeDJ-device-probe.json' -Raw | ConvertFrom-Json
+            if ($probeJson.schema_version -ne 2 -or
+                $probeJson.mode -ne 'ci-enumeration' -or
+                $probeJson.plays_audio -ne $false -or
+                $probeJson.calls_device_open -ne $false -or
+                $probeJson.starts_audio_callback -ne $false -or
+                $probeJson.creates_device_descriptors -ne $false -or
+                $probeJson.unexpected_open_state_count -ne 0 -or
+                $probeJson.safety_invariants_ok -ne $true) {
+              throw 'Portable device-probe report failed safety/schema validation'
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+          Remove-Item (Join-Path $appDir 'BrokeDJ-gui-smoke.json') -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $appDir 'BrokeDJ-device-probe.txt') -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $appDir 'BrokeDJ-device-probe.json') -ErrorAction SilentlyContinue
+          python -c $verifyInner
+          if ($LASTEXITCODE -ne 0) { throw 'Post-smoke extracted portable payload verification failed' }
       - name: Confirm staged M2 listening witness cannot generate evidence in CI
         shell: pwsh
         run: |

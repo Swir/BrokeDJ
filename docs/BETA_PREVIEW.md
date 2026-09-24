@@ -10,7 +10,9 @@ The workflow artifact contains `BrokeDJ-Beta-Preview-Windows-x64.zip` plus `Brok
 
 Package verification first validates the loose staged payload against `PACKAGE-MANIFEST.json` / `SHA256SUMS.txt`, then requires the portable archive to contain the exact same member set **and the exact same bytes**. Every archived member is compared with the staged source by size and SHA-256; fixed timestamp, deflate compression and regular-file metadata are also part of the deterministic archive contract. A coherently re-manifested ZIP with different payload bytes therefore cannot pass merely because its own inner manifest is self-consistent. The outer SHA-256 sidecar, duplicate/unsafe paths, encrypted members, symlinks and bounded uncompressed size are checked before temporary extraction and a second inner-manifest verification.
 
-This is an integrity, reproducibility and extraction contract, not a clean-machine qualification. The existing staged Windows smoke still runs with audio disabled; real Windows 11 hardware/listening evidence remains manual.
+The Windows package-smoke job also extracts the actual portable ZIP into a relocated path containing spaces and a non-ASCII character, verifies the extracted inner manifest against the exact workflow commit, launches that extracted `BrokeDJ.exe` with the no-audio GUI lifecycle/resize smoke and silent device-probe CI mode, removes generated smoke files and verifies the extracted payload again. This catches packaging/path/runtime failures that a loose staged-tree launch cannot expose.
+
+This remains an integrity, reproducibility, extraction and no-audio runtime contract, not a clean-machine or audio-hardware qualification. Real Windows 11 hardware/listening evidence remains manual.
 
 ## Run the preview
 
