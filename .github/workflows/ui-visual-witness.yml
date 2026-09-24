@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/app/**'
       - 'scripts/capture_ui_smoke.ps1'
+      - 'scripts/capture_theme_smoke.ps1'
       - 'scripts/validate_ui_witness.ps1'
       - 'scripts/test_ui_witness_validator.ps1'
       - '.github/workflows/ui-visual-witness.yml'
@@ -24,11 +25,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Self-test UI pixel validator
+      - name: Self-test UI pixel validator and parse theme witness helper
         shell: pwsh
         run: |
           pwsh -NoProfile -File scripts/test_ui_witness_validator.ps1
           if ($LASTEXITCODE -ne 0) { throw "UI validator self-test failed: $LASTEXITCODE" }
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/capture_theme_smoke.ps1'),
+            [ref]$tokens,
+            [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message -ErrorAction Continue }
+            throw "Theme witness helper has $($errors.Count) PowerShell parse error(s)."
+          }
 
       - name: Configure native Windows build
         run: cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
@@ -45,6 +56,16 @@ jobs:
             -OutputDirectory 'build/windows/ui-visual-witness' `
             -TimeoutSeconds 30
           if ($LASTEXITCODE -ne 0) { throw "UI visual witness failed: $LASTEXITCODE" }
+
+      - name: Capture all runtime accent theme witnesses
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'build/windows/BrokeDJ_artefacts/Release/BrokeDJ.exe'
+          pwsh -NoProfile -File scripts/capture_theme_smoke.ps1 `
+            -ExePath $exe `
+            -OutputDirectory 'build/windows/ui-visual-witness' `
+            -TimeoutSeconds 30
+          if ($LASTEXITCODE -ne 0) { throw "Theme visual witness failed: $LASTEXITCODE" }
 
       - name: Validate visual witness contract
         shell: pwsh
@@ -70,6 +91,31 @@ jobs:
           }
           foreach ($file in @($manifest.compact.file, $manifest.workstation.file)) {
             if (-not (Test-Path "$root/$file")) { throw "UI witness image missing: $file" }
+          }
+
+          $themes = Get-Content "$root/BrokeDJ-theme-witness.json" -Raw | ConvertFrom-Json
+          if ($themes.schema_version -ne 1 -or
+              $themes.mode -ne 'windows-ui-theme-witness' -or
+              $themes.plays_audio -ne $false -or
+              $themes.opens_audio_device -ne $false -or
+              $themes.success -ne $true -or
+              $themes.theme_count -ne 3 -or
+              @($themes.themes).Count -ne 3) {
+            throw 'Runtime theme witness failed schema/safety validation.'
+          }
+          $expected = @('electric-blue', 'ultraviolet', 'ember')
+          $hashes = @()
+          foreach ($theme in @($themes.themes)) {
+            if ($theme.token -notin $expected -or $theme.bytes -lt 4096 -or $theme.accent_hits -lt 12) {
+              throw "Runtime theme witness is invalid for token '$($theme.token)'."
+            }
+            if (-not (Test-Path "$root/$($theme.file)")) { throw "Theme witness image missing: $($theme.file)" }
+            $actualHash = (Get-FileHash -LiteralPath "$root/$($theme.file)" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $theme.sha256) { throw "Theme witness hash mismatch: $($theme.file)" }
+            $hashes += $actualHash
+          }
+          if (@($hashes | Sort-Object -Unique).Count -ne 3) {
+            throw 'Runtime theme witnesses are not visually distinct by SHA-256.'
           }
           Copy-Item 'BrokeDJ-gui-smoke.json' "$root/BrokeDJ-gui-smoke.json"
 
