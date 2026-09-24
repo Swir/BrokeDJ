@@ -6,6 +6,15 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
+## Active M3 metering checkpoint — PR #109
+
+- Active branch: `feat/beta-meter-ballistics`; draft PR **#109** targets `main`. Code/test head before this status-only checkpoint is `fe3084fdd0b8b8e945005924221053d966a06f2c`; exact final-head CI remains the merge authority.
+- Added JUCE-independent sampled channel-meter ballistics for the already-visible first-Beta mixer strips: immediate attack, bounded release, a 1.2 s peak hold with bounded decay, finite/non-finite sanitisation and a manually clearable overload latch. This is message-thread presentation state only; `Engine::process()` is unchanged.
+- The four pre-fader strips now render a -60..+6 dBFS segmented range, a peak-hold marker and a visible latched overload cap. Left-click clears the UI latch. Tooltips retain the explicit boundary that these are sampled pre-fader meters, not true-peak or loudness measurements.
+- The existing dependency-free `workspace_geometry` CTest now also exercises linear-to-dB conversion, release, peak hold/decay, overload latch/reset and NaN/Inf safety. A standalone GCC 14.2 C++20 build of the helper passed locally with `-Wall -Wextra -Wpedantic -Wconversion`.
+- Initial PR-head workflows for `fe3084fdd0b8b8e945005924221053d966a06f2c` started as Build and test #554, UI visual witness #65, Native library scale smoke #224 and Beta witness runner #30. Because this status update advances the branch, only the newest exact-head reruns may authorize merge.
+- This hardening does not change `docs/progress.json`: roadmap remains **1/10 (10.0%, PRE-ALPHA)**. M3 still requires real EQ/mixer listening plus physical microphone/ducking, Booth, recording/dropout and long-session qualification.
+
 ## Merged runtime-only portable checkpoint — PR #108
 
 - `main` now includes squash-merged PR **#108** as `0c7ac000c74e822ac33d94b8bb26fcd870f0cb4d` (`Publish Beta Preview as runtime-only portable bundle`). The exact qualified PR head was `1b873a5d651cefb6fb69eabd7115f60e64e2f077`; its base was the merged runtime-staging cleanup from PR #107 at `5d43d5b2bf380789a6d974782ca5991478f623ac`.
