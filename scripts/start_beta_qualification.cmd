@@ -4,7 +4,13 @@ set "ROOT=%~dp0"
 set "APP=%ROOT%BrokeDJ.exe"
 set "RUNNER=%ROOT%BETA-WITNESS-RUNNER.ps1"
 set "EVIDENCE=%USERPROFILE%\Documents\BrokeDJ-Beta-Evidence"
+set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 
+if not exist "%POWERSHELL%" (
+  echo [BrokeDJ Beta] Windows PowerShell was not found at the expected system path.
+  pause
+  exit /b 2
+)
 if not exist "%APP%" (
   echo [BrokeDJ Beta] Missing BrokeDJ.exe next to this launcher.
   pause
@@ -27,7 +33,7 @@ echo [BrokeDJ Beta] Candidate: %APP%
 echo [BrokeDJ Beta] Evidence:  %EVIDENCE%
 echo [BrokeDJ Beta] This guided run never auto-starts ordinary playback, microphone input or recording.
 echo.
-powershell.exe -NoLogo -NoProfile -File "%RUNNER%" -AppPath "%APP%" -EvidenceDirectory "%EVIDENCE%"
+"%POWERSHELL%" -NoLogo -NoProfile -File "%RUNNER%" -AppPath "%APP%" -EvidenceDirectory "%EVIDENCE%"
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
