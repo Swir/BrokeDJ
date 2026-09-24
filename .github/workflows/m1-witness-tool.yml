@@ -93,7 +93,7 @@ jobs:
           $probeHash = (Get-FileHash -LiteralPath .\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
 
           $complete = [ordered]@{
-            schema = 1
+            schema = 2
             project = 'BrokeDJ'
             scope = 'M1-windows-hardware'
             generatedUtc = [DateTime]::UtcNow.ToString('o')
@@ -112,6 +112,8 @@ jobs:
               resizeAndHiDpi = $true
               importAndPlayback = $true
               deviceSwitchRecovery = $true
+              deviceLossFailsSafe = $true
+              deviceSettingsPersistAcrossRestart = $true
               fourOutputCueIsolation = $true
               runtimeErrorReview = $true
             }
@@ -168,8 +170,18 @@ jobs:
           }
 
           $incomplete = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
-          $incomplete.checks.fourOutputCueIsolation = $false
-          Assert-Rejected $incomplete '.\incomplete.json' 'Incomplete M1 witness fixture was accepted.'
+          $incomplete.checks.deviceLossFailsSafe = $false
+          Assert-Rejected $incomplete '.\incomplete.json' 'Incomplete M1 device-loss witness fixture was accepted.'
+
+          $missingRestart = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $missingRestart.checks.PSObject.Properties.Remove('deviceSettingsPersistAcrossRestart')
+          Assert-Rejected $missingRestart '.\missing-restart.json' 'M1 evidence without restart-persistence proof was accepted.'
+
+          $legacySchema = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $legacySchema.schema = 1
+          $legacySchema.checks.PSObject.Properties.Remove('deviceLossFailsSafe')
+          $legacySchema.checks.PSObject.Properties.Remove('deviceSettingsPersistAcrossRestart')
+          Assert-Rejected $legacySchema '.\legacy-schema.json' 'Legacy M1 schema 1 evidence was accepted.'
 
           $spoofedBoolean = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
           $spoofedBoolean.checks.deviceSwitchRecovery = 'true'
@@ -214,6 +226,6 @@ jobs:
           $noFourOutputEvidence.deviceProbe.fourOutputCandidateCount = 0
           Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output\BrokeDJ-device-probe.json'
 
-          Write-Host 'M1 evidence contract: complete fixture accepted; CI generation fails before AppPath resolution; incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases rejected.'
+          Write-Host 'M1 schema 2 contract: restart persistence and fail-safe device loss are mandatory; legacy, incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases are rejected.'
           $global:LASTEXITCODE = 0
           exit 0
