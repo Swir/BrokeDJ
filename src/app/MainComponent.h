@@ -2,6 +2,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "BrokeLookAndFeel.h"
+#include "PersistentAudioAppComponent.h"
 #include "core/Engine.h"
 #include "core/PerformanceDeckOwner.h"
 #include "core/TempoSegmentEditor.h"
@@ -203,7 +204,7 @@ private:
     bool rhythmReady = false;
     bool manualBeatGrid = false;
 };
-class MainComponent : public juce::AudioAppComponent, private juce::Timer {
+class MainComponent : public broke::app::PersistentAudioAppComponent, private juce::Timer {
 public:
     explicit MainComponent(bool openAudio = true, bool enableKeyLockResearch = false);
     ~MainComponent() override;
