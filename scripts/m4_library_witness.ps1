@@ -82,6 +82,89 @@ function Get-AppFingerprint([System.IO.FileInfo]$App) {
     }
 }
 
+function Test-SameFilePath([string]$Expected, [string]$Actual) {
+    if ([string]::IsNullOrWhiteSpace($Expected) -or [string]::IsNullOrWhiteSpace($Actual)) {
+        return $false
+    }
+    $expectedFull = [System.IO.Path]::GetFullPath($Expected).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    $actualFull = [System.IO.Path]::GetFullPath($Actual).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    return [string]::Equals($expectedFull, $actualFull, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-NoExistingBrokeDjProcesses {
+    $running = @(Get-Process -Name 'BrokeDJ' -ErrorAction SilentlyContinue)
+    if ($running.Count -ne 0) {
+        throw 'Close every existing BrokeDJ.exe process before starting the M4 witness. The witness must own the only interactive BrokeDJ process.'
+    }
+}
+
+function Assert-TrackedInteractiveApp([System.Diagnostics.Process]$Process, [System.IO.FileInfo]$App) {
+    if ($null -eq $Process) { throw 'The tracked interactive BrokeDJ process is missing.' }
+    $Process.Refresh()
+    if ($Process.HasExited) {
+        throw 'The BrokeDJ process launched by the M4 witness exited before the manual workflow was complete.'
+    }
+
+    $live = Get-Process -Id $Process.Id -ErrorAction Stop
+    $actualPath = $null
+    try { $actualPath = $live.Path } catch { }
+    if ([string]::IsNullOrWhiteSpace([string]$actualPath)) {
+        throw 'Unable to verify the executable path of the tracked BrokeDJ process.'
+    }
+    if (-not (Test-SameFilePath -Expected $App.FullName -Actual $actualPath)) {
+        throw 'The tracked interactive process does not match the exact AppPath selected for qualification.'
+    }
+
+    $other = @(Get-Process -Name 'BrokeDJ' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Id -ne $Process.Id })
+    if ($other.Count -ne 0) {
+        throw 'Another BrokeDJ.exe process appeared during the M4 witness. Close all copies and restart the witness so the qualified process is unambiguous.'
+    }
+}
+
+function Start-TrackedInteractiveApp([System.IO.FileInfo]$App) {
+    Assert-NoExistingBrokeDjProcesses
+    Write-Step 'Launching the exact fingerprinted BrokeDJ.exe for the connected manual workflow.'
+    $process = Start-Process -FilePath $App.FullName -WorkingDirectory $App.Directory.FullName -PassThru
+    Start-Sleep -Milliseconds 750
+    Assert-TrackedInteractiveApp -Process $process -App $App
+    Write-Step "Interactive qualification process is pinned to PID $($process.Id) and the selected AppPath."
+    return $process
+}
+
+function Read-TrackedYesNo(
+    [System.Diagnostics.Process]$Process,
+    [System.IO.FileInfo]$App,
+    [string]$Question
+) {
+    Assert-TrackedInteractiveApp -Process $Process -App $App
+    $answer = Read-YesNo -Question $Question
+    Assert-TrackedInteractiveApp -Process $Process -App $App
+    return $answer
+}
+
+function Wait-ForTrackedAppExit([System.Diagnostics.Process]$Process, [int]$TimeoutMilliseconds = 120000) {
+    if ($null -eq $Process) { throw 'The tracked interactive BrokeDJ process is missing.' }
+    if (-not $Process.WaitForExit($TimeoutMilliseconds)) {
+        throw 'The exact BrokeDJ process did not exit within two minutes. Close the window cleanly and rerun the witness; no evidence was written.'
+    }
+    $remaining = @(Get-Process -Name 'BrokeDJ' -ErrorAction SilentlyContinue)
+    if ($remaining.Count -ne 0) {
+        throw 'A BrokeDJ.exe process is still running after the qualified window closed. The M4 witness cannot prove a single exact application instance.'
+    }
+}
+
+function Stop-TrackedInteractiveApp([System.Diagnostics.Process]$Process) {
+    if ($null -eq $Process) { return }
+    try { $Process.Refresh() } catch { return }
+    if ($Process.HasExited) { return }
+    try { [void]$Process.CloseMainWindow() } catch { }
+    try {
+        if ($Process.WaitForExit(5000)) { return }
+    } catch { }
+    try { $Process.Kill() } catch { }
+}
+
 function Get-RequiredProperty([object]$Object, [string]$Name, [string]$Context) {
     if ($null -eq $Object) { throw "Missing $Context object." }
     $property = $Object.PSObject.Properties[$Name]
@@ -195,10 +278,11 @@ function New-WitnessFixtureWorkspace {
     @(
         'BrokeDJ M4 disposable fixture workspace',
         '',
-        '1. Import the WAV under import\ into BrokeDJ.',
+        'The witness launched the exact BrokeDJ.exe supplied as AppPath. Keep that window open for checks 1-8 and do not start another BrokeDJ copy.',
+        '1. Import the WAV under import\ into the witness-launched BrokeDJ window.',
         '2. Import the byte-identical WAV under duplicate\ to exercise duplicate review.',
         '3. For the relocate check, move the primary WAV from import\ into relocated\ while BrokeDJ is running, refresh missing-file review, then relocate the existing library record to the moved copy.',
-        '4. Close BrokeDJ after all checks so the witness can run the privacy-safe aggregate fixture-state verifier.',
+        '4. Close the witness-launched BrokeDJ window only when the script asks, so the privacy-safe aggregate fixture-state verifier can run against settled SQLite state.',
         '5. The witness script removes this entire workspace when the run ends.',
         '',
         'The generated tone is unique to this run so old witness rows cannot share its content hash.',
@@ -492,6 +576,16 @@ if ($FixtureSelfTest) {
             throw 'Two independently generated M4 fixtures unexpectedly reused one content hash.'
         }
 
+        $basePath = Join-Path ([System.IO.Path]::GetTempPath()) 'BrokeDJ-path-contract\BrokeDJ.exe'
+        $samePath = $basePath.ToUpperInvariant()
+        $differentPath = Join-Path ([System.IO.Path]::GetTempPath()) 'BrokeDJ-path-contract-other\BrokeDJ.exe'
+        if (-not (Test-SameFilePath -Expected $basePath -Actual $samePath)) {
+            throw 'Exact-app path helper rejected the same Windows path with case-only differences.'
+        }
+        if (Test-SameFilePath -Expected $basePath -Actual $differentPath) {
+            throw 'Exact-app path helper accepted a different BrokeDJ path.'
+        }
+
         $goodReport = [pscustomobject]@{
             schema_version = 2
             mode = 'm4-fixture-state'
@@ -527,7 +621,7 @@ if ($FixtureSelfTest) {
         try { Assert-FixtureStateReport -Report $unstableReport } catch { $rejected = $true }
         if (-not $rejected) { throw 'Fixture-state validator accepted changing aggregate workflow counts.' }
 
-        Write-Step 'Disposable synthetic WAV uniqueness/cleanup and two-pass fixture-state report contracts passed.'
+        Write-Step 'Disposable WAV uniqueness/cleanup, exact-app path identity, and two-pass fixture-state report contracts passed.'
     } finally {
         Remove-WitnessFixtureWorkspace -Workspace $first
         Remove-WitnessFixtureWorkspace -Workspace $second
@@ -550,9 +644,12 @@ Assert-NotCi
 $app = Resolve-App -Path $AppPath
 $windowsBuild = Assert-Windows11X64
 $appFingerprint = Get-AppFingerprint -App $app
+Assert-NoExistingBrokeDjProcesses
 Invoke-GuiSmokePreflight -App $app
+Assert-NoExistingBrokeDjProcesses
 
 $fixture = New-WitnessFixtureWorkspace
+$interactiveProcess = $null
 try {
     Test-WitnessFixtureWorkspace -Workspace $fixture
     Write-Step 'A disposable, per-run-unique synthetic WAV fixture workspace was prepared; no personal music is required.'
@@ -564,27 +661,32 @@ try {
     Write-Step 'Keep system/headphone volume conservative if you choose to start playback for the History check.'
     Write-Step 'This witness never asks for track names or paths and does not inspect source music.'
     Write-Step 'Do not include screenshots or notes containing private paths in public artifacts.'
-    Write-Step 'The automated preflight opened no audio device; the manual launch/resize check below is still required for real usability review.'
+    Write-Step 'The no-audio preflight opened no audio device. The witness will now launch and track the exact AppPath for all eight manual checks.'
     Write-Host ''
 
+    $interactiveProcess = Start-TrackedInteractiveApp -App $app
+
     $checks = [ordered]@{}
-    $checks.launchAndResize = Read-YesNo 'BrokeDJ launched on Windows 11 and remained usable while resizing without overlapping/hidden critical controls?'
-    $checks.importAndSearch = Read-YesNo 'The generated primary fixture imported successfully and bounded library search found it?'
-    $checks.tagsAndPlaylists = Read-YesNo 'Tag editing plus playlist create/add/remove/browse worked on the fixture and persisted after refresh?'
-    $checks.history = Read-YesNo 'Starting the generated fixture once under your control created a bounded local history entry visible in the History view?'
-    $checks.duplicateAndMissingReview = Read-YesNo 'The generated duplicate plus a deliberately moved primary exercised duplicate/missing review non-destructively?'
-    $checks.relocate = Read-YesNo 'Relocate reconnected the moved primary fixture without losing tags/playlist membership?'
-    $checks.libraryBackupRestore = Read-YesNo 'Library backup succeeded; after a controlled metadata mutation, restore returned the prior library state?'
-    $checks.sessionSaveLoad = Read-YesNo 'A four-deck/mixer session snapshot saved and loaded with restored controls while decks remained paused until explicit Play?'
+    $checks.launchAndResize = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'The witness-launched BrokeDJ remained usable while resizing without overlapping/hidden critical controls?'
+    $checks.importAndSearch = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'The generated primary fixture imported successfully and bounded library search found it in this exact BrokeDJ window?'
+    $checks.tagsAndPlaylists = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'Tag editing plus playlist create/add/remove/browse worked on the fixture and persisted after refresh?'
+    $checks.history = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'Starting the generated fixture once under your control created a bounded local history entry visible in the History view?'
+    $checks.duplicateAndMissingReview = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'The generated duplicate plus a deliberately moved primary exercised duplicate/missing review non-destructively?'
+    $checks.relocate = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'Relocate reconnected the moved primary fixture without losing tags/playlist membership?'
+    $checks.libraryBackupRestore = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'Library backup succeeded; after a controlled metadata mutation, restore returned the prior library state?'
+    $checks.sessionSaveLoad = Read-TrackedYesNo -Process $interactiveProcess -App $app -Question 'A four-deck/mixer session snapshot saved and loaded with restored controls while decks remained paused until explicit Play?'
 
     $failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
     if ($failedChecks.Count -gt 0) {
         throw ('M4 witness failed; no evidence was written. Failed checks: ' + ($failedChecks -join ', '))
     }
 
-    if (-not (Read-YesNo 'Close BrokeDJ now, wait for it to exit, and confirm the fixture library/session changes are saved so the no-audio verifier can inspect them?')) {
+    Assert-TrackedInteractiveApp -Process $interactiveProcess -App $app
+    Write-Step "All manual checks passed against tracked PID $($interactiveProcess.Id). Close only that BrokeDJ window now and wait for it to exit cleanly."
+    if (-not (Read-YesNo 'Have you closed the witness-launched BrokeDJ window so its fixture library/session state is saved?')) {
         throw 'M4 witness stopped before database verification; no evidence was written.'
     }
+    Wait-ForTrackedAppExit -Process $interactiveProcess
     Invoke-FixtureStateProbe -App $app -ContentHash $fixture.ContentHash
 
     $evidence = [ordered]@{
@@ -629,5 +731,6 @@ try {
         Remove-Item -LiteralPath $temporaryEvidencePath -Force -ErrorAction SilentlyContinue
     }
 } finally {
+    Stop-TrackedInteractiveApp -Process $interactiveProcess
     Remove-WitnessFixtureWorkspace -Workspace $fixture
 }
