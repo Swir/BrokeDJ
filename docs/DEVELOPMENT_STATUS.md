@@ -37,3 +37,36 @@ This file is the durable engineering checkpoint for the current repository state
 ## Next largest step
 
 Let PR #102's newest exact-head workflows exercise both the staged tree and the **relocated extracted portable ZIP** with the no-bytecode verifier invocation. Repair every regression before integration. If green, keep the Beta scope frozen: the largest remaining product gate is the real Windows 11 M4 connected library/session run, followed by physical M1 device/four-output checks and the remaining M2–M3 listening/hardware evidence. If those manual gates cannot be executed in the current environment, finish only concrete first-Beta release blockers instead of inventing substitute evidence or widening M5+ scope.
+
+
+## First-Beta panel correction — 2026-09-24
+
+The user's current priority is a complete, usable DJ panel and a runnable Windows
+Beta Preview, not additional witness wrappers. This UX correction is part of the
+existing M1–M4 first-Beta target; M5+ and the milestone denominator do not expand.
+
+- Branch: `feat/beta-workspace-panel`, based on main
+  `1db75e5961374522821bb9c8b41fb50e16e7c6a7` (PR #102 already merged).
+- Scope: permanent four-channel central mixer across supported window sizes;
+  two-row toolbar with shared History geometry; independent MIX/GRID deck views;
+  larger performance waveforms; sampled pre-fader peak strips; one-click Library
+  and a separate Session menu. Existing transport/DSP/decoder ownership is retained.
+- Explicit non-owning UI handles replace child-count/caption discovery, preventing
+  translated captions or future labels from silently disabling the workstation.
+- Local verification: 13/13 JUCE-independent CTest targets passed with ASan/UBSan;
+  the geometry target covered 53,186 content sizes. JUCE 9.0.2 Linux syntax checks
+  passed for Main, MainComponent and opt-in key-lock Main. These are not native
+  Windows link/runtime, physical-device or listening evidence.
+- Native smoke now switches all four decks independently into GRID and back to
+  MIX at every existing window-size step, checking visible controls and unchanged
+  session/transport settings. Exact-head Windows execution and pixel review are
+  pending when this checkpoint is written; the PR conversation records head/run
+  identities once GitHub assigns them.
+- Coordination: the concurrent PR #103 concerns witness tooling, not application
+  UI. Its changes are not replaced or duplicated here; reconcile checkpoint text
+  normally if main moves. No force push, schedule change or release is authorized
+  by this checkpoint.
+- Next: fix any actual native UI/build regression, inspect the rendered Windows
+  panel, and provide the resulting portable Beta Preview for hands-on feedback.
+  Do not replace this deliverable with more standalone qualification wrappers.
+  Formal public Beta/Release still needs the documented manual M1–M4 gates.

@@ -25,10 +25,16 @@ public:
         lifetime = std::make_shared<int>(0);
         button.setButtonText(uiText("Library", "Biblioteka"));
         button.setTooltip(uiText(
-            "Local library and session commands. Music paths and session data stay on this PC; no cloud account is used.",
-            "Lokalna biblioteka i polecenia sesji. Ścieżki muzyki i dane sesji zostają na tym komputerze; konto w chmurze nie jest używane."));
-        button.onClick = [this] { showCommandMenu(); };
+            "Open the local music library. Use Session for save/load and backup commands; no cloud account is used.",
+            "Otwórz lokalną bibliotekę muzyki. Zapis/odczyt i kopie są w menu Sesja; konto w chmurze nie jest używane."));
+        button.onClick = [this] { show(); };
         owner.addAndMakeVisible(button);
+        sessionButton.setButtonText(uiText("Session", "Sesja"));
+        sessionButton.setTooltip(uiText(
+            "Save/load a session, recover a session backup, or back up and restore the local library.",
+            "Zapisz/wczytaj sesję, odzyskaj kopię sesji lub zrób i przywróć kopię lokalnej biblioteki."));
+        sessionButton.onClick = [this] { showCommandMenu(); };
+        owner.addAndMakeVisible(sessionButton);
 
         const auto databaseFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
                                       .getChildFile("BrokeDJ")
@@ -36,6 +42,7 @@ public:
         std::string error;
         databaseAvailable = database.open(filesystemPath(databaseFile), &error);
         if (!databaseAvailable) {
+            button.setEnabled(false);
             button.setTooltip(uiText(
                 "The local library database could not be opened. Direct deck loading and session save/load remain available.",
                 "Nie udało się otworzyć lokalnej bazy biblioteki. Bezpośrednie wczytywanie decków oraz zapis/odczyt sesji nadal działają."));
@@ -60,6 +67,7 @@ public:
     LibraryWorkflow& operator=(const LibraryWorkflow&) = delete;
 
     void setButtonBounds(juce::Rectangle<int> bounds) { button.setBounds(bounds); }
+    void setSessionButtonBounds(juce::Rectangle<int> bounds) { sessionButton.setBounds(bounds); }
 
 private:
     struct PendingSessionDeck final {
@@ -117,7 +125,7 @@ private:
         menu.addItem(6, uiText("Restore library backup…", "Przywróć kopię biblioteki…"),
                      databaseAvailable && !restoreInProgress && !maintenanceChooser && !maintenance);
         const auto weak = std::weak_ptr<int>(lifetime);
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&button),
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&sessionButton),
                            [this, weak](int result) {
             if (weak.expired()) return;
             switch (result) {
@@ -134,8 +142,14 @@ private:
     }
 
     void show() {
-        if (!databaseAvailable || !database.isOpen()
-            || databaseMaintenance.load(std::memory_order_acquire)) return;
+        if (!databaseAvailable || !database.isOpen()) return;
+        if (restoreInProgress || databaseMaintenance.load(std::memory_order_acquire)) {
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                uiText("Library is busy", "Biblioteka jest zajęta"),
+                uiText("Wait for the current session restore or library maintenance to finish.",
+                       "Poczekaj na zakończenie przywracania sesji lub konserwacji biblioteki."));
+            return;
+        }
         if (dialog) {
             dialog->toFront(true);
             return;
@@ -838,7 +852,7 @@ private:
     }
 
     MainComponent& owner;
-    juce::TextButton button;
+    juce::TextButton button, sessionButton;
     broke::library::LibraryDatabase database;
     broke::session::SessionStore sessionStore;
     juce::ThreadPool searchWorkers{1};

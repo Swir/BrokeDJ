@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <string>
 #include <utility>
+#include <tuple>
 
 namespace {
 
@@ -535,7 +536,34 @@ private:
             ? dynamic_cast<RecordingMainComponentBase*>(wrapper->getChildComponent(0))
             : nullptr;
         const bool workstationLayout = workstation != nullptr && workstation->usingWorkstationLayout();
-        const bool geometrySane = workstation != nullptr && workstation->uiGeometrySane();
+        bool geometrySane = workstation != nullptr && workstation->uiGeometrySane();
+        bool preparationSane = workstationLayout;
+        bool presentationPreservesSession = workstationLayout;
+        if (workstationLayout) {
+            const auto before = workstation->captureSessionState();
+            // Exercise every deck independently in both modes, then return to
+            // MIX before the visual capture. No audio device is open here.
+            for (bool preparing : {true, false}) {
+                for (std::size_t deck = 0; deck < 4; ++deck) {
+                    workstation->setDeckPreparationVisible(deck, preparing);
+                    preparationSane = preparationSane && workstation->uiGeometrySane()
+                        && workstation->deckPreparationVisible(deck) == preparing;
+                }
+            }
+            const auto after = workstation->captureSessionState();
+            const auto deckControls = [](const broke::session::DeckState& state) {
+                return std::tie(state.path, state.positionSeconds, state.playbackRate, state.trimDb,
+                    state.channelGain, state.low, state.mid, state.high, state.echo, state.drive,
+                    state.headphoneCue, state.wholeTrackLoop, state.wasPlaying);
+            };
+            presentationPreservesSession = before.mixer.crossfader == after.mixer.crossfader
+                && before.mixer.master == after.mixer.master
+                && before.mixer.headphoneLevel == after.mixer.headphoneLevel;
+            for (std::size_t deck = 0; deck < 4; ++deck)
+                presentationPreservesSession = presentationPreservesSession
+                    && deckControls(before.decks[deck]) == deckControls(after.decks[deck]);
+        }
+        geometrySane = geometrySane && preparationSane && presentationPreservesSession;
         if (workstationLayout) ++guiSmokeWorkstationSteps;
 
         auto* row = new juce::DynamicObject();
@@ -548,6 +576,8 @@ private:
         row->setProperty("content_height", content != nullptr ? content->getHeight() : 0);
         row->setProperty("workstation_layout", workstationLayout);
         row->setProperty("geometry_sane", geometrySane);
+        row->setProperty("preparation_modes_sane", preparationSane);
+        row->setProperty("presentation_preserves_session", presentationPreservesSession);
         guiSmokeSteps.add(juce::var(row));
 
         const bool acceptedSize = window->getWidth() == requestedWidth && window->getHeight() == requestedHeight;

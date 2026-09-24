@@ -89,7 +89,7 @@ PR #11 added a prepared 24-tap Blackman-windowed sinc lookup bank for effective 
 
 The large-track worker now prioritizes the requested chunk and both immediate neighbours before deeper forward read-ahead, because the wider interpolation kernel can need samples on either side of a seek cursor. Actual physical-storage refill latency and hardware underruns remain unqualified.
 
-Final PR #11 head `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032` passed exact-head GitHub Actions run `35361883586`: Linux ASan/UBSan core/progress checks and all five core-only CTest targets succeeded; Windows x64 configure/build, full CTest including decoder fixtures, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #11 merged as `d15fbb8187e699f200bfb79666c637614cf128c7`.
+Final PR #11 head `ae7e98c258a7c62e39f38ed3a5b06d5f1ac10032` passed exact-head run `35361883586`: Linux ASan/UBSan core/progress checks and all five core-only CTest targets succeeded; Windows x64 configure/build, full CTest including decoder fixtures, native no-audio GUI smoke, staging and artifact upload also succeeded. PR #11 merged as `d15fbb8187e699f200bfb79666c637614cf128c7`.
 
 ## Multi-rate resampler matrix and callback diagnostics package
 
@@ -161,3 +161,28 @@ Automated CI does not by itself certify Windows 11 clean-machine usability, phys
 - [ ] Transport/seek/loop/cue/cache transitions receive reviewed listening checks on representative fixtures and hardware.
 
 Use original/generated or appropriately licensed audio fixtures only. Report commit, OS, device/driver, sample rate, buffer size, reproduction steps and a reviewed/redacted log. Do not mark a release gate complete based only on a scheduled run, screenshot or compile result.
+
+
+## First-Beta workstation panel
+
+The `workspace_geometry` JUCE-independent CTest target checks 53,186 content
+sizes from 1000x720 through the 3840x2160 size class: toolbar/footer containment,
+non-overlap, stable A/C-left and B/D-right deck placement and the central mixer.
+The lower content bound allows native window borders below the public 1050x800
+outer-window minimum. This is geometry evidence, not a pixel or hardware result.
+
+`--smoke-test` keeps its no-device/no-audio contract and four existing resize
+steps. At each step it now switches each deck independently into GRID and back
+to MIX. It checks visible deck labels/sliders/buttons, peak-strip/fader separation,
+central mixer containment and that session/transport controls did not change.
+Rows additionally report `preparation_modes_sane` and
+`presentation_preserves_session`. The existing Windows UI visual workflow must
+still produce and pass its real pixel captures; neither test proves listening
+quality or manually reviewed accessibility/HiDPI behavior.
+
+For hands-on Beta Preview review, resize the main panel down and back up; open
+Library directly; use Session for existing save/load/recovery; toggle every
+GRID/MIX view while playing a quiet user-controlled test track. Verify the rate,
+loop, cue, fader and EQ values remain unchanged, and that all eight Hot Cues,
+recording, microphone, Booth and audio settings remain reachable. Verify private
+headphone cue only on an appropriately configured multi-output interface.

@@ -4,6 +4,15 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 
 ## Unreleased
 
+### First-Beta workstation panel
+
+- Keep the four-channel central mixer and vertical faders visible at the supported minimum window size instead of switching back to the crowded legacy deck layout.
+- Share two-row toolbar geometry between the main surface and History, keeping navigation, microphone/Booth, recording and audio settings apart.
+- Add per-deck MIX/GRID views: transport, eight Hot Cues, Beat Jump, Reverse/Slip, Sync and rate remain accessible; grid preparation replaces the Echo/Drive row without changing playback or mixer settings.
+- Open the local library with one click and expose existing session/backup actions through a separate Session button.
+- Add UI-sampled pre-fader peak strips for gain staging, explicitly not true-peak or loudness meters.
+- Replace fragile child-order/translated-caption discovery with explicit non-owning UI handles; extend native resize smoke to cover both deck views and unchanged session settings.
+
 ### Performance deck sync and tempo-map workflow
 
 - Added bounded continuous reviewed-grid Sync on top of the existing one-shot alignment: followers track the selected master from the message thread at 5 Hz instead of adding beat scheduling to the realtime callback.
