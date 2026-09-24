@@ -314,7 +314,7 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp, [Sys
     ) -Context 'evidence'
 
     $schema = Assert-IntegerProperty -Object $data -Name 'schema' -Minimum 1 -Context 'evidence'
-    if ($schema -ne 1) { throw 'Unsupported M1 witness schema.' }
+    if ($schema -ne 2) { throw 'Unsupported M1 witness schema; expected schema=2 with restart/loss checks.' }
     $project = Assert-StringProperty -Object $data -Name 'project' -Context 'evidence'
     $scope = Assert-StringProperty -Object $data -Name 'scope' -Context 'evidence'
     if ($project -ne 'BrokeDJ' -or $scope -ne 'M1-windows-hardware') {
@@ -379,6 +379,8 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp, [Sys
         'resizeAndHiDpi',
         'importAndPlayback',
         'deviceSwitchRecovery',
+        'deviceLossFailsSafe',
+        'deviceSettingsPersistAcrossRestart',
         'fourOutputCueIsolation',
         'runtimeErrorReview'
     )
@@ -474,6 +476,7 @@ try {
     Write-Step 'The script never starts playback or changes hardware volume. Keep monitor/headphone volume conservative before pressing Play.'
     Write-Step 'The generated witness JSON stores no device names, track names, track paths or source music.'
     Write-Step 'The separate BrokeDJ-device-probe.json can contain local backend/device names; keep it private unless reviewed.'
+    Write-Step 'M1 schema 2 requires a real restart-persistence check and a fail-safe device-loss/recovery check; the script never performs either action for you.'
     Write-Host ''
 
     $checks = [ordered]@{}
@@ -481,7 +484,9 @@ try {
     $checks.resizeAndHiDpi = Read-YesNo 'The UI remained usable at 1050x800 and a normal desktop size/qualified display scale without overlapping critical controls?'
     $checks.importAndPlayback = Read-YesNo 'The generated playback fixture imported and ordinary playback worked through the intended real output device at safe volume?'
     $checks.deviceSwitchRecovery = Read-YesNo 'Switching to another intended audio device/backend and back recovered without a crash, stale routing or unusable playback?'
-    $checks.fourOutputCueIsolation = Read-YesNo 'On a real four-output interface, master stayed on 1/2 and private CUE stayed isolated on 3/4 for at least two decks and after reopening/switching device settings?'
+    $checks.deviceLossFailsSafe = Read-YesNo 'While playback was active at safe volume, did making the selected output unavailable/disconnecting it pause playback without a crash, and after recovery did playback remain paused until you explicitly pressed PLAY?'
+    $checks.deviceSettingsPersistAcrossRestart = Read-YesNo 'After selecting the intended output backend/device, sample rate, buffer and 2-4 output channels, did a normal BrokeDJ close/reopen restore the same available output setup without restoring input or MIDI state?'
+    $checks.fourOutputCueIsolation = Read-YesNo 'On a real four-output interface, master stayed on 1/2 and private CUE stayed isolated on 3/4 for at least two decks and after the restart/settings-switch checks?'
     $checks.runtimeErrorReview = Read-YesNo 'Available driver/runtime/xrun diagnostics were reviewed and no unresolved M1-blocking error remained?'
 
     $failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
@@ -490,7 +495,7 @@ try {
     }
 
     $evidence = [ordered]@{
-        schema = 1
+        schema = 2
         project = 'BrokeDJ'
         scope = 'M1-windows-hardware'
         generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
