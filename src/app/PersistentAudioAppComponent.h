@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 namespace broke::app {
 
@@ -46,7 +47,7 @@ public:
         if (!safe) return false;
         safe->setAttribute("brokedjStateVersion", schemaVersion);
 
-        if (!file.getParentDirectory().createDirectory()) return false;
+        if (file.getParentDirectory().createDirectory().failed()) return false;
         juce::TemporaryFile temporary(file);
         {
             juce::FileOutputStream output(temporary.getFile());
@@ -173,11 +174,30 @@ protected:
         listening = true;
     }
 
+    // MainComponent already calls shutdownAudio() from its destructor. Shadow
+    // that boundary so the last explicit device choice is persisted while the
+    // device still reflects the live setup, then delegate to JUCE's shutdown.
+    void shutdownAudio() {
+        if (listening) {
+            persistCurrentState();
+            deviceManager.removeChangeListener(this);
+            listening = false;
+        }
+        juce::AudioAppComponent::shutdownAudio();
+    }
+
 private:
     void changeListenerCallback(juce::ChangeBroadcaster* source) override {
-        if (source != &deviceManager) return;
-        if (auto state = deviceManager.createStateXml())
+        if (source == &deviceManager) persistCurrentState();
+    }
+
+    void persistCurrentState() {
+        auto state = deviceManager.createStateXml();
+        if (!state) return;
+        if (AudioDeviceStateStore::matchesCurrentSetup(*state, deviceManager))
             static_cast<void>(stateStore.store(*state));
+        else
+            static_cast<void>(stateStore.clear());
     }
 
     AudioDeviceStateStore stateStore;
