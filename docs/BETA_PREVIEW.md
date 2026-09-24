@@ -25,14 +25,15 @@ This remains an integrity, reproducibility, extraction and no-audio runtime cont
 
 Keep the extracted package together. `SOURCE-COMMIT.txt`, package metadata and the qualification/witness files intentionally travel with the executable so any report can be tied to the exact candidate.
 
-For an optional integrity review before testing, run from the extracted versioned package root:
+For an optional full package-integrity review, run the verifier **before extraction from the downloaded workflow-artifact root**, where `VERIFY-PACKAGE.py`, the loose staged tree, `PACKAGE-MANIFEST.json`, `SHA256SUMS.txt`, the portable ZIP and its `.sha256` sidecar are still together:
 
 ```powershell
 python .\VERIFY-PACKAGE.py verify --root . --expected-commit <full-40-character-commit-sha>
 Get-Content .\SHA256SUMS.txt
+Get-Content .\BrokeDJ-Beta-Preview-Windows-x64.zip.sha256
 ```
 
-Python is required only for this optional verification step; BrokeDJ itself does not require Python.
+Do not run that full `verify` command from inside the extracted versioned ZIP root: by design the outer portable ZIP and sidecar are not members of themselves, so a full outer-package verification there would be incomplete. CI separately verifies the extracted inner payload before and after its relocated no-audio runtime smoke. Python is required only for the optional artifact-integrity review; BrokeDJ itself does not require Python.
 
 ## Test first
 
