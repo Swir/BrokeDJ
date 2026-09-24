@@ -80,6 +80,17 @@ public:
         host.addAndMakeVisible(*this);
         anchor.addComponentListener(this);
         layoutFromAnchor();
+
+        if (deck == 0) {
+            juce::Component::SafePointer<juce::Component> safeHost(&host);
+            juce::MessageManager::callAsync([safeHost] {
+                if (safeHost == nullptr) return;
+                auto* root = safeHost->getTopLevelComponent();
+                if (root == nullptr) root = safeHost.getComponent();
+                if (root != nullptr) BrokeThemeManager::applyPersisted(*root);
+            });
+        }
+
         startTimerHz(20);
     }
 
