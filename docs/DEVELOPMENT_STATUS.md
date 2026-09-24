@@ -6,13 +6,13 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
-## Active M1 audio-device persistence checkpoint — PR #112
+## Merged M1 audio-device persistence checkpoint — PR #112
 
-- Active branch: `feat/beta-audio-device-state`, PR **#112**; latest product-code checkpoint before this status-only commit is **`f8dd84ce2894a41cc54f6a059804608683b11ebf`**.
+- `main` includes squash-merged PR **#112** as **`4a542307011bd0c29f25d1dad660af832fb7aff1`**; the exact qualified PR head was **`d5a3317993c67786563009055880a5a1f14626d9`** on `feat/beta-audio-device-state`.
 - The package persists a schema-versioned, bounded output-only JUCE device setup under the user's local application-data directory so an explicitly selected output backend/device, sample rate, buffer and 2–4 active output channels can survive restart without adding callback I/O.
 - The persistence boundary strips input-device, MIDI and legacy combined-device identities; validates binary output masks before JUCE parsing; counts selected physical outputs rather than the highest channel index; preserves valid sparse physical channel masks; and clears saved state when the restored device/rate/buffer/explicit channel selection does not match the live setup.
 - Deterministic store tests cover privacy stripping, transactional replacement, 2/4-output restore intent, sparse/high-index masks, malformed/mono/>4-channel fail-closed behavior, invalid rate/buffer sanitisation, schema/root/oversize rejection and idempotent clear.
-- Exact product head `f8dd84ce2894a41cc54f6a059804608683b11ebf` started **Build and test #566**, **Native library scale smoke #236**, **UI visual witness #69** and **Beta witness runner #42**; these were pending/in progress when this checkpoint was written, so PR #112 remains draft and is not merge-qualified yet.
+- Exact PR head `d5a3317993c67786563009055880a5a1f14626d9` passed **Build and test #567** including Windows development build/full CTest/package smoke, **UI visual witness #70**, **Native library scale smoke #237**, **M1 hardware witness tool #86**, **M2 key-lock listening witness tool #81**, **M3 mixer/recording witness tool #76** and **Beta witness runner #43** before merge.
 - This work does not close M1 or change `docs/progress.json`: roadmap remains **1/10 (10.0%, PRE-ALPHA)**. Real Windows 11 device restart/switch/loss and physical four-output master/cue isolation remain manual hardware gates.
 
 ## Merged packaged qualification checkpoint — PR #110
@@ -58,7 +58,7 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Verified implementation state
 
-- **M1:** native Windows x64 build/test, staged-package no-audio lifecycle/resize smoke, silent device-capability probing, privacy-safe witness tooling, portable Beta Preview packaging, native four-deck async import/replacement isolation, deterministic device-reprepare transport continuity, conservative loss pause/no-auto-resume behavior, `AudioIODevice::isOpen()` loss detection and fast open-device A-to-B replacement fail-safe are implemented. The remaining gate is real Windows 11 clean-machine switching/loss plus physical four-output master/cue isolation.
+- **M1:** native Windows x64 build/test, staged-package no-audio lifecycle/resize smoke, silent device-capability probing, privacy-safe witness tooling, portable Beta Preview packaging, native four-deck async import/replacement isolation, deterministic device-reprepare transport continuity, conservative loss pause/no-auto-resume behavior, `AudioIODevice::isOpen()` loss detection, fast open-device A-to-B replacement fail-safe, and bounded output-only device/rate/buffer/channel persistence across restart are implemented. The remaining gate is real Windows 11 clean-machine switching/loss plus physical four-output master/cue isolation.
 - **M2:** reviewed-grid performance controls, continuous Sync, variable-tempo grids, Hot Cues, Beat Jump, REV/SLIP, bounded JOG/SCRATCH and the opt-in Signalsmith-backed key-lock research lifecycle are implemented. Native `MainComponent`/DeckPanel integration covers PLAY/rate/LOOP/CUE 0, live seek and fail-closed clip replacement. Representative real-music BPM/key review, key-lock listening/latency qualification and physical controller workflows remain open.
 - **M3:** channel trim, sampled ballistic meters, crossfader laws, master/cue/booth routing, dropout-aware 24-bit WAV set recording, optional microphone ducking, sample-peak limiter measurements and deterministic EQ/master-path tests are implemented. Physical/listening mic, Booth, limiter, recording and long-session gates remain open.
 - **M4:** SQLite migrations, bounded search/tags/playlists/history, duplicate/missing/relocate workflows, source-bound waveform/analysis cache, four-deck session persistence, fail-safe library backup/restore, native 5k-track/12k-history staged-EXE recovery, native async session/adoption coverage and privacy-safe two-pass fixture-state verification are integrated. The actual human Windows 11 connected-library/session run remains required.
@@ -75,4 +75,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Do **not** widen M5+ scope while the first-Beta gate is externally constrained. Finish and exact-head-qualify PR #112, then use the packaged `START-BETA-QUALIFICATION.cmd` against an exact smoke-qualified candidate on real Windows 11 hardware to collect genuine M1–M4 clean-machine/audio/listening/library evidence. Fix any real panel, import, playback, device, recording or session regression exposed by that run before public Beta publication.
+Do **not** widen M5+ scope while the first-Beta gate is externally constrained. Use the packaged `START-BETA-QUALIFICATION.cmd` against an exact smoke-qualified candidate on real Windows 11 hardware to collect genuine M1–M4 clean-machine/audio/listening/library evidence, including restart persistence and live device switch/loss behavior. Fix any real panel, import, playback, device, recording or session regression exposed by that run before public Beta publication.
