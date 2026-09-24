@@ -99,24 +99,36 @@ Treat `four_output_candidate=true` / `four_output_candidate=yes` only as a capab
 
 ## Packaging and staged-artifact contract
 
-After the Windows build/tests pass, CI stages `dist/BrokeDJ`, creates `BrokeDJ-source.zip` from the exact workflow commit and writes a privacy-neutral `SOURCE-COMMIT.txt`. The staged payload also keeps the corresponding validation/audio/GUI/device-probe evidence and third-party license material.
+After the Windows build/tests pass, CI stages `dist/BrokeDJ`, creates `BrokeDJ-source.zip` from the exact workflow commit and writes a privacy-neutral `SOURCE-COMMIT.txt`. The full **development artifact** also keeps validation/audio/GUI/device-probe evidence, witness tooling, source, the package verifier and third-party license material.
 
-`scripts/package_contract.py` then creates two deterministic files at the artifact root:
+`scripts/package_contract.py` creates deterministic development metadata at the artifact root:
 
-- `PACKAGE-MANIFEST.json` — schema-versioned source/version identity plus the size and SHA-256 of every staged payload file;
-- `SHA256SUMS.txt` — the same sorted payload hashes in a simple reviewable form.
+- `PACKAGE-MANIFEST.json` — schema-versioned source/version identity plus the size and SHA-256 of every staged development-artifact payload file;
+- `SHA256SUMS.txt` — the same sorted payload hashes in a simple reviewable form;
+- `BrokeDJ-Beta-Preview-Windows-x64.zip` plus `.sha256` — a separately verified **runtime-subset portable** containing only the staged `BrokeDJ/` tree under one versioned root.
 
-The manifest intentionally excludes timestamps, machine names and local paths. Creation fails if required runtime/source/license/evidence files are missing, if `SOURCE-COMMIT.txt` does not match the workflow commit, or if a symbolic link enters the payload. Verification rejects missing, extra, resized or hash-mismatched files.
+The portable ZIP deliberately excludes the outer `BrokeDJ-source.zip`, `PACKAGE-MANIFEST.json`, `SHA256SUMS.txt` and `VERIFY-PACKAGE.py`. Those development/source-verification files remain available in the full development artifact instead of being duplicated into the consumer archive. The portable still includes the app, notices/licenses and the packaged M1–M4/Beta qualification guides/scripts that are part of the current Beta Preview workflow.
 
-The uploaded development artifact includes the verifier as `VERIFY-PACKAGE.py`. A second Windows job downloads that uploaded artifact into a fresh job workspace, verifies the manifest against the exact workflow commit and launches the **staged** `BrokeDJ.exe` with `--smoke-test` and `--device-probe-ci`. That proves the uploaded staging tree can pass the no-audio lifecycle/probe contracts without relying on the original build directory. It still does **not** certify a consumer clean machine, HiDPI appearance, real device switching, master/cue hardware isolation, controller support, latency, listening quality or live reliability.
+The development manifest intentionally excludes timestamps, machine names and local paths. Creation fails if required runtime/source/license/evidence files are missing, if `SOURCE-COMMIT.txt` does not match the workflow commit, or if a symbolic link enters the payload. Portable creation is bound byte-for-byte to the staged `BrokeDJ/` runtime subset and uses fixed ZIP metadata. Verification rejects missing, extra, resized, hash-mismatched, traversal, symlink or non-deterministic members.
 
-For a downloaded development artifact, an optional integrity check is:
+The first Windows job uploads the complete development artifact, including `VERIFY-PACKAGE.py`. A second Windows job downloads that exact artifact into a fresh workspace, verifies the full manifest, extracts the runtime-subset portable into a path containing spaces/Unicode, verifies the extracted tree against the staged runtime before and after no-audio smoke, and launches its `BrokeDJ.exe` with `--smoke-test` and `--device-probe-ci`. Only the portable ZIP and its SHA-256 sidecar are then uploaded under the `BrokeDJ-Beta-Preview-Windows-x64` artifact name. This still does **not** certify a consumer clean machine, HiDPI appearance, real device switching, master/cue hardware isolation, controller support, latency, listening quality or live reliability.
+
+For a downloaded **development artifact**, the optional deep integrity check remains:
 
 ```powershell
 python .\VERIFY-PACKAGE.py verify --root . --expected-commit <full-40-character-commit-sha>
 Get-Content .\SHA256SUMS.txt
 ```
 
-Python is required only for this optional development-artifact verifier; BrokeDJ itself does not require Python. The manual Windows 11/hardware witness remains documented in [`M1_HARDWARE_WITNESS.md`](M1_HARDWARE_WITNESS.md).
+For the smoke-qualified **Beta Preview** artifact, verify the portable ZIP with Windows PowerShell only:
+
+```powershell
+$line = (Get-Content .\BrokeDJ-Beta-Preview-Windows-x64.zip.sha256 -Raw).Trim()
+$expected = ($line -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash .\BrokeDJ-Beta-Preview-Windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw 'BrokeDJ Beta Preview SHA-256 mismatch' }
+```
+
+Python is required only for the optional full development-artifact verifier; BrokeDJ itself and the portable checksum check do not require Python. The manual Windows 11/hardware witness remains documented in [`M1_HARDWARE_WITNESS.md`](M1_HARDWARE_WITNESS.md).
 
 `cpack --config build/windows/CPackConfig.cmake -C Release` can still create a local development ZIP. A public alpha/beta/stable package remains blocked until the stronger release gate is satisfied, including exact-head CI, packaged/manual Windows qualification, real audio/multi-output cue evidence where required, functional regression, applicable controller/soak checks, source/notices/checksums and documented known issues. No updater or code-signing credentials are configured.
