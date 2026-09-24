@@ -8,65 +8,32 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Current checkpoint
 
-- Default branch baseline is `main` at `25b29ff20a25e95f16104beaf024a0e354f37642`, the squash merge of PR #101. PR #101 exact head `df54cbeef21e0655df92754f408a7251875d7962` passed the required observed exact-head workflows before merge.
-- Active package is draft PR #102, branch `fix/beta-portable-integrity-binding`. Exact-head CI is the merge authority; do not merge from an earlier green commit after the branch advances.
-- PR #102 binds every portable ZIP member to the staged package by size and SHA-256, enforces deterministic ZIP metadata and runs the **actual extracted portable ZIP** from a relocated Windows path containing spaces and a non-ASCII character. The extracted tree is inner-manifest verified, its exact `BrokeDJ.exe` runs the no-audio GUI lifecycle/resize smoke plus silent device-probe CI contract, generated smoke files are removed and the extracted payload is verified again.
-- Exact head `4b5a7d1e9531379433bc18447a90f35de7a4d806` passed M1/M2/M3 witness tools, Beta qualification and native library scale, while Build/test #521 exposed one packaging-smoke regression before the executable launch: importing the extracted `VERIFY-PACKAGE.py` created `__pycache__/VERIFY-PACKAGE.cpython-312.pyc`, and the strict manifest correctly rejected that unmanifested file.
-- The regression fix commit `9f926138943f8abbfb83ae86d7ceced6dccae788` keeps the package contract strict and instead invokes both extracted-tree verifier passes with Python `-B`, preventing the verifier from mutating the payload through bytecode-cache creation. Build/test #522 and the corresponding exact-head M1/M2/M3/Beta/native workflows are the current validation authority.
-- This status checkpoint follows that implementation fix; its own exact PR head and workflows supersede the run identifiers above if the branch advances again.
-- Roadmap source of truth remains `docs/progress.json`: **1/10 equal-weight milestones complete (10.0%, PRE-ALPHA)**. M1–M4 remain open until their documented human acceptance evidence exists.
+- Default branch baseline is `main` at `bcf4615b2d3a3349652bac343c4c57be254451bb`, the squash merge of PR #103 (`Add guided first-Beta witness runner`). PR #102 portable-package integrity hardening and PR #103 guided witness tooling are therefore both integrated on `main`.
+- Active package is draft PR #105, branch `feat/beta-workspace-panel`. This package responds directly to the user-facing Beta priority: complete the real DJ workstation panel and deliver a runnable Windows Beta Preview instead of adding another qualification wrapper.
+- PR #105 keeps the four-channel central mixer and vertical faders visible at every supported size, adds independent MIX/GRID deck views, larger performance waveforms, sampled pre-fader peak strips, one-click Library and a separate Session menu, and replaces fragile child-order/caption discovery with explicit non-owning UI handles.
+- The native no-audio smoke now switches all four decks independently between GRID and MIX at each resize step and checks visible-control containment, non-overlap and unchanged session/transport settings. JUCE-independent `workspace_geometry` covers 53,186 content sizes.
+- The branch has been reconciled with current `main` without force-push or dropping PR #103 files. The exact merged branch head and its workflows are the merge authority; do not merge from the earlier pre-reconciliation head.
+- Roadmap source of truth remains `docs/progress.json`: **1/10 equal-weight milestones complete (10.0%, PRE-ALPHA)**. This is a whole-roadmap milestone count, not first-Beta readiness, audio quality or live-readiness. M1–M4 remain open until their documented human acceptance evidence exists.
 - GitHub Releases remains empty; no public Beta/Release or live-performance qualification is claimed.
 
 ## Verified implementation state
 
 - **M1:** native Windows x64 build/test, staged-package no-audio lifecycle/resize smoke, silent device-capability probing, privacy-safe witness tooling, portable Beta Preview packaging, native four-deck async import/replacement isolation, deterministic device-reprepare transport continuity, conservative loss pause/no-auto-resume behavior, `AudioIODevice::isOpen()` loss detection and fast open-device A-to-B replacement fail-safe are implemented. The remaining gate is real Windows 11 clean-machine switching/loss plus physical four-output master/cue isolation.
-- **M2:** reviewed-grid performance controls, continuous Sync, variable-tempo grids, Hot Cues, Beat Jump, REV/SLIP, bounded JOG/SCRATCH and the opt-in Signalsmith-backed key-lock research lifecycle are implemented. Native `MainComponent`/DeckPanel integration covers PLAY/rate/LOOP/CUE 0, live seek and fail-closed clip replacement. Representative real-music BPM/key review, key-lock listening/latency qualification and physical controller workflows remain open.
-- **M3:** channel trim, meters, crossfader laws, master/cue/booth routing, dropout-aware 24-bit WAV set recording, optional microphone ducking, sample-peak limiter measurements and deterministic EQ/master-path tests are implemented. Physical/listening mic, Booth, limiter, recording and long-session gates remain open.
-- **M4:** SQLite migrations, bounded search/tags/playlists/history, duplicate/missing/relocate workflows, source-bound waveform/analysis cache, four-deck session persistence, fail-safe library backup/restore, native 5k-track/12k-history staged-EXE recovery, native async session/adoption coverage and privacy-safe two-pass fixture-state verification are integrated. The connected witness is schema-2 and exact-process-bound; the actual human Windows 11 run remains required.
-- **Packaging:** the staged package is manifest/checksum bound to source identity. PR #102 additionally binds every portable ZIP member byte-for-byte to that staged tree, verifies deterministic ZIP metadata and exercises the extracted portable executable from a relocated Unicode/space-containing path instead of qualifying only the loose staging tree.
+- **M2:** reviewed-grid performance controls, continuous Sync, variable-tempo grids, Hot Cues, Beat Jump, REV/SLIP, bounded JOG/SCRATCH and the opt-in Signalsmith-backed key-lock research lifecycle are implemented. Native `MainComponent`/DeckPanel integration covers PLAY/rate/LOOP/CUE 0, live seek and fail-closed clip replacement. PR #105 makes the performance surface consistently accessible across supported window sizes. Representative real-music BPM/key review, key-lock listening/latency qualification and physical controller workflows remain open.
+- **M3:** channel trim, meters, crossfader laws, master/cue/booth routing, dropout-aware 24-bit WAV set recording, optional microphone ducking, sample-peak limiter measurements and deterministic EQ/master-path tests are implemented. PR #105 keeps the real central mixer visible and adds sampled pre-fader peak strips without mislabelling them as true-peak/loudness meters. Physical/listening mic, Booth, limiter, recording and long-session gates remain open.
+- **M4:** SQLite migrations, bounded search/tags/playlists/history, duplicate/missing/relocate workflows, source-bound waveform/analysis cache, four-deck session persistence, fail-safe library backup/restore, native 5k-track/12k-history staged-EXE recovery, native async session/adoption coverage and privacy-safe two-pass fixture-state verification are integrated. PR #105 separates one-click Library from Session save/load/backup actions. The actual human Windows 11 connected-library/session run remains required.
+- **Packaging:** `main` binds every portable ZIP member byte-for-byte to the staged tree, verifies deterministic ZIP metadata, extracts into a relocated Windows path containing spaces/non-ASCII text, runs the extracted `BrokeDJ.exe` through the no-audio smoke, then verifies the extracted payload again without verifier-created bytecode mutation.
+- **Qualification UX:** the integrated guided runner coordinates the canonical M1–M4 witnesses around one exact candidate executable and does not weaken hardware/listening criteria.
 
 ## Unmet gates
 
-- **PR #102:** every required workflow must pass on the newest exact branch head. Any Linux package-contract, Windows ZIP extraction/runtime smoke, staged-package smoke or existing regression failure must be repaired before merge.
+- **PR #105:** newest exact-head Linux/core/geometry, Windows x64 build and full CTest, native resize/mode smoke, UI visual capture and extracted portable-package smoke must all pass. Any regression must be repaired before merge.
 - **M1:** real Windows 11 clean-machine launch/resize/import/playback, live device replacement/loss behavior and physical 4-output master/cue isolation.
 - **M2:** representative real-music BPM/key review, key-lock listening, real-device CPU/deadline/underrun/latency evidence and physical controller/wider scratch qualification. Native synthetic integration tests are not substitutes for those human/device gates.
 - **M3:** real EQ/mixer listening plus physical microphone/ducking, Booth, recording/dropout and long-session qualification.
-- **M4:** perform and review the user-controlled Windows 11 library/session witness against an exact staged executable. Exact-process ownership and schema-2 evidence remove identity ambiguity but do not fabricate launch/resize/import/search/tag/playlist/history/duplicate/missing/relocate/backup/restore/session evidence.
-- **Release:** no Alpha/Beta/Stable Release until the documented gate for that scope is satisfied.
+- **M4:** perform and review the user-controlled Windows 11 connected library/session witness against an exact staged executable. Exact-process ownership and schema-2 evidence remove identity ambiguity but do not fabricate launch/resize/import/search/tag/playlist/history/duplicate/missing/relocate/backup/restore/session evidence.
+- **Release:** no Alpha/Beta/Stable Release until the documented gate for that scope is satisfied. A downloadable development Beta Preview may be supplied for hands-on testing once its exact package smoke passes; it must not be described as a physically qualified public Beta/Release.
 
 ## Next largest step
 
-Let PR #102's newest exact-head workflows exercise both the staged tree and the **relocated extracted portable ZIP** with the no-bytecode verifier invocation. Repair every regression before integration. If green, keep the Beta scope frozen: the largest remaining product gate is the real Windows 11 M4 connected library/session run, followed by physical M1 device/four-output checks and the remaining M2–M3 listening/hardware evidence. If those manual gates cannot be executed in the current environment, finish only concrete first-Beta release blockers instead of inventing substitute evidence or widening M5+ scope.
-
-
-## First-Beta panel correction — 2026-09-24
-
-The user's current priority is a complete, usable DJ panel and a runnable Windows
-Beta Preview, not additional witness wrappers. This UX correction is part of the
-existing M1–M4 first-Beta target; M5+ and the milestone denominator do not expand.
-
-- Branch: `feat/beta-workspace-panel`, based on main
-  `1db75e5961374522821bb9c8b41fb50e16e7c6a7` (PR #102 already merged).
-- Scope: permanent four-channel central mixer across supported window sizes;
-  two-row toolbar with shared History geometry; independent MIX/GRID deck views;
-  larger performance waveforms; sampled pre-fader peak strips; one-click Library
-  and a separate Session menu. Existing transport/DSP/decoder ownership is retained.
-- Explicit non-owning UI handles replace child-count/caption discovery, preventing
-  translated captions or future labels from silently disabling the workstation.
-- Local verification: 13/13 JUCE-independent CTest targets passed with ASan/UBSan;
-  the geometry target covered 53,186 content sizes. JUCE 9.0.2 Linux syntax checks
-  passed for Main, MainComponent and opt-in key-lock Main. These are not native
-  Windows link/runtime, physical-device or listening evidence.
-- Native smoke now switches all four decks independently into GRID and back to
-  MIX at every existing window-size step, checking visible controls and unchanged
-  session/transport settings. Exact-head Windows execution and pixel review are
-  pending when this checkpoint is written; the PR conversation records head/run
-  identities once GitHub assigns them.
-- Coordination: the concurrent PR #103 concerns witness tooling, not application
-  UI. Its changes are not replaced or duplicated here; reconcile checkpoint text
-  normally if main moves. No force push, schedule change or release is authorized
-  by this checkpoint.
-- Next: fix any actual native UI/build regression, inspect the rendered Windows
-  panel, and provide the resulting portable Beta Preview for hands-on feedback.
-  Do not replace this deliverable with more standalone qualification wrappers.
-  Formal public Beta/Release still needs the documented manual M1–M4 gates.
+Run PR #105's exact reconciled head through the native Windows build, resize/MIX-GRID smoke, visual capture review and extracted portable-package smoke. Repair every regression before integration. When those automated/runtime gates are green, provide the resulting Windows x64 **Beta Preview development package** for hands-on feedback on the complete workstation panel. After that, use the integrated guided runner on the exact candidate to complete the genuine M1–M4 manual evidence set rather than widening M5+ scope.
