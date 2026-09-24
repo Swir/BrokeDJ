@@ -6,6 +6,15 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
+## Active M1 audio-device persistence checkpoint — PR #112
+
+- Active branch: `feat/beta-audio-device-state`, PR **#112**; latest product-code checkpoint before this status-only commit is **`f8dd84ce2894a41cc54f6a059804608683b11ebf`**.
+- The package persists a schema-versioned, bounded output-only JUCE device setup under the user's local application-data directory so an explicitly selected output backend/device, sample rate, buffer and 2–4 active output channels can survive restart without adding callback I/O.
+- The persistence boundary strips input-device, MIDI and legacy combined-device identities; validates binary output masks before JUCE parsing; counts selected physical outputs rather than the highest channel index; preserves valid sparse physical channel masks; and clears saved state when the restored device/rate/buffer/explicit channel selection does not match the live setup.
+- Deterministic store tests cover privacy stripping, transactional replacement, 2/4-output restore intent, sparse/high-index masks, malformed/mono/>4-channel fail-closed behavior, invalid rate/buffer sanitisation, schema/root/oversize rejection and idempotent clear.
+- Exact product head `f8dd84ce2894a41cc54f6a059804608683b11ebf` started **Build and test #566**, **Native library scale smoke #236**, **UI visual witness #69** and **Beta witness runner #42**; these were pending/in progress when this checkpoint was written, so PR #112 remains draft and is not merge-qualified yet.
+- This work does not close M1 or change `docs/progress.json`: roadmap remains **1/10 (10.0%, PRE-ALPHA)**. Real Windows 11 device restart/switch/loss and physical four-output master/cue isolation remain manual hardware gates.
+
 ## Merged packaged qualification checkpoint — PR #110
 
 - `main` includes squash-merged PR **#110** as `009de7e7cfe4a5fe94081c626a04a9dfe21495c4`; the exact qualified PR head was `13d1cd84231673bc62fd5f08d71bcf0650bb15d3` on `feat/package-beta-witness-runner`.
@@ -30,7 +39,7 @@ This file is the durable engineering checkpoint for the current repository state
 - `main` includes squash-merged PR **#108** as `0c7ac000c74e822ac33d94b8bb26fcd870f0cb4d` (`Publish Beta Preview as runtime-only portable bundle`). The exact qualified PR head was `1b873a5d651cefb6fb69eabd7115f60e64e2f077`; its base was the merged runtime-staging cleanup from PR #107 at `5d43d5b2bf380789a6d974782ca5991478f623ac`.
 - The complete deterministic development artifact contract remains unchanged at the outer staging root, while the consumer Beta Preview publishes only the portable ZIP plus its SHA-256 sidecar. Development-only `BrokeDJ-source.zip`, `PACKAGE-MANIFEST.json`, `SHA256SUMS.txt` and `VERIFY-PACKAGE.py` are rejected if they leak into the portable root.
 - `verify-extracted-portable` binds an already extracted portable byte-for-byte to the exact staged `BrokeDJ/` runtime subset and rejects missing, extra, tampered or symbolic-link payloads. CI runs this verifier before and after relocated no-audio smoke, then publishes only the verified consumer bundle.
-- Exact-head qualification for `1b873a5d651cefb6fb69eabd7115f60e64e2f077` passed **Build and test #551**, **Native library scale smoke #221**, **M1 hardware witness tool #79**, **M2 key-lock listening witness tool #74**, **M3 mixer/recording witness tool #69**, **Beta qualification tool #48** and **Beta witness runner tool #27**.
+- Exact-head qualification for `1b873a5d651cefb6fb69eabd7115f60e64e2f077` passed **Build and test #551**, **Native library scale smoke #221**, **M1 hardware witness tool #79**, **M2 key-lock listening witness tool #74**, **M3 mixer/recording witness tool #69**, **Beta qualification tool #48** and **Beta witness runner #27**.
 - This packaging checkpoint did not satisfy any physical M1–M4 hardware/listening witness. GitHub Releases remains empty; the artifact is a smoke-qualified **Beta Preview development package**, not a public Beta/Release or live-performance qualification.
 
 ## Merged deck/theme checkpoint — PR #106
@@ -66,4 +75,4 @@ This file is the durable engineering checkpoint for the current repository state
 
 ## Next largest step
 
-Do **not** widen M5+ scope while the first-Beta gate is externally constrained. Use the packaged `START-BETA-QUALIFICATION.cmd` against the exact smoke-qualified candidate on real Windows 11 hardware to collect genuine M1–M4 clean-machine/audio/listening/library evidence. Fix any real panel, import, playback, device, recording or session regression exposed by that run before public Beta publication.
+Do **not** widen M5+ scope while the first-Beta gate is externally constrained. Finish and exact-head-qualify PR #112, then use the packaged `START-BETA-QUALIFICATION.cmd` against an exact smoke-qualified candidate on real Windows 11 hardware to collect genuine M1–M4 clean-machine/audio/listening/library evidence. Fix any real panel, import, playback, device, recording or session regression exposed by that run before public Beta publication.
