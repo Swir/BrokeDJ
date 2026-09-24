@@ -12,7 +12,8 @@
 // It intentionally keeps BrokeDJ's dark structural surface unchanged and only
 // recolours controls that already use one of BrokeDJ's theme-owned colours.
 // Semantic colours (record red, microphone amber, signal green) are preserved.
-// No audio/DSP state is read or written here.
+// No audio/DSP state is read or written here. Settings I/O happens only from the
+// message-thread startup/menu path and never from the realtime callback.
 class BrokeThemeManager final {
 public:
     enum class Theme : int {
@@ -60,14 +61,16 @@ public:
         }
     }
 
+    // User-initiated theme change. Saving is deliberately outside the audio path.
     static void apply(juce::Component& root, Theme theme) {
         theme = sanitiseTheme(static_cast<int>(theme));
-        currentThemeId.store(static_cast<int>(theme), std::memory_order_release);
-        const auto colours = palette(theme);
+        applyInternal(root, theme);
+        saveTheme(theme);
+    }
 
-        applyLookAndFeelDefaults(root.getLookAndFeel(), colours);
-        applyRecursive(root, colours);
-        root.repaint();
+    // Startup restore. A missing/corrupt setting fails closed to Electric Blue.
+    static void applyPersisted(juce::Component& root) {
+        applyInternal(root, loadTheme());
     }
 
     static void showMenu(juce::Component& anchor) {
@@ -102,6 +105,42 @@ private:
     static juce::String localText(const char* english, const char* polish) {
         const bool usePolish = juce::SystemStats::getUserLanguage().startsWithIgnoreCase("pl");
         return juce::String::fromUTF8(usePolish ? polish : english);
+    }
+
+    static juce::PropertiesFile::Options settingsOptions() {
+        juce::PropertiesFile::Options options;
+        options.applicationName = "BrokeDJ";
+        options.filenameSuffix = "settings";
+        options.folderName = "BrokeDJ";
+        options.osxLibrarySubFolder = "Application Support";
+        options.commonToAllUsers = false;
+        options.ignoreCaseOfKeyNames = false;
+        options.doNotSave = false;
+        options.millisecondsBeforeSaving = 0;
+        options.storageFormat = juce::PropertiesFile::storeAsXML;
+        return options;
+    }
+
+    static Theme loadTheme() {
+        juce::PropertiesFile settings(settingsOptions());
+        if (!settings.isValidFile()) return Theme::electricBlue;
+        return sanitiseTheme(settings.getIntValue("uiAccentTheme",
+                                                  static_cast<int>(Theme::electricBlue)));
+    }
+
+    static void saveTheme(Theme theme) {
+        juce::PropertiesFile settings(settingsOptions());
+        if (!settings.isValidFile()) return;
+        settings.setValue("uiAccentTheme", static_cast<int>(theme));
+        static_cast<void>(settings.saveIfNeeded());
+    }
+
+    static void applyInternal(juce::Component& root, Theme theme) {
+        currentThemeId.store(static_cast<int>(theme), std::memory_order_release);
+        const auto colours = palette(theme);
+        applyLookAndFeelDefaults(root.getLookAndFeel(), colours);
+        applyRecursive(root, colours);
+        root.repaint();
     }
 
     static constexpr std::array<std::uint32_t, 15> ownedArgb {
