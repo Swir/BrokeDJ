@@ -25,11 +25,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Self-test UI pixel validator
+      - name: Self-test UI pixel validator and parse theme witness helper
         shell: pwsh
         run: |
           pwsh -NoProfile -File scripts/test_ui_witness_validator.ps1
           if ($LASTEXITCODE -ne 0) { throw "UI validator self-test failed: $LASTEXITCODE" }
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/capture_theme_smoke.ps1'),
+            [ref]$tokens,
+            [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message -ErrorAction Continue }
+            throw "Theme witness helper has $($errors.Count) PowerShell parse error(s)."
+          }
 
       - name: Configure native Windows build
         run: cmake --preset windows -DBROKEDJ_BUILD_TIMESTRETCH_PROTOTYPE=ON
