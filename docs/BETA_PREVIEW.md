@@ -6,9 +6,13 @@ It is **not** a public Beta release, live-performance certification or proof tha
 
 ## Portable package
 
-The workflow artifact contains `BrokeDJ-Beta-Preview-Windows-x64.zip` plus `BrokeDJ-Beta-Preview-Windows-x64.zip.sha256`. The ZIP is generated from the already-manifested staged tree with fixed member ordering/metadata, a single versioned top-level directory and no symlinks. Package verification checks the outer SHA-256, rejects duplicate/unsafe archive members, extracts to a temporary directory and re-validates the inner `PACKAGE-MANIFEST.json` / `SHA256SUMS.txt` against the same source commit.
+The workflow artifact contains `BrokeDJ-Beta-Preview-Windows-x64.zip` plus `BrokeDJ-Beta-Preview-Windows-x64.zip.sha256`. The ZIP is generated from the already-manifested staged tree with fixed member ordering/metadata, a single versioned top-level directory and no symlinks.
 
-This is an integrity and extraction contract, not a clean-machine qualification. The existing staged Windows smoke still runs with audio disabled; real Windows 11 hardware/listening evidence remains manual.
+Package verification first validates the loose staged payload against `PACKAGE-MANIFEST.json` / `SHA256SUMS.txt`, then requires the portable archive to contain the exact same member set **and the exact same bytes**. Every archived member is compared with the staged source by size and SHA-256; fixed timestamp, deflate compression and regular-file metadata are also part of the deterministic archive contract. A coherently re-manifested ZIP with different payload bytes therefore cannot pass merely because its own inner manifest is self-consistent. The outer SHA-256 sidecar, duplicate/unsafe paths, encrypted members, symlinks and bounded uncompressed size are checked before temporary extraction and a second inner-manifest verification.
+
+The Windows package-smoke job also extracts the actual portable ZIP into a relocated path containing spaces and a non-ASCII character, verifies the extracted inner manifest against the exact workflow commit, launches that extracted `BrokeDJ.exe` with the no-audio GUI lifecycle/resize smoke and silent device-probe CI mode, removes generated smoke files and verifies the extracted payload again. This catches packaging/path/runtime failures that a loose staged-tree launch cannot expose.
+
+This remains an integrity, reproducibility, extraction and no-audio runtime contract, not a clean-machine or audio-hardware qualification. Real Windows 11 hardware/listening evidence remains manual.
 
 ## Run the preview
 
@@ -21,14 +25,15 @@ This is an integrity and extraction contract, not a clean-machine qualification.
 
 Keep the extracted package together. `SOURCE-COMMIT.txt`, package metadata and the qualification/witness files intentionally travel with the executable so any report can be tied to the exact candidate.
 
-For an optional integrity review before testing, run from the extracted versioned package root:
+For an optional full package-integrity review, run the verifier **before extraction from the downloaded workflow-artifact root**, where `VERIFY-PACKAGE.py`, the loose staged tree, `PACKAGE-MANIFEST.json`, `SHA256SUMS.txt`, the portable ZIP and its `.sha256` sidecar are still together:
 
 ```powershell
 python .\VERIFY-PACKAGE.py verify --root . --expected-commit <full-40-character-commit-sha>
 Get-Content .\SHA256SUMS.txt
+Get-Content .\BrokeDJ-Beta-Preview-Windows-x64.zip.sha256
 ```
 
-Python is required only for this optional verification step; BrokeDJ itself does not require Python.
+Do not run that full `verify` command from inside the extracted versioned ZIP root: by design the outer portable ZIP and sidecar are not members of themselves, so a full outer-package verification there would be incomplete. CI separately verifies the extracted inner payload before and after its relocated no-audio runtime smoke. Python is required only for the optional artifact-integrity review; BrokeDJ itself does not require Python.
 
 ## Test first
 
