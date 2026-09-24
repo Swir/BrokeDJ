@@ -152,6 +152,30 @@ public:
         knobs[7].setValue(juce::jlimit(0.0, 6.0, static_cast<double>(state.drive)),
                           juce::dontSendNotification);
     }
+    // Explicit non-owning handles for the workstation adapter. Adding a label or
+    // changing a translated caption can no longer disable the entire mixer.
+    struct WorkspaceControls final {
+        DeckPanel* deck = nullptr;
+        Waveform* waveform = nullptr;
+        std::array<juce::Label*, 14> labels{};
+        std::array<juce::TextButton*, 22> buttons{};
+        std::array<juce::Slider*, 10> sliders{};
+        std::array<juce::ComboBox*, 2> combos{};
+        const broke::Meter* meter = nullptr;
+    };
+    [[nodiscard]] WorkspaceControls workspaceControls() noexcept {
+        return {this, &waveform,
+            {&heading, &track, &time, &rhythm, &knobNames[0], &knobNames[1],
+             &knobNames[2], &knobNames[3], &knobNames[4], &knobNames[5],
+             &knobNames[6], &knobNames[7], &gridZeroLabel, &gridBpmLabel},
+            {&load, &play, &rewind, &loop, &cue, &beatLoop, &jumpBack,
+             &jumpForward, &reverse, &slip, &syncMaster, &sync,
+             &hotCuePads[0], &hotCuePads[1], &hotCuePads[2], &hotCuePads[3],
+             &hotCuePads[4], &hotCuePads[5], &hotCuePads[6], &hotCuePads[7],
+             &gridReset, &tempoMap},
+            {&knobs[0], &knobs[1], &knobs[2], &knobs[3], &knobs[4], &knobs[5],
+             &knobs[6], &knobs[7], &gridZero, &gridBpm}, {&beatLoopLength, &jumpLength}, &engine.meter(index)};
+    }
     void refresh();
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -188,6 +212,22 @@ public:
     void getNextAudioBlock(const juce::AudioSourceChannelInfo&) override;
     void paint(juce::Graphics&) override;
     void resized() override;
+
+    struct WorkspaceControls final {
+        std::array<DeckPanel::WorkspaceControls, broke::deckCount> decks;
+        std::array<CrossfaderSlider*, 3> mixSliders;
+        std::array<juce::Label*, 4> mixLabels;
+        std::array<juce::Label*, 3> headerLabels;
+        juce::TextButton* audioSettings;
+        juce::HyperlinkButton* author;
+    };
+    [[nodiscard]] WorkspaceControls workspaceControls() noexcept {
+        return {{decks[0]->workspaceControls(), decks[1]->workspaceControls(),
+                 decks[2]->workspaceControls(), decks[3]->workspaceControls()},
+                {&crossfader, &master, &headphone},
+                {&crossLabel, &masterLabel, &cueLabel, &meterLabel},
+                {&title, &subtitle, &status}, &settings, &author};
+    }
 
     [[nodiscard]] bool loadFileIntoDeck(std::size_t deck, const juce::File& file) {
         if (deck >= broke::deckCount || loading[deck] || !file.existsAsFile()) return false;
@@ -303,7 +343,7 @@ public:
     [[nodiscard]] bool completeSessionDeckEject(std::size_t deck,
                                                 const broke::session::DeckState& state) {
         if (deck >= broke::deckCount || sessionDeckDuration(deck) > 0.0) return false;
-        deckFiles[deck] = {};
+        deckFiles[deck] = juce::File{};
         detectedBeatGrids[deck] = {};
         beatGrids[deck] = {};
         gridIsManual[deck] = false;

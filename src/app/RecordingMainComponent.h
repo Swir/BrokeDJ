@@ -76,22 +76,8 @@ public:
 
     void resized() override {
         base.setBounds(getLocalBounds());
-
-        // Mirror the base top-bar geometry and occupy the reserved gap directly
-        // left of Library. At the app's minimum width this remains clear of the
-        // BrokeDJ title while preserving the existing controls.
-        constexpr int settingsWidth = 165;
-        constexpr int gap = 6;
-        int right = getWidth() - 20 - settingsWidth - 8;
-        right -= 92 + gap;   // REC SET
-        right -= 58 + gap;   // LIMIT
-        right -= 52 + gap;   // MIC
-        right -= 62 + gap;   // BOOTH
-        right -= 130 + gap;  // Booth level
-        right -= 64 + gap;   // MIC I/O
-        right -= 82 + gap;   // Library
-        constexpr int historyWidth = 82;
-        historyButton.setBounds(std::max(170, right - historyWidth), 20, historyWidth, 34);
+        const auto bounds = broke::ui::workspaceGeometry(getWidth(), getHeight()).history;
+        historyButton.setBounds(bounds.x, bounds.y, bounds.width, bounds.height);
         historyButton.toFront(false);
     }
 
