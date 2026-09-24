@@ -204,11 +204,10 @@ jobs:
             throw 'Portable archive did not contain BrokeDJ/BrokeDJ.exe'
           }
 
-          $env:BROKEDJ_EXTRACTED_ROOT = $portableRoot
-          $env:BROKEDJ_EXPECTED_COMMIT = '${{ github.event.pull_request.head.sha || github.sha }}'
-          $verifyInner = "import importlib.util, os, pathlib; root=pathlib.Path(os.environ['BROKEDJ_EXTRACTED_ROOT']); spec=importlib.util.spec_from_file_location('brokedj_package_verify', root/'VERIFY-PACKAGE.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.verify_contract(root, expected_commit=os.environ['BROKEDJ_EXPECTED_COMMIT'], verify_portable=False); print('verified extracted portable payload')"
-          python -B -c $verifyInner
-          if ($LASTEXITCODE -ne 0) { throw 'Extracted portable payload verification failed' }
+          python -B package/VERIFY-PACKAGE.py verify-extracted-portable `
+            --root package --extracted-root $portableRoot `
+            --expected-commit '${{ github.event.pull_request.head.sha || github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted runtime-subset portable verification failed' }
 
           Push-Location $appDir
           try {
@@ -251,8 +250,10 @@ jobs:
           Remove-Item (Join-Path $appDir 'BrokeDJ-gui-smoke.json') -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $appDir 'BrokeDJ-device-probe.txt') -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $appDir 'BrokeDJ-device-probe.json') -ErrorAction SilentlyContinue
-          python -B -c $verifyInner
-          if ($LASTEXITCODE -ne 0) { throw 'Post-smoke extracted portable payload verification failed' }
+          python -B package/VERIFY-PACKAGE.py verify-extracted-portable `
+            --root package --extracted-root $portableRoot `
+            --expected-commit '${{ github.event.pull_request.head.sha || github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Post-smoke extracted runtime-subset verification failed' }
       - name: Confirm staged M2 listening witness cannot generate evidence in CI
         shell: pwsh
         run: |
@@ -358,7 +359,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BrokeDJ-Beta-Preview-Windows-x64
-          path: package/
+          path: |
+            package/BrokeDJ-Beta-Preview-Windows-x64.zip
+            package/BrokeDJ-Beta-Preview-Windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 7
           include-hidden-files: true
