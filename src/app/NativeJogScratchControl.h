@@ -13,6 +13,9 @@
 #include <cstddef>
 #include <functional>
 
+// A real circular performance surface rather than a generic rotary knob. The
+// slider still owns JUCE keyboard/mouse interaction, while paint is presentation
+// only and reads the currently applied accent-theme colours from the component.
 class BrokePlatterSlider final : public juce::Slider {
 public:
     std::function<void()> onThemeMenu;
@@ -24,11 +27,80 @@ public:
         }
         juce::Slider::mouseDown(event);
     }
+
+    void paint(juce::Graphics& graphics) override {
+        auto area = getLocalBounds().toFloat().reduced(3.0f);
+        const auto diameter = std::min(area.getWidth(), area.getHeight());
+        if (diameter <= 12.0f) return;
+
+        juce::Rectangle<float> platterBounds(0.0f, 0.0f, diameter, diameter);
+        platterBounds.setCentre(area.getCentre());
+
+        const auto outline = findColour(juce::Slider::rotarySliderOutlineColourId);
+        const auto accent = findColour(juce::Slider::rotarySliderFillColourId);
+        const auto marker = findColour(juce::Slider::thumbColourId);
+        const auto face = getLookAndFeel().findColour(juce::TextButton::buttonColourId);
+        const auto alpha = isEnabled() ? 1.0f : 0.46f;
+
+        graphics.setColour(juce::Colours::black.withAlpha(0.48f * alpha));
+        graphics.fillEllipse(platterBounds.translated(0.0f, 2.0f));
+
+        juce::ColourGradient outer(face.brighter(0.10f), platterBounds.getTopLeft(),
+                                   face.darker(0.42f), platterBounds.getBottomRight(), false);
+        graphics.setGradientFill(outer);
+        graphics.fillEllipse(platterBounds);
+        graphics.setColour(outline.withAlpha(0.98f * alpha));
+        graphics.drawEllipse(platterBounds, 1.35f);
+
+        // Concentric platter grooves make the control scan like a deck surface,
+        // while remaining deliberately abstract rather than claiming vinyl emulation.
+        for (int ring = 1; ring <= 4; ++ring) {
+            const auto inset = diameter * (0.075f + static_cast<float>(ring) * 0.055f);
+            const auto groove = platterBounds.reduced(inset);
+            if (groove.getWidth() <= 6.0f) break;
+            graphics.setColour((ring % 2 == 0 ? accent : outline)
+                                   .withAlpha((ring % 2 == 0 ? 0.16f : 0.27f) * alpha));
+            graphics.drawEllipse(groove, ring == 4 ? 1.15f : 0.85f);
+        }
+
+        const auto minimum = getMinimum();
+        const auto maximum = getMaximum();
+        const auto range = maximum - minimum;
+        const auto proportion = range > 0.0
+            ? std::clamp((getValue() - minimum) / range, 0.0, 1.0)
+            : 0.5;
+        const auto sweep = juce::MathConstants<float>::pi * 1.5f;
+        const auto angle = -sweep * 0.5f + static_cast<float>(proportion) * sweep;
+        const auto markerRadius = diameter * 0.385f;
+        const auto centre = platterBounds.getCentre();
+        const auto markerX = centre.x + std::sin(angle) * markerRadius;
+        const auto markerY = centre.y - std::cos(angle) * markerRadius;
+
+        graphics.setColour(accent.withAlpha(0.14f * alpha));
+        graphics.drawEllipse(platterBounds.reduced(diameter * 0.035f), 3.0f);
+        graphics.setColour(marker.withAlpha(0.98f * alpha));
+        graphics.fillEllipse(markerX - 2.8f, markerY - 2.8f, 5.6f, 5.6f);
+
+        juce::Rectangle<float> hub(0.0f, 0.0f, diameter * 0.30f, diameter * 0.30f);
+        hub.setCentre(centre);
+        juce::ColourGradient hubGradient(face.brighter(0.07f), hub.getTopLeft(),
+                                         juce::Colours::black.withAlpha(0.90f),
+                                         hub.getBottomRight(), false);
+        graphics.setGradientFill(hubGradient);
+        graphics.fillEllipse(hub);
+        graphics.setColour(accent.withAlpha(0.84f * alpha));
+        graphics.drawEllipse(hub, 1.2f);
+
+        graphics.setColour(juce::Colours::white.withAlpha(0.86f * alpha));
+        graphics.setFont(juce::Font(juce::FontOptions(std::max(8.0f, diameter * 0.105f))
+                                         .withStyle("Bold")));
+        graphics.drawText("JOG", hub.toNearestInt(), juce::Justification::centred, false);
+    }
 };
 
 // Native platter surface for one deck. It owns message-thread interaction only;
 // audio continues through the production Engine transport and its existing
-// smoothing/de-click path. The compact rotary surface reserves horizontal space
+// smoothing/de-click path. The compact circular surface reserves horizontal space
 // beside the waveform instead of stealing vertical waveform height, so the jog
 // control remains visible in the first-Beta workstation layout.
 class NativeJogScratchControl final : public juce::Component,
@@ -44,7 +116,7 @@ public:
           controller(targetEngine, performanceOwner, deckIndex) {
         state.setJustificationType(juce::Justification::centred);
         state.setColour(juce::Label::textColourId, juce::Colour{0xffdcecff});
-        state.setFont(juce::Font(juce::FontOptions(9.5f).withStyle("Bold")));
+        state.setFont(juce::Font(juce::FontOptions(9.0f).withStyle("Bold")));
         state.setInterceptsMouseClicks(false, false);
         setState(State::ready);
         addAndMakeVisible(state);
@@ -57,6 +129,7 @@ public:
         platter.setValue(0.0, juce::dontSendNotification);
         platter.setDoubleClickReturnValue(true, 0.0);
         platter.setScrollWheelEnabled(false);
+        platter.setMouseDragSensitivity(180);
         platter.setTooltip(localText(
             "Platter: hold and drag for bounded scratch playback. Drag toward reverse/forward and release to restore the pre-touch transport. Right-click this platter to choose the BrokeDJ accent theme. Slip and Beat Loop own transport and block scratch fail-closed. This is not hardware-qualified vinyl emulation.",
             "Talerz: przytrzymaj i przeciągaj, aby scratchować w bezpiecznym zakresie; puszczenie przywraca transport sprzed dotknięcia. Kliknij talerz prawym przyciskiem, aby wybrać motyw akcentów BrokeDJ. Slip i Beat Loop mają pierwszeństwo i bezpiecznie blokują scratch. To nie jest jeszcze sprzętowo zweryfikowana emulacja winylu."));
@@ -139,19 +212,19 @@ private:
     void setState(State next) {
         switch (next) {
             case State::ready:
-                state.setText(localText("JOG READY", "JOG GOTOWY"), juce::dontSendNotification);
+                state.setText(localText("READY", "GOTOWY"), juce::dontSendNotification);
                 state.setColour(juce::Label::textColourId, juce::Colour{0xff8199b8});
                 break;
             case State::active:
-                state.setText(localText("JOG ACTIVE", "JOG AKTYWNY"), juce::dontSendNotification);
+                state.setText(localText("ACTIVE", "AKTYW"), juce::dontSendNotification);
                 state.setColour(juce::Label::textColourId, juce::Colour{0xff62e5ff});
                 break;
             case State::blocked:
-                state.setText(localText("JOG BLOCKED", "JOG ZAJĘTY"), juce::dontSendNotification);
+                state.setText(localText("LOCKED", "BLOK"), juce::dontSendNotification);
                 state.setColour(juce::Label::textColourId, juce::Colour{0xffffc56b});
                 break;
             case State::unavailable:
-                state.setText(localText("NO TRACK", "BRAK UTW."), juce::dontSendNotification);
+                state.setText(localText("EMPTY", "PUSTY"), juce::dontSendNotification);
                 state.setColour(juce::Label::textColourId, juce::Colour{0xff8199b8});
                 break;
         }

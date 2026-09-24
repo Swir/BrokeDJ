@@ -149,22 +149,31 @@ private:
         0xff2a1b0du, 0xff5a3a18u, 0xffff9f1cu, 0xffffd166u, 0xff9a5510u,
     };
 
+    // Theme-owned colours are compared by RGB, not full ARGB. BrokeDJ's LookAndFeel
+    // intentionally derives several defaults with a reduced alpha (for example the
+    // 0.90 slider track), and exact-ARGB matching previously left those controls in
+    // Electric Blue after switching to another theme.
     static bool themeOwned(juce::Colour colour) noexcept {
-        const auto argb = static_cast<std::uint32_t>(colour.getARGB());
+        const auto rgb = static_cast<std::uint32_t>(colour.getARGB()) & 0x00ffffffu;
         for (const auto owned : ownedArgb)
-            if (argb == owned) return true;
+            if ((owned & 0x00ffffffu) == rgb) return true;
         return false;
+    }
+
+    static juce::Colour preserveAlpha(juce::Colour previous,
+                                      juce::Colour replacement) noexcept {
+        return replacement.withAlpha(previous.getFloatAlpha());
     }
 
     static void applyLookAndFeelDefaults(juce::LookAndFeel& lookAndFeel,
                                          const Palette& colours) {
         lookAndFeel.setColour(juce::TextButton::buttonColourId, colours.surfaceRaised);
         lookAndFeel.setColour(juce::TextButton::buttonOnColourId, colours.accentDeep);
-        lookAndFeel.setColour(juce::Slider::trackColourId, colours.accent);
+        lookAndFeel.setColour(juce::Slider::trackColourId, colours.accent.withAlpha(0.90f));
         lookAndFeel.setColour(juce::Slider::thumbColourId, colours.accentAlt);
         lookAndFeel.setColour(juce::Slider::rotarySliderFillColourId, colours.accentAlt);
         lookAndFeel.setColour(juce::Slider::rotarySliderOutlineColourId, colours.outline);
-        lookAndFeel.setColour(juce::Slider::textBoxOutlineColourId, colours.outline);
+        lookAndFeel.setColour(juce::Slider::textBoxOutlineColourId, colours.outline.withAlpha(0.90f));
         lookAndFeel.setColour(juce::Slider::textBoxHighlightColourId,
                               colours.accent.withAlpha(0.62f));
         lookAndFeel.setColour(juce::ComboBox::backgroundColourId, colours.surfaceRaised);
@@ -181,43 +190,72 @@ private:
         lookAndFeel.setColour(juce::TextEditor::focusedOutlineColourId,
                               colours.accentAlt.withAlpha(0.90f));
         lookAndFeel.setColour(juce::HyperlinkButton::textColourId, colours.accentAlt);
+        lookAndFeel.setColour(juce::TooltipWindow::outlineColourId,
+                              colours.accentAlt.withAlpha(0.38f));
+        lookAndFeel.setColour(juce::AlertWindow::outlineColourId,
+                              colours.accentAlt.withAlpha(0.55f));
     }
 
     static void applyRecursive(juce::Component& component, const Palette& colours) {
         if (auto* button = dynamic_cast<juce::TextButton*>(&component)) {
-            if (themeOwned(button->findColour(juce::TextButton::buttonColourId)))
-                button->setColour(juce::TextButton::buttonColourId, colours.surfaceRaised);
-            if (themeOwned(button->findColour(juce::TextButton::buttonOnColourId)))
-                button->setColour(juce::TextButton::buttonOnColourId, colours.accentDeep);
+            const auto off = button->findColour(juce::TextButton::buttonColourId);
+            if (themeOwned(off))
+                button->setColour(juce::TextButton::buttonColourId,
+                                  preserveAlpha(off, colours.surfaceRaised));
+            const auto on = button->findColour(juce::TextButton::buttonOnColourId);
+            if (themeOwned(on))
+                button->setColour(juce::TextButton::buttonOnColourId,
+                                  preserveAlpha(on, colours.accentDeep));
         }
 
         if (auto* slider = dynamic_cast<juce::Slider*>(&component)) {
-            if (themeOwned(slider->findColour(juce::Slider::trackColourId)))
-                slider->setColour(juce::Slider::trackColourId, colours.accent);
-            if (themeOwned(slider->findColour(juce::Slider::thumbColourId)))
-                slider->setColour(juce::Slider::thumbColourId, colours.accentAlt);
-            if (themeOwned(slider->findColour(juce::Slider::rotarySliderFillColourId)))
-                slider->setColour(juce::Slider::rotarySliderFillColourId, colours.accentAlt);
-            if (themeOwned(slider->findColour(juce::Slider::rotarySliderOutlineColourId)))
-                slider->setColour(juce::Slider::rotarySliderOutlineColourId, colours.outline);
-            if (themeOwned(slider->findColour(juce::Slider::textBoxOutlineColourId)))
-                slider->setColour(juce::Slider::textBoxOutlineColourId, colours.outline);
+            const auto track = slider->findColour(juce::Slider::trackColourId);
+            if (themeOwned(track))
+                slider->setColour(juce::Slider::trackColourId,
+                                  preserveAlpha(track, colours.accent));
+            const auto thumb = slider->findColour(juce::Slider::thumbColourId);
+            if (themeOwned(thumb))
+                slider->setColour(juce::Slider::thumbColourId,
+                                  preserveAlpha(thumb, colours.accentAlt));
+            const auto rotaryFill = slider->findColour(juce::Slider::rotarySliderFillColourId);
+            if (themeOwned(rotaryFill))
+                slider->setColour(juce::Slider::rotarySliderFillColourId,
+                                  preserveAlpha(rotaryFill, colours.accentAlt));
+            const auto rotaryOutline = slider->findColour(juce::Slider::rotarySliderOutlineColourId);
+            if (themeOwned(rotaryOutline))
+                slider->setColour(juce::Slider::rotarySliderOutlineColourId,
+                                  preserveAlpha(rotaryOutline, colours.outline));
+            const auto textOutline = slider->findColour(juce::Slider::textBoxOutlineColourId);
+            if (themeOwned(textOutline))
+                slider->setColour(juce::Slider::textBoxOutlineColourId,
+                                  preserveAlpha(textOutline, colours.outline));
         }
 
         if (auto* combo = dynamic_cast<juce::ComboBox*>(&component)) {
-            if (themeOwned(combo->findColour(juce::ComboBox::backgroundColourId)))
-                combo->setColour(juce::ComboBox::backgroundColourId, colours.surfaceRaised);
-            if (themeOwned(combo->findColour(juce::ComboBox::outlineColourId)))
-                combo->setColour(juce::ComboBox::outlineColourId, colours.outline);
-            if (themeOwned(combo->findColour(juce::ComboBox::arrowColourId)))
-                combo->setColour(juce::ComboBox::arrowColourId, colours.accentAlt);
-            if (themeOwned(combo->findColour(juce::ComboBox::focusedOutlineColourId)))
+            const auto background = combo->findColour(juce::ComboBox::backgroundColourId);
+            if (themeOwned(background))
+                combo->setColour(juce::ComboBox::backgroundColourId,
+                                 preserveAlpha(background, colours.surfaceRaised));
+            const auto outline = combo->findColour(juce::ComboBox::outlineColourId);
+            if (themeOwned(outline))
+                combo->setColour(juce::ComboBox::outlineColourId,
+                                 preserveAlpha(outline, colours.outline));
+            const auto arrow = combo->findColour(juce::ComboBox::arrowColourId);
+            if (themeOwned(arrow))
+                combo->setColour(juce::ComboBox::arrowColourId,
+                                 preserveAlpha(arrow, colours.accentAlt));
+            const auto focused = combo->findColour(juce::ComboBox::focusedOutlineColourId);
+            if (themeOwned(focused))
                 combo->setColour(juce::ComboBox::focusedOutlineColourId,
-                                 colours.accentAlt.withAlpha(0.90f));
+                                 preserveAlpha(focused, colours.accentAlt));
         }
 
-        if (auto* link = dynamic_cast<juce::HyperlinkButton*>(&component))
-            link->setColour(juce::HyperlinkButton::textColourId, colours.accentAlt);
+        if (auto* link = dynamic_cast<juce::HyperlinkButton*>(&component)) {
+            const auto current = link->findColour(juce::HyperlinkButton::textColourId);
+            if (themeOwned(current))
+                link->setColour(juce::HyperlinkButton::textColourId,
+                                preserveAlpha(current, colours.accentAlt));
+        }
 
         for (int index = 0; index < component.getNumChildComponents(); ++index)
             if (auto* child = component.getChildComponent(index))
