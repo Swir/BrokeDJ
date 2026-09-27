@@ -6,6 +6,21 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
+## Active M1 PLAY fail-safe checkpoint — PR #114
+
+- Branch: `fix/m1-block-play-without-audio`; draft PR **#114** targets `main` at `cedb2df6d843a2bcdb3074f8c76ce995bb4c27bd`, the merged PR #113 baseline.
+- Product implementation head before this status checkpoint: `dddc366fd753764555549fd7aedcb4c8bae23603`.
+- Scope: normal audio builds reject a user PLAY transition unless the engine is prepared and the selected output device is actually open. STOP/PAUSE remains available, and the deliberate no-audio construction path used by native integration tests remains isolated from this runtime guard.
+- This closes the post-loss re-arm window where the existing one-shot device-loss policy could pause decks, yet a subsequent PLAY click while the device was still unavailable could re-arm transport before output recovery.
+- Realtime boundary is unchanged: the new check runs only on the UI/message thread and adds no device polling, disk/network I/O, allocation, locks or recovery work to the audio callback.
+- JUCE-independent contracts and `brokedj_core_tests` cover prepared/open combinations; Windows compilation still provides the native adapter integration check.
+- Exact implementation-head CI started as Build and test **#573** (`36310033901`), Native library scale smoke **#243** (`36310033906`), UI visual witness **#71** (`36310033904`) and Beta witness runner **#49** (`36310033942`); all were in progress when this checkpoint was written.
+- Roadmap remains **1/10 (10.0%, PRE-ALPHA)**. This software fix does not substitute for the real Windows 11 M1 device-loss/recovery and physical four-output cue witness.
+
+### Merge gate / next step
+
+This status commit creates a newer PR head and therefore requires fresh exact-head CI. Repair any regression before merge. If the final head is green, integrate PR #114; then continue the real M1–M4 Windows 11 qualification path instead of widening into M5+.
+
 ## Merged M1 audio-device persistence checkpoint — PR #112
 
 - `main` includes squash-merged PR **#112** as **`4a542307011bd0c29f25d1dad660af832fb7aff1`**; the exact qualified PR head was **`d5a3317993c67786563009055880a5a1f14626d9`** on `feat/beta-audio-device-state`.
