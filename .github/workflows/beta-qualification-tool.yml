@@ -79,7 +79,7 @@ jobs:
           $probeHash = (Get-FileHash -LiteralPath .\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
 
           $m1 = [ordered]@{
-            schema = 1
+            schema = 2
             project = 'BrokeDJ'
             scope = 'M1-windows-hardware'
             generatedUtc = [DateTime]::UtcNow.ToString('o')
@@ -98,6 +98,8 @@ jobs:
               resizeAndHiDpi = $true
               importAndPlayback = $true
               deviceSwitchRecovery = $true
+              deviceLossFailsSafe = $true
+              deviceSettingsPersistAcrossRestart = $true
               fourOutputCueIsolation = $true
               runtimeErrorReview = $true
             }
@@ -270,6 +272,25 @@ jobs:
           $extraField | Add-Member -NotePropertyName notes -NotePropertyValue 'not allowed'
           Assert-QualificationRejected $extraField '.\extra-field.json' 'Unexpected Beta summary field was accepted.'
 
+          # M1 schema 2 is the first schema that attests both restart persistence
+          # and conservative device-loss/no-auto-resume behavior. Older M1 evidence
+          # cannot qualify the current Beta candidate even if its legacy booleans are true.
+          $legacyM1 = $m1 | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $legacyM1.schema = 1
+          $legacyM1.checks.PSObject.Properties.Remove('deviceLossFailsSafe')
+          $legacyM1.checks.PSObject.Properties.Remove('deviceSettingsPersistAcrossRestart')
+          $legacyM1 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M1-Hardware-Witness.json -Encoding utf8
+          & pwsh -NoProfile -File .\scripts\beta_qualification.ps1 `
+            -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+            -M1EvidencePath .\BrokeDJ-M1-Hardware-Witness.json `
+            -M2EvidencePath .\BrokeDJ-M2-keylock-listening.json `
+            -M3EvidencePath .\BrokeDJ-M3-mixer-recording.json `
+            -M4EvidencePath .\BrokeDJ-M4-Library-Witness.json `
+            -QualificationPath .\BrokeDJ-Beta-Qualification.json -ValidateExisting
+          if ($LASTEXITCODE -eq 0) { throw 'Beta composition accepted legacy M1 evidence without restart/loss proof.' }
+          $global:LASTEXITCODE = 0
+          $m1 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M1-Hardware-Witness.json -Encoding utf8
+
           # Prove the Beta composer no longer accepts an older M4 schema that lacks
           # the exact interactive-process binding, even when every manual boolean is true.
           $legacyM4 = $m4 | ConvertTo-Json -Depth 8 | ConvertFrom-Json
@@ -294,5 +315,5 @@ jobs:
           if (Test-Path .\must-not-exist.json) { throw 'CI generation wrote a Beta qualification file.' }
           $global:LASTEXITCODE = 0
 
-          Write-Host 'Beta qualification contract: exact-app-bound M1-M4 fixture accepted; legacy M4, failed-gate, privacy, identity, tamper, extra-field and CI-generation cases rejected.'
+          Write-Host 'Beta qualification contract: exact-app-bound M1 schema 2 + M2-M4 fixture accepted; legacy M1/M4, failed-gate, privacy, identity, tamper, extra-field and CI-generation cases rejected.'
           exit 0
