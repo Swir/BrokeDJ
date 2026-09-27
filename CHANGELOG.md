@@ -4,6 +4,12 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 
 ## Unreleased
 
+### First-Beta playback fail-safe
+
+- Reject a user PLAY transition in normal audio mode unless the engine is prepared and the selected output device is still open. This closes the device-loss window where a deck could be re-armed while the output remained unavailable, preserving the explicit-PLAY-after-recovery contract.
+- Keep the deterministic no-audio construction path available for native UI/integration tests; no device polling, disk I/O, allocation or blocking work is added to the realtime callback.
+- Add JUCE-independent compile-time and core-test coverage for prepared/open audio gating.
+
 ### First-Beta workstation panel
 
 - Keep the four-channel central mixer and vertical faders visible at the supported minimum window size instead of switching back to the crowded legacy deck layout.

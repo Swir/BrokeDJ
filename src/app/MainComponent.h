@@ -105,7 +105,8 @@ public:
     DeckPanel(broke::Engine&, std::size_t);
     std::function<void()> onBrowse;
     std::function<void(const juce::File&)> onDrop;
-    std::function<void()> onBeforePlay;
+    // Return false to reject a PLAY transition before the engine's transport flag changes.
+    std::function<bool()> onBeforePlay;
     std::function<void()> onKeyLockControlChanged;
     std::function<void(double)> onSeekRequested;
     std::function<void(double, double)> onGridEdit;

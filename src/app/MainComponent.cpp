@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "MainComponent.h"
+#include "core/AudioDeviceRecovery.h"
 #include <algorithm>
 #include <cmath>
 
@@ -130,7 +131,7 @@ DeckPanel::DeckPanel(broke::Engine& e, std::size_t d) : engine(e), index(d) {
     play.onClick = [this] {
         auto& p = engine.control(index).playing;
         const bool next = !p.load();
-        if (next && onBeforePlay) onBeforePlay();
+        if (next && onBeforePlay && !onBeforePlay()) return;
         p.store(next);
     };
     rewind.onClick = [this] {
@@ -596,10 +597,27 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
         decks[i]->onSyncRequested = [this, i](bool enabled) { return setSyncLock(i, enabled); };
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
         static_cast<void>(keyLockLifecycle.setEnabled(i, keyLockResearchEnabled));
-        decks[i]->onBeforePlay = [this, i] {
-            if (keyLockResearchEnabled) serviceKeyLockDeck(i, false);
-        };
 #endif
+        decks[i]->onBeforePlay = [this, i, openAudio] {
+            // The no-audio construction path exists only for deterministic native UI/integration
+            // tests. Normal builds must never arm transport while the selected output is missing,
+            // closed, or still being re-prepared after a device transition.
+            if (openAudio) {
+                auto* device = deviceManager.getCurrentAudioDevice();
+                if (!broke::audioPlaybackStartAllowed(
+                        audioReady.load(std::memory_order_acquire),
+                        broke::audioDeviceIsOpen(device))) {
+                    statusMessage(text(
+                        "PLAY blocked — no ready audio output. Select/restore an output, verify routing, then press PLAY.",
+                        "PLAY zablokowany — brak gotowego wyjścia audio. Wybierz/przywróć wyjście, sprawdź routing i naciśnij PLAY."));
+                    return false;
+                }
+            }
+#if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
+            if (keyLockResearchEnabled) serviceKeyLockDeck(i, false);
+#endif
+            return true;
+        };
         // A manual follower rate/loop action takes transport ownership from Sync.
         // Master rate changes remain legal: followers deliberately re-evaluate the
         // master's effective tempo on the next bounded maintenance tick.

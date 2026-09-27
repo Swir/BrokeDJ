@@ -21,6 +21,14 @@ template <typename Device>
     return device != nullptr && device->isOpen();
 }
 
+// A user-initiated PLAY transition is safe only after the app has prepared its
+// audio engine and the selected output remains open. Keeping this predicate
+// JUCE-independent makes the fail-closed rule deterministic.
+[[nodiscard]] constexpr bool audioPlaybackStartAllowed(
+    bool audioPrepared, bool deviceAvailable) noexcept {
+    return audioPrepared && deviceAvailable;
+}
+
 // Pointer identity is intentionally a runtime-only token. A different live JUCE
 // AudioIODevice object is treated conservatively as a device replacement even
 // when both the old and new objects are open between message-thread polls.
@@ -113,6 +121,13 @@ constexpr bool openStateUsesObjectStateNotPointerPresence() {
         && !audioDeviceIsOpen(&closed);
 }
 
+constexpr bool playbackStartRequiresPreparedOpenAudio() {
+    return audioPlaybackStartAllowed(true, true)
+        && !audioPlaybackStartAllowed(false, true)
+        && !audioPlaybackStartAllowed(true, false)
+        && !audioPlaybackStartAllowed(false, false);
+}
+
 constexpr bool firstObservationIsNeutral() {
     AudioDeviceRecoveryPolicy policy;
     const auto unavailable = policy.update(false, 0);
@@ -194,6 +209,7 @@ constexpr bool unknownIdentityDoesNotCreateFalseReplacement() {
 } // namespace audio_device_recovery_contract
 
 static_assert(audio_device_recovery_contract::openStateUsesObjectStateNotPointerPresence());
+static_assert(audio_device_recovery_contract::playbackStartRequiresPreparedOpenAudio());
 static_assert(audio_device_recovery_contract::firstObservationIsNeutral());
 static_assert(audio_device_recovery_contract::lossPausesExactlyOnce());
 static_assert(audio_device_recovery_contract::recoveryDoesNotAutoResume());

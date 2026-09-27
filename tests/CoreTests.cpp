@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#include "core/AudioDeviceRecovery.h"
 #include "core/BeatGridPerformance.h"
 #include "core/Engine.h"
 #include <algorithm>
@@ -80,6 +81,16 @@ float measureEqBand(float frequencyHz, float low, float mid, float high) {
     return rmsOf(f.audio[0]);
 }
 void run() {
+    {
+        check(broke::audioPlaybackStartAllowed(true, true),
+              "PLAY allowed only with prepared open audio");
+        check(!broke::audioPlaybackStartAllowed(false, true),
+              "PLAY blocked until engine prepare completes");
+        check(!broke::audioPlaybackStartAllowed(true, false),
+              "PLAY blocked while output device is unavailable");
+        check(!broke::audioPlaybackStartAllowed(false, false),
+              "PLAY blocked with no audio path");
+    }
     {
         Fixture f;
         f.render();
