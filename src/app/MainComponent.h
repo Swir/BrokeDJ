@@ -473,7 +473,8 @@ private:
     CrossfaderSlider crossfader{engine}, master{engine, false}, headphone{engine, false};
     bool monitorAudioDevice = true;
     std::atomic<bool> audioReady{false};
-    std::atomic<bool> audioInterruptionPending{false};
+    std::atomic<std::uint64_t> audioInterruptionGeneration{0};
+    std::atomic<std::uint64_t> audioInterruptionAcknowledged{0};
     broke::AudioDeviceRecoveryPolicy audioDeviceRecovery;
     juce::TooltipWindow tooltips{this, 600};
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)

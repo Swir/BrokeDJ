@@ -92,6 +92,10 @@ void run() {
               "PLAY blocked with no audio path");
         check(!broke::audioPlaybackStartAllowed(true, true, true),
               "PLAY blocked while an interruption handoff is pending");
+        check(!broke::audioInterruptionHandoffPending(11, 11),
+              "acknowledged interruption generation is not pending");
+        check(broke::audioInterruptionHandoffPending(12, 11),
+              "newer lifecycle generation remains pending until acknowledged");
     }
     {
         broke::AudioDeviceRecoveryPolicy policy;

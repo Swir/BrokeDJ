@@ -30,6 +30,15 @@ template <typename Device>
     return audioPrepared && deviceAvailable && !interruptionPending;
 }
 
+// Lifecycle callbacks publish monotonically increasing interruption generations.
+// The realtime callback stays silent until the message thread acknowledges the
+// exact generation after pausing transport. Equality avoids a lost-event window
+// if another lifecycle callback arrives while an earlier pause is being applied.
+[[nodiscard]] constexpr bool audioInterruptionHandoffPending(
+    std::uint64_t generation, std::uint64_t acknowledgedGeneration) noexcept {
+    return generation != acknowledgedGeneration;
+}
+
 // Pointer identity is intentionally a runtime-only token. A different live JUCE
 // AudioIODevice object is treated conservatively as a device replacement even
 // when both the old and new objects are open between message-thread polls.
@@ -130,6 +139,13 @@ constexpr bool playbackStartRequiresPreparedOpenAudio() {
         && !audioPlaybackStartAllowed(true, true, true);
 }
 
+constexpr bool interruptionGenerationTracksUnacknowledgedLifecycle() {
+    return !audioInterruptionHandoffPending(0, 0)
+        && audioInterruptionHandoffPending(1, 0)
+        && !audioInterruptionHandoffPending(7, 7)
+        && audioInterruptionHandoffPending(8, 7);
+}
+
 constexpr bool firstObservationIsNeutral() {
     AudioDeviceRecoveryPolicy policy;
     const auto unavailable = policy.update(false, 0);
@@ -212,6 +228,7 @@ constexpr bool unknownIdentityDoesNotCreateFalseReplacement() {
 
 static_assert(audio_device_recovery_contract::openStateUsesObjectStateNotPointerPresence());
 static_assert(audio_device_recovery_contract::playbackStartRequiresPreparedOpenAudio());
+static_assert(audio_device_recovery_contract::interruptionGenerationTracksUnacknowledgedLifecycle());
 static_assert(audio_device_recovery_contract::firstObservationIsNeutral());
 static_assert(audio_device_recovery_contract::lossPausesExactlyOnce());
 static_assert(audio_device_recovery_contract::recoveryDoesNotAutoResume());
