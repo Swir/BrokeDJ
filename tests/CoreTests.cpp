@@ -92,6 +92,22 @@ void run() {
               "PLAY blocked with no audio path");
     }
     {
+        broke::AudioDeviceRecoveryPolicy policy;
+        policy.reset(true, 101);
+        const auto lost = policy.update(false, 0);
+        check(lost.pausePlayback && lost.deviceLost && !lost.deviceRecovered,
+              "device loss pauses playback exactly once");
+        const auto repeatedLoss = policy.update(false, 0);
+        check(!repeatedLoss.pausePlayback && !repeatedLoss.deviceLost,
+              "repeated unavailable observation does not re-fire loss");
+        const auto recovered = policy.update(true, 202);
+        check(!recovered.pausePlayback && recovered.deviceRecovered,
+              "device recovery never requests automatic resume");
+        const auto replaced = policy.update(true, 303);
+        check(replaced.pausePlayback && replaced.deviceChanged,
+              "live output replacement pauses before routing can continue");
+    }
+    {
         Fixture f;
         f.render();
         check(f.audio[0][100] == 0.0f, "empty engine is silent");

@@ -7,8 +7,11 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 ### First-Beta playback fail-safe
 
 - Reject a user PLAY transition in normal audio mode unless the engine is prepared and the selected output device is still open. This closes the device-loss window where a deck could be re-armed while the output remained unavailable, preserving the explicit-PLAY-after-recovery contract.
-- Keep the deterministic no-audio construction path available for native UI/integration tests; no device polling, disk I/O, allocation or blocking work is added to the realtime callback.
-- Add JUCE-independent compile-time and core-test coverage for prepared/open audio gating.
+- Pause every playing deck after an actual JUCE audio lifecycle interruption and after a detected live output-device replacement; recovery deliberately remains non-resuming until the DJ verifies routing and presses PLAY again.
+- Silence the callback while an interruption handoff is pending, so a re-prepared device cannot emit a short unintended auto-resume window before the message thread applies the pause.
+- Keep device identity/recovery polling and user-facing recovery status on the message thread; no device polling, disk/network I/O, allocation, locking or recovery work is added to the realtime callback.
+- Keep the deterministic no-audio construction path available for native UI/integration tests.
+- Add JUCE-independent compile-time and core-test coverage for prepared/open audio gating plus loss/recovery/replacement transitions.
 
 ### First-Beta workstation panel
 

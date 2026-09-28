@@ -535,6 +535,7 @@ void DeckPanel::filesDropped(const juce::StringArray& files, int, int) { if (fil
 
 MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
     : author("by Swir", juce::URL("https://github.com/Swir")) {
+    monitorAudioDevice = openAudio;
     theme.setColour(juce::ResizableWindow::backgroundColourId, background);
     theme.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1b2d46));
     theme.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2163a3));
@@ -650,7 +651,16 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
     }
 #endif
     setSize(1280, 860);
-    if (openAudio) setAudioChannels(0, 2);
+    if (openAudio) {
+        setAudioChannels(0, 2);
+        auto* device = deviceManager.getCurrentAudioDevice();
+        const bool available = audioReady.load(std::memory_order_acquire)
+            && broke::audioDeviceIsOpen(device);
+        audioDeviceRecovery.reset(
+            available, available ? broke::audioDeviceIdentity(device) : 0);
+    } else {
+        audioDeviceRecovery.reset(false, 0);
+    }
     startTimerHz(25);
 }
 MainComponent::~MainComponent() {
@@ -664,7 +674,9 @@ MainComponent::~MainComponent() {
     engine.collectRetired(); setLookAndFeel(nullptr);
 }
 void MainComponent::prepareToPlay(int, double rate) {
-    audioReady = false;
+    const bool wasReady = audioReady.exchange(false, std::memory_order_acq_rel);
+    if (monitorAudioDevice && wasReady)
+        audioInterruptionPending.store(true, std::memory_order_release);
     try {
         engine.prepare(rate);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -673,18 +685,25 @@ void MainComponent::prepareToPlay(int, double rate) {
             keyLockResearchEnabled = false;
         }
 #endif
-        audioReady = true;
+        audioReady.store(true, std::memory_order_release);
     } catch (...) { /* UI timer reports unavailable audio. */ }
 }
 void MainComponent::releaseResources() {
-    audioReady = false;
+    const bool wasReady = audioReady.exchange(false, std::memory_order_acq_rel);
+    if (monitorAudioDevice && wasReady)
+        audioInterruptionPending.store(true, std::memory_order_release);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     if (keyLockLifecycle.configured()) keyLockLifecycle.releaseAudioStopped();
 #endif
 }
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
     juce::ScopedNoDenormals noDenormals;
-    if (!info.buffer || !audioReady.load()) { info.clearActiveBufferRegion(); return; }
+    if (!info.buffer
+        || !audioReady.load(std::memory_order_acquire)
+        || audioInterruptionPending.load(std::memory_order_acquire)) {
+        info.clearActiveBufferRegion();
+        return;
+    }
     std::array<float*, 64> channels{};
     const int count = std::min(64, info.buffer->getNumChannels());
     for (int c = 0; c < count; ++c) channels[static_cast<std::size_t>(c)] = info.buffer->getWritePointer(c, info.startSample);
@@ -725,8 +744,48 @@ void MainComponent::serviceKeyLockDeck(std::size_t deck, bool playing) {
         playing));
 }
 #endif
+void MainComponent::pauseDecksForAudioInterruption() noexcept {
+    for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
+        engine.control(deck).playing.store(false, std::memory_order_release);
+}
+
+void MainComponent::pollAudioDeviceRecovery() {
+    if (!monitorAudioDevice) return;
+
+    auto* device = deviceManager.getCurrentAudioDevice();
+    const bool available = audioReady.load(std::memory_order_acquire)
+        && broke::audioDeviceIsOpen(device);
+    const auto event = audioDeviceRecovery.update(
+        available, available ? broke::audioDeviceIdentity(device) : 0);
+    const bool lifecycleInterrupted =
+        audioInterruptionPending.exchange(false, std::memory_order_acq_rel);
+
+    if (event.pausePlayback || lifecycleInterrupted) {
+        pauseDecksForAudioInterruption();
+        clearSyncFollowers();
+
+        if (event.deviceChanged) {
+            statusMessage(text(
+                "Audio output changed — playback paused. Verify routing, then press PLAY.",
+                "Zmieniono wyjście audio — odtwarzanie wstrzymane. Sprawdź routing i naciśnij PLAY."));
+        } else {
+            statusMessage(text(
+                "Audio output interrupted — playback paused. Restore/verify output, then press PLAY.",
+                "Przerwano wyjście audio — odtwarzanie wstrzymane. Przywróć/sprawdź wyjście i naciśnij PLAY."));
+        }
+        return;
+    }
+
+    if (event.deviceRecovered) {
+        statusMessage(text(
+            "Audio output restored — playback remains paused. Verify routing, then press PLAY.",
+            "Wyjście audio przywrócone — odtwarzanie pozostaje wstrzymane. Sprawdź routing i naciśnij PLAY."));
+    }
+}
+
 void MainComponent::timerCallback() {
     engine.collectRetired();
+    pollAudioDeviceRecovery();
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     if (keyLockResearchEnabled && keyLockLifecycle.configured()) {
         for (std::size_t deck = 0; deck < broke::deckCount; ++deck)
