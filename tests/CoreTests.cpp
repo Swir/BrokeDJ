@@ -96,6 +96,21 @@ void run() {
               "acknowledged interruption generation is not pending");
         check(broke::audioInterruptionHandoffPending(12, 11),
               "newer lifecycle generation remains pending until acknowledged");
+
+        broke::AudioInterruptionHandoff handoff;
+        check(!handoff.pending(), "fresh interruption handoff is acknowledged");
+        const auto firstGeneration = handoff.publish();
+        check(firstGeneration == 1 && handoff.pending(),
+              "published interruption fails closed until acknowledged");
+        handoff.acknowledge(firstGeneration);
+        check(!handoff.pending(), "acknowledged interruption re-opens callback gate");
+        const auto secondGeneration = handoff.publish();
+        const auto thirdGeneration = handoff.publish();
+        handoff.acknowledge(secondGeneration);
+        check(handoff.pending(),
+              "acknowledging an older generation cannot erase a newer interruption");
+        handoff.acknowledge(thirdGeneration);
+        check(!handoff.pending(), "latest generation acknowledgement clears handoff");
     }
     {
         broke::AudioDeviceRecoveryPolicy policy;

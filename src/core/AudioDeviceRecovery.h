@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Swir
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 namespace broke {
@@ -38,6 +39,45 @@ template <typename Device>
     std::uint64_t generation, std::uint64_t acknowledgedGeneration) noexcept {
     return generation != acknowledgedGeneration;
 }
+
+// Lock-free interruption state shared by JUCE lifecycle callbacks, the realtime
+// callback and the message-thread recovery poll. A second generation read in
+// pending() closes the useful snapshot window without introducing a lock: if a
+// lifecycle publish races the first read, the callback fails closed to silence.
+// A callback already executing before publish may finish its current block.
+class AudioInterruptionHandoff final {
+public:
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
+                  "BrokeDJ audio handoff requires lock-free 64-bit atomics");
+
+    [[nodiscard]] std::uint64_t publish() noexcept {
+        return generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    }
+
+    [[nodiscard]] std::uint64_t snapshot() const noexcept {
+        return generation.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] bool pending() const noexcept {
+        const auto firstGeneration = generation.load(std::memory_order_acquire);
+        const auto acknowledgedGeneration = acknowledged.load(std::memory_order_acquire);
+        if (firstGeneration != acknowledgedGeneration) return true;
+        return generation.load(std::memory_order_acquire) != acknowledgedGeneration;
+    }
+
+    [[nodiscard]] bool pending(std::uint64_t generationSnapshot) const noexcept {
+        return audioInterruptionHandoffPending(
+            generationSnapshot, acknowledged.load(std::memory_order_acquire));
+    }
+
+    void acknowledge(std::uint64_t generationSnapshot) noexcept {
+        acknowledged.store(generationSnapshot, std::memory_order_release);
+    }
+
+private:
+    std::atomic<std::uint64_t> generation{0};
+    std::atomic<std::uint64_t> acknowledged{0};
+};
 
 // Pointer identity is intentionally a runtime-only token. A different live JUCE
 // AudioIODevice object is treated conservatively as a device replacement even

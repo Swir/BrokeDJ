@@ -605,15 +605,10 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
             // closed, or still being re-prepared after a device transition.
             if (openAudio) {
                 auto* device = deviceManager.getCurrentAudioDevice();
-                const auto interruptionGeneration =
-                    audioInterruptionGeneration.load(std::memory_order_acquire);
-                const bool interruptionPending = broke::audioInterruptionHandoffPending(
-                    interruptionGeneration,
-                    audioInterruptionAcknowledged.load(std::memory_order_acquire));
                 if (!broke::audioPlaybackStartAllowed(
                         audioReady.load(std::memory_order_acquire),
                         broke::audioDeviceIsOpen(device),
-                        interruptionPending)) {
+                        audioInterruptionHandoff.pending())) {
                     statusMessage(text(
                         "PLAY blocked — no ready audio output. Select/restore an output, verify routing, then press PLAY.",
                         "PLAY zablokowany — brak gotowego wyjścia audio. Wybierz/przywróć wyjście, sprawdź routing i naciśnij PLAY."));
@@ -682,7 +677,7 @@ MainComponent::~MainComponent() {
 void MainComponent::prepareToPlay(int, double rate) {
     const bool wasReady = audioReady.exchange(false, std::memory_order_acq_rel);
     if (monitorAudioDevice && wasReady)
-        audioInterruptionGeneration.fetch_add(1, std::memory_order_release);
+        static_cast<void>(audioInterruptionHandoff.publish());
     try {
         engine.prepare(rate);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
@@ -697,21 +692,16 @@ void MainComponent::prepareToPlay(int, double rate) {
 void MainComponent::releaseResources() {
     const bool wasReady = audioReady.exchange(false, std::memory_order_acq_rel);
     if (monitorAudioDevice && wasReady)
-        audioInterruptionGeneration.fetch_add(1, std::memory_order_release);
+        static_cast<void>(audioInterruptionHandoff.publish());
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     if (keyLockLifecycle.configured()) keyLockLifecycle.releaseAudioStopped();
 #endif
 }
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
     juce::ScopedNoDenormals noDenormals;
-    const auto interruptionGeneration =
-        audioInterruptionGeneration.load(std::memory_order_acquire);
-    const bool interruptionPending = broke::audioInterruptionHandoffPending(
-        interruptionGeneration,
-        audioInterruptionAcknowledged.load(std::memory_order_acquire));
     if (!info.buffer
         || !audioReady.load(std::memory_order_acquire)
-        || interruptionPending) {
+        || audioInterruptionHandoff.pending()) {
         info.clearActiveBufferRegion();
         return;
     }
@@ -768,30 +758,24 @@ void MainComponent::pollAudioDeviceRecovery() {
         && broke::audioDeviceIsOpen(device);
     const auto event = audioDeviceRecovery.update(
         available, available ? broke::audioDeviceIdentity(device) : 0);
-    auto interruptionGeneration =
-        audioInterruptionGeneration.load(std::memory_order_acquire);
-    const auto acknowledgedGeneration =
-        audioInterruptionAcknowledged.load(std::memory_order_acquire);
-    const bool lifecycleInterrupted = broke::audioInterruptionHandoffPending(
-        interruptionGeneration, acknowledgedGeneration);
+    auto interruptionGeneration = audioInterruptionHandoff.snapshot();
+    const bool lifecycleInterrupted =
+        audioInterruptionHandoff.pending(interruptionGeneration);
 
     if (event.pausePlayback || lifecycleInterrupted) {
         // Timer-detected live A->B replacement can bypass JUCE release/prepare.
-        // Publish a synthetic generation before pausing so no new callback can
-        // render through the handoff window.
-        if (event.pausePlayback && !lifecycleInterrupted) {
-            interruptionGeneration =
-                audioInterruptionGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
-        }
+        // Publish a synthetic generation before pausing so callbacks fail closed
+        // to silence until this exact handoff is acknowledged.
+        if (event.pausePlayback && !lifecycleInterrupted)
+            interruptionGeneration = audioInterruptionHandoff.publish();
 
         pauseDecksForAudioInterruption();
         clearSyncFollowers();
 
-        // If another lifecycle callback increments the generation while this
-        // pause is being applied, acknowledging only the observed generation
-        // leaves the newer event pending and the callback remains silent.
-        audioInterruptionAcknowledged.store(
-            interruptionGeneration, std::memory_order_release);
+        // If another lifecycle callback publishes while this pause is being
+        // applied, acknowledging only the observed generation leaves the newer
+        // event pending and the callback remains silent.
+        audioInterruptionHandoff.acknowledge(interruptionGeneration);
 
         if (event.deviceChanged) {
             statusMessage(text(
