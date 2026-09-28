@@ -22,11 +22,12 @@ template <typename Device>
 }
 
 // A user-initiated PLAY transition is safe only after the app has prepared its
-// audio engine and the selected output remains open. Keeping this predicate
+// audio engine, the selected output remains open and no lifecycle interruption
+// handoff is still pending on the message thread. Keeping this predicate
 // JUCE-independent makes the fail-closed rule deterministic.
 [[nodiscard]] constexpr bool audioPlaybackStartAllowed(
-    bool audioPrepared, bool deviceAvailable) noexcept {
-    return audioPrepared && deviceAvailable;
+    bool audioPrepared, bool deviceAvailable, bool interruptionPending = false) noexcept {
+    return audioPrepared && deviceAvailable && !interruptionPending;
 }
 
 // Pointer identity is intentionally a runtime-only token. A different live JUCE
@@ -125,7 +126,8 @@ constexpr bool playbackStartRequiresPreparedOpenAudio() {
     return audioPlaybackStartAllowed(true, true)
         && !audioPlaybackStartAllowed(false, true)
         && !audioPlaybackStartAllowed(true, false)
-        && !audioPlaybackStartAllowed(false, false);
+        && !audioPlaybackStartAllowed(false, false)
+        && !audioPlaybackStartAllowed(true, true, true);
 }
 
 constexpr bool firstObservationIsNeutral() {

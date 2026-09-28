@@ -90,6 +90,8 @@ void run() {
               "PLAY blocked while output device is unavailable");
         check(!broke::audioPlaybackStartAllowed(false, false),
               "PLAY blocked with no audio path");
+        check(!broke::audioPlaybackStartAllowed(true, true, true),
+              "PLAY blocked while an interruption handoff is pending");
     }
     {
         broke::AudioDeviceRecoveryPolicy policy;

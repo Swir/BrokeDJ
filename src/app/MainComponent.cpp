@@ -607,7 +607,8 @@ MainComponent::MainComponent(bool openAudio, bool enableKeyLockResearch)
                 auto* device = deviceManager.getCurrentAudioDevice();
                 if (!broke::audioPlaybackStartAllowed(
                         audioReady.load(std::memory_order_acquire),
-                        broke::audioDeviceIsOpen(device))) {
+                        broke::audioDeviceIsOpen(device),
+                        audioInterruptionPending.load(std::memory_order_acquire))) {
                     statusMessage(text(
                         "PLAY blocked — no ready audio output. Select/restore an output, verify routing, then press PLAY.",
                         "PLAY zablokowany — brak gotowego wyjścia audio. Wybierz/przywróć wyjście, sprawdź routing i naciśnij PLAY."));
