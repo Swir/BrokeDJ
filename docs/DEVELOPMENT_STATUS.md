@@ -6,6 +6,15 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
+## EXTERNAL BLOCKER + M1 exact-process witness checkpoint
+
+- PR **#114** remains open/draft/mergeable at exact green head `2e4cd3c9b5b3ff4076f4566a073a9cc8305728bd`. A normal ready-for-review transition was attempted after fresh verification and was refused by the external write-control path before GitHub accepted any mutation. The PR/head were preserved; no force-push, destructive reset or competing runtime change was used.
+- This checkpoint continues M1 qualification preparation without overlapping #114 runtime code: the M1 witness is upgraded from schema 2 to **schema 3 exact-process ownership**.
+- The recorder now refuses pre-existing BrokeDJ instances, launches the exact `AppPath` itself, binds the initial checks to that owned process, waits for a normal operator close, verifies the executable did not change, then launches the same exact candidate as a distinct restart process.
+- Accepted evidence stores only ephemeral initial/restart PIDs plus matching executable SHA-256 values and closed booleans; hardware, routing, listening and device-loss observations remain manual and cannot be generated in CI.
+- CI contract coverage validates schema 3 under PowerShell 7 and Windows PowerShell 5.1 and rejects schema 2, same-process restarts, wrong restart hashes and false exact-path ownership.
+- Roadmap stays **1/10 (10.0%, PRE-ALPHA)**. This removes candidate-identity ambiguity but does not satisfy the physical Windows 11/four-output M1 gate.
+
 ## Merged M1 audio-device persistence checkpoint — PR #112
 
 - `main` includes squash-merged PR **#112** as **`4a542307011bd0c29f25d1dad660af832fb7aff1`**; the exact qualified PR head was **`d5a3317993c67786563009055880a5a1f14626d9`** on `feat/beta-audio-device-state`.

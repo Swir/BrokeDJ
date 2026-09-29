@@ -79,6 +79,58 @@ function Get-AppFingerprint([System.IO.FileInfo]$App) {
     }
 }
 
+function Get-RunningBrokeDjProcesses {
+    return @(Get-Process -Name 'BrokeDJ' -ErrorAction SilentlyContinue)
+}
+
+function Assert-NoRunningBrokeDj {
+    $running = @(Get-RunningBrokeDjProcesses)
+    if ($running.Count -gt 0) {
+        $ids = ($running | ForEach-Object { $_.Id }) -join ', '
+        throw "Close all BrokeDJ.exe instances before starting the M1 witness. Running PID(s): $ids"
+    }
+}
+
+function Get-OwnedProcessExecutablePath([System.Diagnostics.Process]$Process, [string]$Phase) {
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "$Phase BrokeDJ process exited before ownership could be verified."
+        }
+        $path = $Process.MainModule.FileName
+    } catch {
+        throw "$Phase BrokeDJ process path could not be verified: $($_.Exception.Message)"
+    }
+    return [System.IO.Path]::GetFullPath($path)
+}
+
+function Start-OwnedBrokeDj([System.IO.FileInfo]$App, [string]$WorkingDirectory, [string]$Phase) {
+    Assert-NoRunningBrokeDj
+    $process = Start-Process -FilePath $App.FullName -WorkingDirectory $WorkingDirectory -PassThru
+    Start-Sleep -Milliseconds 750
+    $actualPath = Get-OwnedProcessExecutablePath -Process $process -Phase $Phase
+    $expectedPath = [System.IO.Path]::GetFullPath($App.FullName)
+    if (-not [string]::Equals($actualPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Phase BrokeDJ process does not match AppPath."
+    }
+    Write-Step "$Phase process is owned by this witness (PID $($process.Id)); executable identity matches AppPath."
+    return $process
+}
+
+function Wait-ForOwnedBrokeDjClose([System.Diagnostics.Process]$Process, [string]$Phase) {
+    Write-Step "Close the $Phase BrokeDJ window normally now. The witness will wait; it does not terminate the app for you."
+    $Process.WaitForExit()
+    if ($Process.ExitCode -ne 0) {
+        throw "$Phase BrokeDJ process exited with code $($Process.ExitCode); treat this as a failed clean restart."
+    }
+    $remaining = @(Get-RunningBrokeDjProcesses)
+    if ($remaining.Count -gt 0) {
+        $ids = ($remaining | ForEach-Object { $_.Id }) -join ', '
+        throw "Another BrokeDJ process appeared during the controlled restart (PID(s): $ids). Close it and rerun the witness."
+    }
+    Write-Step "$Phase BrokeDJ process closed normally."
+}
+
 function Get-RequiredProperty([object]$Object, [string]$Name, [string]$Context) {
     if ($null -eq $Object) { throw "Missing $Context object." }
     $property = $Object.PSObject.Properties[$Name]
@@ -310,11 +362,11 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp, [Sys
     $data = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
 
     Assert-ExactProperties -Object $data -Expected @(
-        'schema', 'project', 'scope', 'generatedUtc', 'environment', 'app', 'deviceProbe', 'checks', 'privacy'
+        'schema', 'project', 'scope', 'generatedUtc', 'environment', 'app', 'processOwnership', 'deviceProbe', 'checks', 'privacy'
     ) -Context 'evidence'
 
     $schema = Assert-IntegerProperty -Object $data -Name 'schema' -Minimum 1 -Context 'evidence'
-    if ($schema -ne 2) { throw 'Unsupported M1 witness schema; expected schema=2 with restart/loss checks.' }
+    if ($schema -ne 3) { throw 'Unsupported M1 witness schema; expected schema=3 with exact-process restart ownership.' }
     $project = Assert-StringProperty -Object $data -Name 'project' -Context 'evidence'
     $scope = Assert-StringProperty -Object $data -Name 'scope' -Context 'evidence'
     if ($project -ne 'BrokeDJ' -or $scope -ne 'M1-windows-hardware') {
@@ -354,6 +406,32 @@ function Validate-Evidence([string]$Path, [System.IO.FileInfo]$ExpectedApp, [Sys
     if ($evidenceFileName -ne $expectedFingerprint.fileName) { throw 'Evidence executable filename does not match AppPath.' }
     if ($evidenceVersion -ne $expectedFingerprint.fileVersion) { throw 'Evidence executable version does not match AppPath.' }
     if ($evidenceHash.ToLowerInvariant() -ne $expectedFingerprint.sha256) { throw 'Evidence executable SHA-256 does not match AppPath.' }
+
+    Assert-ExactProperties -Object $data.processOwnership -Expected @(
+        'initialProcessId',
+        'restartProcessId',
+        'initialExecutableSha256',
+        'restartExecutableSha256',
+        'exactAppPathAtBothLaunches',
+        'distinctRestartProcess'
+    ) -Context 'processOwnership'
+    $initialProcessId = Assert-IntegerProperty -Object $data.processOwnership -Name 'initialProcessId' -Minimum 1 -Context 'processOwnership'
+    $restartProcessId = Assert-IntegerProperty -Object $data.processOwnership -Name 'restartProcessId' -Minimum 1 -Context 'processOwnership'
+    if ($initialProcessId -eq $restartProcessId) {
+        throw 'processOwnership.restartProcessId must identify a distinct restarted process.'
+    }
+    $initialProcessHash = Assert-StringProperty -Object $data.processOwnership -Name 'initialExecutableSha256' -Context 'processOwnership'
+    $restartProcessHash = Assert-StringProperty -Object $data.processOwnership -Name 'restartExecutableSha256' -Context 'processOwnership'
+    foreach ($hash in @($initialProcessHash, $restartProcessHash)) {
+        if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'processOwnership executable SHA-256 values must be valid digests.'
+        }
+        if ($hash.ToLowerInvariant() -ne $expectedFingerprint.sha256) {
+            throw 'processOwnership executable SHA-256 does not match AppPath.'
+        }
+    }
+    Assert-BooleanProperty -Object $data.processOwnership -Name 'exactAppPathAtBothLaunches' -Expected $true -Context 'processOwnership'
+    Assert-BooleanProperty -Object $data.processOwnership -Name 'distinctRestartProcess' -Expected $true -Context 'processOwnership'
 
     $expectedProbeFingerprint = Validate-Probe -Probe $ExpectedProbe
     Assert-ExactProperties -Object $data.deviceProbe -Expected @(
@@ -442,6 +520,7 @@ $processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArch
 if ($osArchitecture -ne 'X64' -or $processArchitecture -ne 'X64') {
     throw 'M1 witness requires an x64 Windows OS and x64 PowerShell process.'
 }
+Assert-NoRunningBrokeDj
 
 $probeParent = Split-Path -Parent $ProbePath
 if ([string]::IsNullOrWhiteSpace($probeParent)) { $probeParent = (Get-Location).Path }
@@ -473,20 +552,49 @@ try {
     Write-Step 'A disposable synthetic 48 kHz stereo WAV is ready for the import/playback check; no personal music is required.'
     Write-Step "Playback fixture: $($fixture.Source)"
     Write-Step "Local step guide: $($fixture.Readme)"
-    Write-Step 'The script never starts playback or changes hardware volume. Keep monitor/headphone volume conservative before pressing Play.'
+    Write-Step 'The witness now owns the exact candidate process and its controlled restart. It never presses PLAY, changes hardware volume, switches devices or disconnects hardware for you.'
     Write-Step 'The generated witness JSON stores no device names, track names, track paths or source music.'
     Write-Step 'The separate BrokeDJ-device-probe.json can contain local backend/device names; keep it private unless reviewed.'
-    Write-Step 'M1 schema 2 requires a real restart-persistence check and a fail-safe device-loss/recovery check; the script never performs either action for you.'
+    Write-Step 'M1 schema 3 binds the manual checks to two distinct processes launched from the exact AppPath, while restart/device-loss observations remain human-controlled.'
     Write-Host ''
 
+    $initialProcess = Start-OwnedBrokeDj -App $app -WorkingDirectory $app.Directory.FullName -Phase 'initial'
+    $initialProcessId = [long]$initialProcess.Id
+
     $checks = [ordered]@{}
-    $checks.cleanLaunch = Read-YesNo 'The staged BrokeDJ build launched cleanly on Windows 11 x64 without a crash?'
+    $checks.cleanLaunch = Read-YesNo 'The witness-launched BrokeDJ candidate opened cleanly on Windows 11 x64 without a crash?'
     $checks.resizeAndHiDpi = Read-YesNo 'The UI remained usable at 1050x800 and a normal desktop size/qualified display scale without overlapping critical controls?'
     $checks.importAndPlayback = Read-YesNo 'The generated playback fixture imported and ordinary playback worked through the intended real output device at safe volume?'
     $checks.deviceSwitchRecovery = Read-YesNo 'Switching to another intended audio device/backend and back recovered without a crash, stale routing or unusable playback?'
     $checks.deviceLossFailsSafe = Read-YesNo 'While playback was active at safe volume, did making the selected output unavailable/disconnecting it pause playback without a crash, and after recovery did playback remain paused until you explicitly pressed PLAY?'
-    $checks.deviceSettingsPersistAcrossRestart = Read-YesNo 'After selecting the intended output backend/device, sample rate, buffer and 2-4 output channels, did a normal BrokeDJ close/reopen restore the same available output setup without restoring input or MIDI state?'
-    $checks.fourOutputCueIsolation = Read-YesNo 'On a real four-output interface, master stayed on 1/2 and private CUE stayed isolated on 3/4 for at least two decks and after the restart/settings-switch checks?'
+
+    $preRestartFailures = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
+    if ($preRestartFailures.Count -gt 0) {
+        throw ('M1 witness failed before restart; no evidence was written. Failed checks: ' + ($preRestartFailures -join ', '))
+    }
+
+    if (-not (Read-YesNo 'Have you selected the intended output backend/device, sample rate, buffer and 2-4 output channels and are you ready for the controlled normal restart?')) {
+        throw 'M1 witness stopped before restart; no evidence was written.'
+    }
+
+    Wait-ForOwnedBrokeDjClose -Process $initialProcess -Phase 'initial'
+    $beforeRestartFingerprint = Get-AppFingerprint -App $app
+    if ($beforeRestartFingerprint.sha256 -ne $appFingerprint.sha256) {
+        throw 'BrokeDJ.exe changed between initial launch and restart; rerun against one immutable candidate.'
+    }
+
+    $restartProcess = Start-OwnedBrokeDj -App $app -WorkingDirectory $app.Directory.FullName -Phase 'restart'
+    $restartProcessId = [long]$restartProcess.Id
+    if ($restartProcessId -eq $initialProcessId) {
+        throw 'Controlled restart did not produce a distinct process ID.'
+    }
+    $restartFingerprint = Get-AppFingerprint -App $app
+    if ($restartFingerprint.sha256 -ne $appFingerprint.sha256) {
+        throw 'BrokeDJ.exe changed during the controlled restart.'
+    }
+
+    $checks.deviceSettingsPersistAcrossRestart = Read-YesNo 'After the witness relaunched the exact same BrokeDJ.exe, were the intended available output backend/device, sample rate, buffer and 2-4 output channels restored without restoring input or MIDI state?'
+    $checks.fourOutputCueIsolation = Read-YesNo 'On a real four-output interface, master stayed on 1/2 and private CUE stayed isolated on 3/4 for at least two decks and after the controlled restart/settings-switch checks?'
     $checks.runtimeErrorReview = Read-YesNo 'Available driver/runtime/xrun diagnostics were reviewed and no unresolved M1-blocking error remained?'
 
     $failedChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
@@ -494,8 +602,14 @@ try {
         throw ('M1 witness failed; no evidence was written. Failed checks: ' + ($failedChecks -join ', '))
     }
 
+    [void](Get-OwnedProcessExecutablePath -Process $restartProcess -Phase 'restart')
+    $finalFingerprint = Get-AppFingerprint -App $app
+    if ($finalFingerprint.sha256 -ne $appFingerprint.sha256) {
+        throw 'BrokeDJ.exe changed before M1 evidence could be recorded.'
+    }
+
     $evidence = [ordered]@{
-        schema = 2
+        schema = 3
         project = 'BrokeDJ'
         scope = 'M1-windows-hardware'
         generatedUtc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -505,6 +619,14 @@ try {
             processArchitecture = $processArchitecture
         }
         app = $appFingerprint
+        processOwnership = [ordered]@{
+            initialProcessId = $initialProcessId
+            restartProcessId = $restartProcessId
+            initialExecutableSha256 = $appFingerprint.sha256
+            restartExecutableSha256 = $restartFingerprint.sha256
+            exactAppPathAtBothLaunches = $true
+            distinctRestartProcess = $true
+        }
         deviceProbe = $probeFingerprint
         checks = $checks
         privacy = [ordered]@{

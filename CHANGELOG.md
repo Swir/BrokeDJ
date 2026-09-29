@@ -4,6 +4,12 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 
 ## Unreleased
 
+### M1 qualification exact-process ownership
+
+- Upgrade the Windows M1 hardware witness to schema 3 so manual launch/device/restart checks are bound to two distinct BrokeDJ processes launched from the exact candidate `AppPath`.
+- Refuse pre-existing BrokeDJ instances, wait for a normal operator-driven close, verify the executable fingerprint is unchanged, and relaunch the exact candidate without automating playback, hardware switching, disconnects or volume.
+- Extend the witness contract tests to reject legacy schema 2, same-process restart claims, mismatched restart hashes and false exact-path ownership on both PowerShell 7 and Windows PowerShell 5.1.
+
 ### First-Beta workstation panel
 
 - Keep the four-channel central mixer and vertical faders visible at the supported minimum window size instead of switching back to the crowded legacy deck layout.
