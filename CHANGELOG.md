@@ -4,6 +4,13 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 
 ## Unreleased
 
+### M1 qualification exact-process ownership
+
+- Upgrade the Windows M1 hardware witness to schema 3 so manual launch/device/restart checks are bound to two distinct BrokeDJ processes launched from the exact candidate `AppPath`.
+- Refuse pre-existing BrokeDJ instances, wait for a normal operator-driven close, verify the executable fingerprint is unchanged, and relaunch the exact candidate without automating playback, hardware switching, disconnects or volume.
+- Extend the witness contract tests to reject legacy schema 2, same-process restart claims, mismatched restart hashes and false exact-path ownership on both PowerShell 7 and Windows PowerShell 5.1.
+- Update the Beta qualification fixture to schema 3 exact-process ownership so the composed Beta contract matches the hardened M1 validator while legacy/unbound schema 2 evidence remains fail-closed.
+
 ### First-Beta playback fail-safe
 
 - Reject a user PLAY transition in normal audio mode unless the engine is prepared, the selected output device is still open and no interruption handoff is pending. This closes both the unavailable-output and re-prepare windows where a deck could otherwise be re-armed before the message-thread pause lands, preserving the explicit-PLAY-after-recovery contract.

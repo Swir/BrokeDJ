@@ -21,7 +21,7 @@ CI compilation, no-audio GUI smoke, offline routing tests and the silent probe b
 
 ## Safety, privacy and the disposable playback fixture
 
-The witness prepares its own disposable synthetic playback file, so personal music is not required for the M1 import/playback step. The fixture is a quiet generated 440 Hz, 48 kHz stereo, 16-bit PCM WAV with short fades at both ends. The script **never starts playback**, opens a playback device on behalf of the tester, disconnects hardware, changes device settings, restarts BrokeDJ, or changes hardware volume. Keep monitor/headphone volume conservative before pressing Play yourself.
+The witness prepares its own disposable synthetic playback file, so personal music is not required for the M1 import/playback step. The fixture is a quiet generated 440 Hz, 48 kHz stereo, 16-bit PCM WAV with short fades at both ends. The script **never starts playback**, disconnects hardware, changes device settings or changes hardware volume. For schema 3 it does launch the exact `AppPath` candidate itself, waits for the tester to close that owned process normally, and relaunches the same executable for the restart-persistence check. It never force-terminates BrokeDJ. Keep monitor/headphone volume conservative before pressing Play yourself.
 
 The fixture exists only for the current witness run and is removed when the script exits. Its local path is printed for operator guidance but is never written into accepted M1 evidence. The internal `-FixtureSelfTest` path creates, structurally validates and removes the WAV without resolving or launching `AppPath`; CI uses that path only to test the fixture contract, not to create human evidence.
 
@@ -29,7 +29,7 @@ Evidence generation is rejected before resolving, hashing or launching `AppPath`
 
 A failed or interrupted new witness never deliberately replaces an earlier accepted evidence file. All manual checks must pass before a candidate is serialized. The candidate is written to a sibling temporary file, fully validated against the exact executable and probe fingerprints, then moved into the requested evidence path. Temporary candidates and the disposable playback fixture are cleaned up on exit.
 
-M1 evidence uses **schema 2**. Schema 1 evidence is deliberately rejected because it predates the explicit restart-persistence and device-loss/no-auto-resume attestations required by the current first-Beta gate.
+M1 evidence uses **schema 3**. Schema 2 and earlier evidence is deliberately rejected because it does not prove that the initial manual checks and restart-persistence check were performed against two distinct processes launched from the exact `AppPath` candidate. Schema 3 stores only ephemeral process IDs plus the executable SHA-256 at both launches; it still does not fabricate hardware or listening observations.
 
 ## Recommended staged-artifact workflow
 
@@ -42,7 +42,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The recorder first runs BrokeDJ's **silent** `--device-probe` mode in the current directory. That mode does not call `AudioIODevice::open`, start an audio callback or play audio. The script validates the probe's schema/safety invariants and requires at least one output device plus at least one descriptor that advertises four output channels before it will proceed to the manual M1 checks.
 
-It then creates and validates the disposable playback fixture and prints its local path. The recorder does **not** automate playback, device switching, device loss, app restart, cue routing or volume changes. It prompts the tester only after the silent probe and fixture preflight have passed.
+It then creates and validates the disposable playback fixture, refuses to proceed while any other `BrokeDJ.exe` process is running, and launches the exact `AppPath` candidate itself. Playback, device switching, device loss, cue routing and volume changes remain manual. For the restart step the recorder waits for the tester to close the owned initial process normally, confirms no other BrokeDJ process appeared, rechecks the executable fingerprint, and launches the same `AppPath` again as a distinct process before asking for restart-persistence and four-output confirmation.
 
 It writes or updates these local files:
 
@@ -94,7 +94,7 @@ The witness JSON stores the SHA-256 of the exact probe JSON. Revalidation theref
 ## 2. Clean launch and resize witness
 
 1. Use a fresh staged/portable copy rather than the developer build tree.
-2. Start `BrokeDJ.exe` normally.
+2. Let the witness launch `BrokeDJ.exe`; do not pre-launch another BrokeDJ instance.
 3. Verify the icon/window title and that all four decks are visible without controls overlapping.
 4. Resize to the minimum supported window (`1050 × 800`), then to a normal desktop size such as `1440 × 900` or larger.
 5. Repeat at the Windows display scale(s) that are actually being qualified.
@@ -137,8 +137,8 @@ This step qualifies the output-only persistence introduced for the first-Beta pa
 
 1. Choose the intended output backend/device and a supported sample rate/buffer size.
 2. Select either two outputs for master-only operation or four outputs when qualifying independent Cue 3/4.
-3. Close BrokeDJ normally so its bounded local output state is persisted.
-4. Reopen the **same staged candidate** without manually reselecting the device.
+3. Confirm the witness's restart-ready prompt, then close the witness-owned BrokeDJ window normally so its bounded local output state is persisted. The script waits for that exact PID to exit; it does not kill the process.
+4. The witness verifies that `BrokeDJ.exe` has not changed and relaunches the **same exact AppPath** as a distinct process. Do not manually start a second copy.
 5. Verify the same available backend/device, sample rate, buffer and explicit 2–4 output-channel selection are restored.
 6. Verify BrokeDJ has not restored an input device or MIDI state as part of this output-only persistence boundary.
 7. For a four-output candidate, continue directly into the cue-isolation check below so the restored channel selection is proven physically, not merely displayed.
@@ -176,7 +176,7 @@ For a staged artifact:
 
 For a source checkout use `scripts\m1_hardware_witness.ps1` with the same parameters.
 
-Validation recomputes the executable filename/version/SHA-256 and the exact probe SHA-256, requires **M1 schema 2**, type-checks the closed evidence schema, confirms Windows 11 x64 evidence, revalidates the silent probe safety contract and requires every M1 manual check to remain a real JSON boolean `true`. It rejects schema-1 evidence, missing restart/loss checks, extra evidence fields, wrong app/probe fingerprints, privacy flags that claim private data was captured, zero four-output candidates and unsafe/malformed probe data.
+Validation recomputes the executable filename/version/SHA-256 and the exact probe SHA-256, requires **M1 schema 3**, type-checks the closed evidence schema, confirms Windows 11 x64 evidence, revalidates the silent probe safety contract and requires every M1 manual check to remain a real JSON boolean `true`. It also requires distinct initial/restart process IDs, exact-AppPath ownership flags, and matching executable SHA-256 values for both launches. It rejects schema-2-and-earlier evidence, same-process restart claims, missing restart/loss checks, extra evidence fields, wrong app/probe/process fingerprints, privacy flags that claim private data was captured, zero four-output candidates and unsafe/malformed probe data.
 
 ## Evidence handling
 

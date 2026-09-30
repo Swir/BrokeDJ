@@ -93,12 +93,20 @@ jobs:
           $probeHash = (Get-FileHash -LiteralPath .\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
 
           $complete = [ordered]@{
-            schema = 2
+            schema = 3
             project = 'BrokeDJ'
             scope = 'M1-windows-hardware'
             generatedUtc = [DateTime]::UtcNow.ToString('o')
             environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
             app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = 'unknown'; sha256 = $appHash }
+            processOwnership = [ordered]@{
+              initialProcessId = 41001
+              restartProcessId = 41002
+              initialExecutableSha256 = $appHash
+              restartExecutableSha256 = $appHash
+              exactAppPathAtBothLaunches = $true
+              distinctRestartProcess = $true
+            }
             deviceProbe = [ordered]@{
               fileName = 'BrokeDJ-device-probe.json'
               schemaVersion = 2
@@ -128,7 +136,13 @@ jobs:
           & pwsh -NoProfile -File .\scripts\m1_hardware_witness.ps1 `
             -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
             -EvidencePath .\complete.json -ValidateExisting
-          if ($LASTEXITCODE -ne 0) { throw 'Complete M1 witness fixture was rejected.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Complete M1 witness fixture was rejected by PowerShell 7.' }
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\m1_hardware_witness.ps1 `
+            -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
+            -EvidencePath .\complete.json -ValidateExisting
+          if ($LASTEXITCODE -ne 0) { throw 'Complete M1 witness fixture was rejected by Windows PowerShell 5.1.' }
+          $global:LASTEXITCODE = 0
 
           function Assert-CiGenerationRejected([string]$Variable, [string]$Value) {
             $savedGithubActions = $env:GITHUB_ACTIONS
@@ -178,10 +192,21 @@ jobs:
           Assert-Rejected $missingRestart '.\missing-restart.json' 'M1 evidence without restart-persistence proof was accepted.'
 
           $legacySchema = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
-          $legacySchema.schema = 1
-          $legacySchema.checks.PSObject.Properties.Remove('deviceLossFailsSafe')
-          $legacySchema.checks.PSObject.Properties.Remove('deviceSettingsPersistAcrossRestart')
-          Assert-Rejected $legacySchema '.\legacy-schema.json' 'Legacy M1 schema 1 evidence was accepted.'
+          $legacySchema.schema = 2
+          $legacySchema.PSObject.Properties.Remove('processOwnership')
+          Assert-Rejected $legacySchema '.\legacy-schema.json' 'Legacy M1 schema 2 evidence without exact-process ownership was accepted.'
+
+          $sameProcess = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $sameProcess.processOwnership.restartProcessId = $sameProcess.processOwnership.initialProcessId
+          Assert-Rejected $sameProcess '.\same-process.json' 'M1 evidence reused the initial PID instead of proving a distinct restart process.'
+
+          $wrongRestartHash = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $wrongRestartHash.processOwnership.restartExecutableSha256 = ('d' * 64)
+          Assert-Rejected $wrongRestartHash '.\wrong-restart-hash.json' 'M1 evidence with a restart executable hash mismatch was accepted.'
+
+          $unownedRestart = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+          $unownedRestart.processOwnership.exactAppPathAtBothLaunches = $false
+          Assert-Rejected $unownedRestart '.\unowned-restart.json' 'M1 evidence without exact AppPath ownership at both launches was accepted.'
 
           $spoofedBoolean = $complete | ConvertTo-Json -Depth 8 | ConvertFrom-Json
           $spoofedBoolean.checks.deviceSwitchRecovery = 'true'
@@ -226,6 +251,6 @@ jobs:
           $noFourOutputEvidence.deviceProbe.fourOutputCandidateCount = 0
           Assert-Rejected $noFourOutputEvidence '.\no-four-output-evidence.json' 'Zero four-output candidates were accepted as complete M1 evidence.' '.\no-four-output\BrokeDJ-device-probe.json'
 
-          Write-Host 'M1 schema 2 contract: restart persistence and fail-safe device loss are mandatory; legacy, incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases are rejected.'
+          Write-Host 'M1 schema 3 contract: exact-process initial/restart ownership, restart persistence and fail-safe device loss are mandatory; legacy, same-process, wrong-restart-hash, unowned-restart, incomplete, type-spoofed, privacy-unsafe, extra-field, identity-mismatch, unsafe-probe and zero-four-output cases are rejected.'
           $global:LASTEXITCODE = 0
           exit 0

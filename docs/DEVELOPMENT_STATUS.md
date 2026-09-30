@@ -6,20 +6,22 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
-## Active M1 audio interruption fail-safe checkpoint — PR #114
+## Merged M1 audio interruption fail-safe checkpoint — PR #114
 
-- Branch: `fix/m1-block-play-without-audio`; draft PR **#114** targets `main` at `cedb2df6d843a2bcdb3074f8c76ce995bb4c27bd`.
-- Previous qualified implementation head: **`ccd64bc56894841265ae4ce89a9d8af7f9ebf1dd`**. This checkpoint advances the same PR branch; the live PR head is authoritative for the exact checkpoint SHA.
-- Scope now covers both sides of the interruption contract: a user cannot arm PLAY without a prepared/open output **or while an interruption handoff is pending**, and already-playing decks are paused after a JUCE audio lifecycle interruption or detected live output-device replacement.
-- `prepareToPlay` / `releaseResources` only latch an atomic interruption handoff. While that handoff is pending, the audio callback outputs silence, preventing a short unintended auto-resume window after re-prepare. Device identity/recovery polling, transport pause, Sync release and user-facing status remain on the message-thread timer.
-- Recovery is deliberately non-resuming. The DJ must restore/verify routing and explicitly press PLAY after output recovery. The deterministic no-audio construction path used by native integration tests remains isolated from device monitoring.
-- JUCE-independent recovery tests now cover one-shot loss, repeated-unavailable suppression, non-resuming recovery and live A→B replacement, in addition to prepared/open PLAY gating.
-- The previous PR head `ccd64bc56894841265ae4ce89a9d8af7f9ebf1dd` passed exact-head UI visual witness **#74** (`36477972882`), Native library scale smoke **#246** (`36477972840`), Beta witness runner **#52** (`36477972770`), M3 mixer/recording **#79** (`36477972810`), Build and test **#576** (`36477972925`), M2 key-lock **#84** (`36477972849`) and M1 hardware witness **#91** (`36477973017`). The pending-handoff PLAY-gate checkpoint is a newer head and therefore requires a fresh exact-head matrix before Ready/merge.
-- Roadmap remains **1/10 (10.0%, PRE-ALPHA)**. Software hardening does not substitute for real Windows 11 device-loss/recovery and physical four-output master/cue evidence.
+- `main` includes squash-merged PR **#114** as **`167da05546fe58ddbb099b3f1bb6e2528af946b1`**; the exact qualified PR head was **`2e4cd3c9b5b3ff4076f4566a073a9cc8305728bd`** on `fix/m1-block-play-without-audio`.
+- The final PR head passed all seven exact-head workflows before merge: Build and test, M1 hardware witness, M2 key-lock witness, M3 mixer/recording witness, Beta witness runner, UI visual witness and Native library scale smoke.
+- Playback now fails closed while output is unavailable or an interruption handoff is pending; already-playing decks pause on lifecycle interruption/live output replacement and recovery never auto-resumes.
+- The callback stays allocation/lock/I/O free and fails closed to silence across the generation/acknowledgement handoff; device polling/recovery remains on the message thread.
+- This hardening does not close M1: real Windows 11 device-loss/recovery and physical four-output master/cue evidence remain required.
 
-### Merge gate / next step
+## Active M1 exact-process witness checkpoint — PR #115
 
-This checkpoint commit becomes a newer PR head and therefore must itself receive fresh exact-head CI. Repair any regression before marking the PR ready or merging. After a fully green final head, integrate PR #114; then continue the real M1–M4 Windows 11 qualification path without widening into M5+.
+- Branch: `feat/m1-exact-process-witness`; draft PR **#115** continues the M1 qualification path after merged #114.
+- The M1 witness uses **schema 3 exact-process ownership**: it refuses pre-existing BrokeDJ instances, launches the exact `AppPath`, records the owned initial PID, waits for a normal close, rechecks the executable fingerprint and relaunches the same immutable candidate as a distinct restart process.
+- Accepted evidence stores ephemeral initial/restart PIDs and matching candidate SHA-256 values only; hardware/routing/listening/device-loss observations remain manual and cannot be fabricated by CI.
+- Contract tests reject legacy schema 2 without `processOwnership`, same-process restarts, wrong restart hashes and false exact-path ownership under PowerShell 7 and Windows PowerShell 5.1.
+- The composed Beta qualification fixture was advanced to schema 3 exact-process ownership in commit **`01d588f2d6f4922e47691d02f8a190452481f355`**; fresh exact-head qualification remains required before merge.
+- Roadmap remains **1/10 (10.0%, PRE-ALPHA)** until real milestone evidence closes M1.
 
 ## Merged M1 audio-device persistence checkpoint — PR #112
 
