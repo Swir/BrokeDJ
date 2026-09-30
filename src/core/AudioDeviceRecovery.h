@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Swir
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 namespace broke {
@@ -20,6 +21,63 @@ template <typename Device>
 [[nodiscard]] constexpr bool audioDeviceIsOpen(Device* device) {
     return device != nullptr && device->isOpen();
 }
+
+// A user-initiated PLAY transition is safe only after the app has prepared its
+// audio engine, the selected output remains open and no lifecycle interruption
+// handoff is still pending on the message thread. Keeping this predicate
+// JUCE-independent makes the fail-closed rule deterministic.
+[[nodiscard]] constexpr bool audioPlaybackStartAllowed(
+    bool audioPrepared, bool deviceAvailable, bool interruptionPending = false) noexcept {
+    return audioPrepared && deviceAvailable && !interruptionPending;
+}
+
+// Lifecycle callbacks publish monotonically increasing interruption generations.
+// The realtime callback stays silent until the message thread acknowledges the
+// exact generation after pausing transport. Equality avoids a lost-event window
+// if another lifecycle callback arrives while an earlier pause is being applied.
+[[nodiscard]] constexpr bool audioInterruptionHandoffPending(
+    std::uint64_t generation, std::uint64_t acknowledgedGeneration) noexcept {
+    return generation != acknowledgedGeneration;
+}
+
+// Lock-free interruption state shared by JUCE lifecycle callbacks, the realtime
+// callback and the message-thread recovery poll. A second generation read in
+// pending() closes the useful snapshot window without introducing a lock: if a
+// lifecycle publish races the first read, the callback fails closed to silence.
+// A callback already executing before publish may finish its current block.
+class AudioInterruptionHandoff final {
+public:
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
+                  "BrokeDJ audio handoff requires lock-free 64-bit atomics");
+
+    [[nodiscard]] std::uint64_t publish() noexcept {
+        return generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    }
+
+    [[nodiscard]] std::uint64_t snapshot() const noexcept {
+        return generation.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] bool pending() const noexcept {
+        const auto firstGeneration = generation.load(std::memory_order_acquire);
+        const auto acknowledgedGeneration = acknowledged.load(std::memory_order_acquire);
+        if (firstGeneration != acknowledgedGeneration) return true;
+        return generation.load(std::memory_order_acquire) != acknowledgedGeneration;
+    }
+
+    [[nodiscard]] bool pending(std::uint64_t generationSnapshot) const noexcept {
+        return audioInterruptionHandoffPending(
+            generationSnapshot, acknowledged.load(std::memory_order_acquire));
+    }
+
+    void acknowledge(std::uint64_t generationSnapshot) noexcept {
+        acknowledged.store(generationSnapshot, std::memory_order_release);
+    }
+
+private:
+    std::atomic<std::uint64_t> generation{0};
+    std::atomic<std::uint64_t> acknowledged{0};
+};
 
 // Pointer identity is intentionally a runtime-only token. A different live JUCE
 // AudioIODevice object is treated conservatively as a device replacement even
@@ -113,6 +171,21 @@ constexpr bool openStateUsesObjectStateNotPointerPresence() {
         && !audioDeviceIsOpen(&closed);
 }
 
+constexpr bool playbackStartRequiresPreparedOpenAudio() {
+    return audioPlaybackStartAllowed(true, true)
+        && !audioPlaybackStartAllowed(false, true)
+        && !audioPlaybackStartAllowed(true, false)
+        && !audioPlaybackStartAllowed(false, false)
+        && !audioPlaybackStartAllowed(true, true, true);
+}
+
+constexpr bool interruptionGenerationTracksUnacknowledgedLifecycle() {
+    return !audioInterruptionHandoffPending(0, 0)
+        && audioInterruptionHandoffPending(1, 0)
+        && !audioInterruptionHandoffPending(7, 7)
+        && audioInterruptionHandoffPending(8, 7);
+}
+
 constexpr bool firstObservationIsNeutral() {
     AudioDeviceRecoveryPolicy policy;
     const auto unavailable = policy.update(false, 0);
@@ -194,6 +267,8 @@ constexpr bool unknownIdentityDoesNotCreateFalseReplacement() {
 } // namespace audio_device_recovery_contract
 
 static_assert(audio_device_recovery_contract::openStateUsesObjectStateNotPointerPresence());
+static_assert(audio_device_recovery_contract::playbackStartRequiresPreparedOpenAudio());
+static_assert(audio_device_recovery_contract::interruptionGenerationTracksUnacknowledgedLifecycle());
 static_assert(audio_device_recovery_contract::firstObservationIsNeutral());
 static_assert(audio_device_recovery_contract::lossPausesExactlyOnce());
 static_assert(audio_device_recovery_contract::recoveryDoesNotAutoResume());

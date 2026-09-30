@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "BrokeLookAndFeel.h"
 #include "PersistentAudioAppComponent.h"
+#include "core/AudioDeviceRecovery.h"
 #include "core/Engine.h"
 #include "core/PerformanceDeckOwner.h"
 #include "core/TempoSegmentEditor.h"
@@ -105,7 +106,8 @@ public:
     DeckPanel(broke::Engine&, std::size_t);
     std::function<void()> onBrowse;
     std::function<void(const juce::File&)> onDrop;
-    std::function<void()> onBeforePlay;
+    // Return false to reject a PLAY transition before the engine's transport flag changes.
+    std::function<bool()> onBeforePlay;
     std::function<void()> onKeyLockControlChanged;
     std::function<void(double)> onSeekRequested;
     std::function<void(double, double)> onGridEdit;
@@ -428,6 +430,8 @@ private:
     void persistHotCues(std::size_t deck, const juce::File& file, std::uint64_t generation,
                         broke::PerformanceDeckOwner::HotCueBank snapshot);
     void showAudioSettings();
+    void pollAudioDeviceRecovery();
+    void pauseDecksForAudioInterruption() noexcept;
     void statusMessage(const juce::String&);
 #if defined(BROKEDJ_TIMESTRETCH_PROTOTYPE)
     void serviceKeyLockDeck(std::size_t deck, bool playing);
@@ -467,7 +471,10 @@ private:
     juce::TextButton settings;
     juce::HyperlinkButton author;
     CrossfaderSlider crossfader{engine}, master{engine, false}, headphone{engine, false};
+    bool monitorAudioDevice = true;
     std::atomic<bool> audioReady{false};
+    broke::AudioInterruptionHandoff audioInterruptionHandoff;
+    broke::AudioDeviceRecoveryPolicy audioDeviceRecovery;
     juce::TooltipWindow tooltips{this, 600};
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
