@@ -9,6 +9,17 @@ All notable BrokeDJ development changes are recorded here. BrokeDJ is still pre-
 - Upgrade the Windows M1 hardware witness to schema 3 so manual launch/device/restart checks are bound to two distinct BrokeDJ processes launched from the exact candidate `AppPath`.
 - Refuse pre-existing BrokeDJ instances, wait for a normal operator-driven close, verify the executable fingerprint is unchanged, and relaunch the exact candidate without automating playback, hardware switching, disconnects or volume.
 - Extend the witness contract tests to reject legacy schema 2, same-process restart claims, mismatched restart hashes and false exact-path ownership on both PowerShell 7 and Windows PowerShell 5.1.
+- Update the Beta qualification fixture to schema 3 exact-process ownership so the composed Beta contract matches the hardened M1 validator while legacy/unbound schema 2 evidence remains fail-closed.
+
+### First-Beta playback fail-safe
+
+- Reject a user PLAY transition in normal audio mode unless the engine is prepared, the selected output device is still open and no interruption handoff is pending. This closes both the unavailable-output and re-prepare windows where a deck could otherwise be re-armed before the message-thread pause lands, preserving the explicit-PLAY-after-recovery contract.
+- Pause every playing deck after an actual JUCE audio lifecycle interruption and after a detected live output-device replacement; recovery deliberately remains non-resuming until the DJ verifies routing and presses PLAY again.
+- Silence the callback while an interruption handoff is pending, so a re-prepared device cannot emit a short unintended auto-resume window before the message thread applies the pause.
+- Track lifecycle handoffs with a JUCE-independent, lock-free generation/acknowledgement primitive instead of a clearable boolean. The callback double-checks the generation before rendering, the timer acknowledges only the generation it actually paused, and a second concurrent interruption cannot be erased by an older recovery pass; timer-detected live device replacement publishes its own generation before transport is paused.
+- Keep device identity/recovery polling and user-facing recovery status on the message thread; no device polling, disk/network I/O, allocation, locking or recovery work is added to the realtime callback.
+- Keep the deterministic no-audio construction path available for native UI/integration tests.
+- Add JUCE-independent compile-time and core-test coverage for prepared/open audio gating plus loss/recovery/replacement transitions.
 
 ### First-Beta workstation panel
 
