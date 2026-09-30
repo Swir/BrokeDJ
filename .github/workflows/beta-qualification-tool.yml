@@ -79,12 +79,20 @@ jobs:
           $probeHash = (Get-FileHash -LiteralPath .\BrokeDJ-device-probe.json -Algorithm SHA256).Hash.ToLowerInvariant()
 
           $m1 = [ordered]@{
-            schema = 2
+            schema = 3
             project = 'BrokeDJ'
             scope = 'M1-windows-hardware'
             generatedUtc = [DateTime]::UtcNow.ToString('o')
             environment = [ordered]@{ windowsBuild = 26100; architecture = 'X64'; processArchitecture = 'X64' }
             app = [ordered]@{ fileName = 'BrokeDJ.exe'; fileVersion = [string]$appVersion; sha256 = $appHash }
+            processOwnership = [ordered]@{
+              initialProcessId = 41001
+              restartProcessId = 41002
+              initialExecutableSha256 = $appHash
+              restartExecutableSha256 = $appHash
+              exactAppPathAtBothLaunches = $true
+              distinctRestartProcess = $true
+            }
             deviceProbe = [ordered]@{
               fileName = 'BrokeDJ-device-probe.json'
               schemaVersion = 2
@@ -272,13 +280,11 @@ jobs:
           $extraField | Add-Member -NotePropertyName notes -NotePropertyValue 'not allowed'
           Assert-QualificationRejected $extraField '.\extra-field.json' 'Unexpected Beta summary field was accepted.'
 
-          # M1 schema 2 is the first schema that attests both restart persistence
-          # and conservative device-loss/no-auto-resume behavior. Older M1 evidence
-          # cannot qualify the current Beta candidate even if its legacy booleans are true.
+          # M1 schema 3 binds the complete Beta fixture to exact candidate-process ownership.
+          # Legacy schema 2 evidence without processOwnership must remain fail-closed.
           $legacyM1 = $m1 | ConvertTo-Json -Depth 8 | ConvertFrom-Json
-          $legacyM1.schema = 1
-          $legacyM1.checks.PSObject.Properties.Remove('deviceLossFailsSafe')
-          $legacyM1.checks.PSObject.Properties.Remove('deviceSettingsPersistAcrossRestart')
+          $legacyM1.schema = 2
+          $legacyM1.PSObject.Properties.Remove('processOwnership')
           $legacyM1 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M1-Hardware-Witness.json -Encoding utf8
           & pwsh -NoProfile -File .\scripts\beta_qualification.ps1 `
             -AppPath .\BrokeDJ.exe -ProbePath .\BrokeDJ-device-probe.json `
@@ -287,7 +293,7 @@ jobs:
             -M3EvidencePath .\BrokeDJ-M3-mixer-recording.json `
             -M4EvidencePath .\BrokeDJ-M4-Library-Witness.json `
             -QualificationPath .\BrokeDJ-Beta-Qualification.json -ValidateExisting
-          if ($LASTEXITCODE -eq 0) { throw 'Beta composition accepted legacy M1 evidence without restart/loss proof.' }
+          if ($LASTEXITCODE -eq 0) { throw 'Beta composition accepted legacy M1 schema 2 evidence without exact-process ownership.' }
           $global:LASTEXITCODE = 0
           $m1 | ConvertTo-Json -Depth 8 | Set-Content .\BrokeDJ-M1-Hardware-Witness.json -Encoding utf8
 
@@ -315,5 +321,5 @@ jobs:
           if (Test-Path .\must-not-exist.json) { throw 'CI generation wrote a Beta qualification file.' }
           $global:LASTEXITCODE = 0
 
-          Write-Host 'Beta qualification contract: exact-app-bound M1 schema 2 + M2-M4 fixture accepted; legacy M1/M4, failed-gate, privacy, identity, tamper, extra-field and CI-generation cases rejected.'
+          Write-Host 'Beta qualification contract: exact-process-bound M1 schema 3 + M2-M4 fixture accepted; legacy/unbound M1/M4, failed-gate, privacy, identity, tamper, extra-field and CI-generation cases rejected.'
           exit 0
