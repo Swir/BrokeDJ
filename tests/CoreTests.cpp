@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#include "core/AudioDeviceRecovery.h"
 #include "core/BeatGridPerformance.h"
 #include "core/Engine.h"
 #include <algorithm>
@@ -80,6 +81,53 @@ float measureEqBand(float frequencyHz, float low, float mid, float high) {
     return rmsOf(f.audio[0]);
 }
 void run() {
+    {
+        check(broke::audioPlaybackStartAllowed(true, true),
+              "PLAY allowed only with prepared open audio");
+        check(!broke::audioPlaybackStartAllowed(false, true),
+              "PLAY blocked until engine prepare completes");
+        check(!broke::audioPlaybackStartAllowed(true, false),
+              "PLAY blocked while output device is unavailable");
+        check(!broke::audioPlaybackStartAllowed(false, false),
+              "PLAY blocked with no audio path");
+        check(!broke::audioPlaybackStartAllowed(true, true, true),
+              "PLAY blocked while an interruption handoff is pending");
+        check(!broke::audioInterruptionHandoffPending(11, 11),
+              "acknowledged interruption generation is not pending");
+        check(broke::audioInterruptionHandoffPending(12, 11),
+              "newer lifecycle generation remains pending until acknowledged");
+
+        broke::AudioInterruptionHandoff handoff;
+        check(!handoff.pending(), "fresh interruption handoff is acknowledged");
+        const auto firstGeneration = handoff.publish();
+        check(firstGeneration == 1 && handoff.pending(),
+              "published interruption fails closed until acknowledged");
+        handoff.acknowledge(firstGeneration);
+        check(!handoff.pending(), "acknowledged interruption re-opens callback gate");
+        const auto secondGeneration = handoff.publish();
+        const auto thirdGeneration = handoff.publish();
+        handoff.acknowledge(secondGeneration);
+        check(handoff.pending(),
+              "acknowledging an older generation cannot erase a newer interruption");
+        handoff.acknowledge(thirdGeneration);
+        check(!handoff.pending(), "latest generation acknowledgement clears handoff");
+    }
+    {
+        broke::AudioDeviceRecoveryPolicy policy;
+        policy.reset(true, 101);
+        const auto lost = policy.update(false, 0);
+        check(lost.pausePlayback && lost.deviceLost && !lost.deviceRecovered,
+              "device loss pauses playback exactly once");
+        const auto repeatedLoss = policy.update(false, 0);
+        check(!repeatedLoss.pausePlayback && !repeatedLoss.deviceLost,
+              "repeated unavailable observation does not re-fire loss");
+        const auto recovered = policy.update(true, 202);
+        check(!recovered.pausePlayback && recovered.deviceRecovered,
+              "device recovery never requests automatic resume");
+        const auto replaced = policy.update(true, 303);
+        check(replaced.pausePlayback && replaced.deviceChanged,
+              "live output replacement pauses before routing can continue");
+    }
     {
         Fixture f;
         f.render();

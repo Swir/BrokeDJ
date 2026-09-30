@@ -6,6 +6,21 @@ This file is the durable engineering checkpoint for the current repository state
 
 **First usable Windows 11 x64 Beta.** Scope remains frozen around completing and qualifying M1–M4. M5+ work stays later unless it directly removes a blocker for this target.
 
+## Active M1 audio interruption fail-safe checkpoint — PR #114
+
+- Branch: `fix/m1-block-play-without-audio`; draft PR **#114** targets `main` at `cedb2df6d843a2bcdb3074f8c76ce995bb4c27bd`.
+- Previous qualified implementation head: **`ccd64bc56894841265ae4ce89a9d8af7f9ebf1dd`**. This checkpoint advances the same PR branch; the live PR head is authoritative for the exact checkpoint SHA.
+- Scope now covers both sides of the interruption contract: a user cannot arm PLAY without a prepared/open output **or while an interruption handoff is pending**, and already-playing decks are paused after a JUCE audio lifecycle interruption or detected live output-device replacement.
+- `prepareToPlay` / `releaseResources` only latch an atomic interruption handoff. While that handoff is pending, the audio callback outputs silence, preventing a short unintended auto-resume window after re-prepare. Device identity/recovery polling, transport pause, Sync release and user-facing status remain on the message-thread timer.
+- Recovery is deliberately non-resuming. The DJ must restore/verify routing and explicitly press PLAY after output recovery. The deterministic no-audio construction path used by native integration tests remains isolated from device monitoring.
+- JUCE-independent recovery tests now cover one-shot loss, repeated-unavailable suppression, non-resuming recovery and live A→B replacement, in addition to prepared/open PLAY gating.
+- The previous PR head `ccd64bc56894841265ae4ce89a9d8af7f9ebf1dd` passed exact-head UI visual witness **#74** (`36477972882`), Native library scale smoke **#246** (`36477972840`), Beta witness runner **#52** (`36477972770`), M3 mixer/recording **#79** (`36477972810`), Build and test **#576** (`36477972925`), M2 key-lock **#84** (`36477972849`) and M1 hardware witness **#91** (`36477973017`). The pending-handoff PLAY-gate checkpoint is a newer head and therefore requires a fresh exact-head matrix before Ready/merge.
+- Roadmap remains **1/10 (10.0%, PRE-ALPHA)**. Software hardening does not substitute for real Windows 11 device-loss/recovery and physical four-output master/cue evidence.
+
+### Merge gate / next step
+
+This checkpoint commit becomes a newer PR head and therefore must itself receive fresh exact-head CI. Repair any regression before marking the PR ready or merging. After a fully green final head, integrate PR #114; then continue the real M1–M4 Windows 11 qualification path without widening into M5+.
+
 ## Merged M1 audio-device persistence checkpoint — PR #112
 
 - `main` includes squash-merged PR **#112** as **`4a542307011bd0c29f25d1dad660af832fb7aff1`**; the exact qualified PR head was **`d5a3317993c67786563009055880a5a1f14626d9`** on `feat/beta-audio-device-state`.
