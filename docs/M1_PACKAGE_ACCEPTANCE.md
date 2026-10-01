@@ -1,15 +1,20 @@
 # M1 packaged launcher acceptance
 
-The Windows package is ready for this part of M1 only when all of these are true:
+The packaged Windows candidate satisfies this M1 launcher slice only when all of these are true:
 
-- `START-M1-HARDWARE-WITNESS.cmd` is present at the package root.
+- `START-BETA-QUALIFICATION.cmd` is present at the package root.
 - `M1-HARDWARE-WITNESS.ps1` and `BrokeDJ.exe` are adjacent to it.
-- `PACKAGE-MANIFEST.json` lists the launcher.
-- the portable ZIP contains the same launcher.
-- the launcher still binds the witness to the adjacent BrokeDJ candidate.
+- the packaged launcher accepts `M1` mode and binds that mode to the adjacent M1 witness and exact candidate executable.
+- `PACKAGE-MANIFEST.json` lists the packaged launcher and witness files.
+- the portable ZIP contains the same launcher, witness, and candidate executable.
+- the package checksum/provenance still matches the exact PR head.
 
-Physical device switching, device-loss recovery and master/cue listening remain real manual evidence.
+The source-checkout helper `scripts/start_m1_hardware_witness.cmd` is a convenience path and is not required to be duplicated into the consumer package now that the already-packaged launcher exposes M1-only mode.
+
+Physical device switching, device-loss recovery, four-output master/cue isolation, and listening remain real manual evidence and are not closed by this launcher work.
+
 ## Exact-head verification
 
-PR #116 head `fdd903d925167213908a241d53bb6b7076a9630b` passed Build and test #584, Native library scale smoke #254, and Beta witness runner #60. Build #584 produced development artifact `11136983392` and Beta Preview artifact `11136828842`. Green CI does not close package acceptance until `START-M1-HARDWARE-WITNESS.cmd` is physically present at package root, listed in `PACKAGE-MANIFEST.json`, and present in the portable ZIP.
+The previous PR #116 head `b15532ac1c748a050eb28bf59d02c15b13b68e23` passed Build and test #585, Native library scale smoke #255, and Beta witness runner #61. Build #585 artifacts proved that the existing packaged launcher, witness, executable, manifest, and portable ZIP were otherwise valid, while the separate `START-M1-HARDWARE-WITNESS.cmd` was absent.
 
+The current branch replaces that packaging dependency by adding an M1-only mode to the launcher that is already staged and packaged. A newer exact-head build/artifact must still prove that the packaged launcher contains the M1 mode before this acceptance slice can be considered complete.
