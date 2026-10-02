@@ -31,12 +31,14 @@ if not exist "%RUNNER%" (
   pause
   exit /b 2
 )
-if not exist "%BETA_EVIDENCE%" mkdir "%BETA_EVIDENCE%"
-if errorlevel 1 (
-  echo [BrokeDJ Beta] Could not create evidence directory:
-  echo %BETA_EVIDENCE%
-  pause
-  exit /b 3
+if not exist "%BETA_EVIDENCE%" (
+  mkdir "%BETA_EVIDENCE%"
+  if errorlevel 1 (
+    echo [BrokeDJ Beta] Could not create evidence directory:
+    echo %BETA_EVIDENCE%
+    pause
+    exit /b 3
+  )
 )
 
 echo [BrokeDJ Beta] Candidate: %APP%
@@ -66,12 +68,14 @@ if not exist "%M1_WITNESS%" (
   pause
   exit /b 2
 )
-if not exist "%M1_EVIDENCE%" mkdir "%M1_EVIDENCE%"
-if errorlevel 1 (
-  echo [BrokeDJ M1] Could not create evidence directory:
-  echo %M1_EVIDENCE%
-  pause
-  exit /b 3
+if not exist "%M1_EVIDENCE%" (
+  mkdir "%M1_EVIDENCE%"
+  if errorlevel 1 (
+    echo [BrokeDJ M1] Could not create evidence directory:
+    echo %M1_EVIDENCE%
+    pause
+    exit /b 3
+  )
 )
 
 echo [BrokeDJ M1] Candidate: %APP%
