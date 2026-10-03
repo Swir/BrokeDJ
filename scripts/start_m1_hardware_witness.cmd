@@ -23,12 +23,14 @@ if not exist "%WITNESS%" (
   pause
   exit /b 2
 )
-if not exist "%EVIDENCE_DIR%" mkdir "%EVIDENCE_DIR%"
-if errorlevel 1 (
-  echo [BrokeDJ M1] Could not create evidence directory:
-  echo %EVIDENCE_DIR%
-  pause
-  exit /b 3
+if not exist "%EVIDENCE_DIR%" (
+  mkdir "%EVIDENCE_DIR%"
+  if errorlevel 1 (
+    echo [BrokeDJ M1] Could not create evidence directory:
+    echo %EVIDENCE_DIR%
+    pause
+    exit /b 3
+  )
 )
 
 echo [BrokeDJ M1] Candidate: %APP%
