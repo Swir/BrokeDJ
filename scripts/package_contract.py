@@ -45,6 +45,8 @@ REQUIRED_PATHS = (
     "BrokeDJ/GUI-SMOKE.json",
     "BrokeDJ/DEVICE-PROBE-CI.txt",
     "BrokeDJ/DEVICE-PROBE-CI.json",
+    "BrokeDJ/START-BETA-QUALIFICATION.cmd",
+    "BrokeDJ/M1-HARDWARE-WITNESS.ps1",
     SOURCE_COMMIT_PATH,
     "BrokeDJ-source.zip",
     "VERIFY-PACKAGE.py",
@@ -543,6 +545,23 @@ def self_test() -> None:
         verified = verify_contract(root, expected_commit=commit, expected_version=version)
         if verified.get("file_count") != len(REQUIRED_PATHS):
             raise ContractError("self-test manifest count did not match fixture count")
+
+        for required_m1_path in (
+            "BrokeDJ/START-BETA-QUALIFICATION.cmd",
+            "BrokeDJ/M1-HARDWARE-WITNESS.ps1",
+        ):
+            missing_root = tmp_path / ("missing-" + Path(required_m1_path).name)
+            missing_root.mkdir()
+            _write_fixture_payload(missing_root, commit)
+            (missing_root / required_m1_path).unlink()
+            try:
+                create_contract(missing_root, commit, version)
+            except ContractError:
+                pass
+            else:
+                raise ContractError(
+                    f"self-test failed to reject missing required M1 package file: {required_m1_path}"
+                )
 
         with zipfile.ZipFile(root / PORTABLE_ZIP_NAME, "r") as handle:
             prefix = _portable_root(version) + "/"
