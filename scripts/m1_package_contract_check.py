@@ -12,7 +12,7 @@ ROUTE = 'if /I "%~1"=="M1" goto m1_only'
 LABEL = ':m1_only'
 BINDING = 'set "M1_WITNESS=%ROOT%M1-HARDWARE-WITNESS.ps1"'
 INVOCATION = (
-    '"%POWERSHELL%" -NoLogo -NoProfile -File "%M1_WITNESS%" '
+    '"%POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%M1_WITNESS%" '
     '-AppPath "%APP%" '
     '-EvidencePath "%M1_EVIDENCE%\\BrokeDJ-M1-Hardware-Witness.json" '
     '-ProbePath "%M1_EVIDENCE%\\BrokeDJ-device-probe.json"'
