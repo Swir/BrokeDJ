@@ -15,6 +15,10 @@ Physical device switching, device-loss recovery, four-output master/cue isolatio
 
 ## Exact-head verification
 
-The previous PR #116 head `b15532ac1c748a050eb28bf59d02c15b13b68e23` passed Build and test #585, Native library scale smoke #255, and Beta witness runner #61. Build #585 artifacts proved that the existing packaged launcher, witness, executable, manifest, and portable ZIP were otherwise valid, while the separate `START-M1-HARDWARE-WITNESS.cmd` was absent.
+PR #116 head `77c34f34dbdee99d23b682de9043f8416f56b8d2` passed Build and test #597, Native library scale smoke #267, Beta witness runner #73, M1 hardware witness tool #100, Beta qualification #60, M2 #93, and M3 #88.
 
-The current branch replaces that packaging dependency by adding an M1-only mode to the launcher that is already staged and packaged. A newer exact-head build/artifact must still prove that the packaged launcher contains the M1 mode before this acceptance slice can be considered complete.
+The exact-head development artifact is `11365449948` with GitHub digest `sha256:06e26d29b22e81987940564aa8255a0eb31666730a5e9740bd1d342f746c64f6`. The exact-head Beta Preview artifact is `11366358217` with GitHub digest `sha256:8e2462cdd27b95eb29a99e53e7c0d1304a4f2968a96ea0f77d83c0b467fd4424`.
+
+Both artifacts carry the exact `SOURCE-COMMIT.txt`, pass `VERIFY-PACKAGE.py verify` and extracted-portable verification, and contain byte-identical portable ZIP payloads with SHA-256 `c958d1f26de5475877a3c811d5f73a4dbd7d1f35111507993c752696dbf66273`. The staged and extracted portable launchers both contain the guarded M1 route and bind it to the adjacent exact packaged candidate.
+
+This closes the packaged-launcher acceptance slice for PR #116. It does not close the M1 roadmap milestone: genuine Windows 11 device switching/loss recovery and physical four-output master/cue isolation still require real hardware evidence.
