@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 
@@ -20,6 +21,16 @@ INVOCATION = (
 
 class ContractError(RuntimeError):
     """Raised when the launcher no longer satisfies the M1 package contract."""
+
+
+def _console_safe(value: object, *, encoding: str | None = None) -> str:
+    """Render diagnostics without failing on legacy Windows console encodings."""
+    text = str(value)
+    target = encoding or sys.stdout.encoding or "utf-8"
+    try:
+        return text.encode(target, errors="backslashreplace").decode(target)
+    except LookupError:
+        return text.encode("utf-8", errors="backslashreplace").decode("utf-8")
 
 
 def _normalized_lines(text: str) -> list[str]:
@@ -110,6 +121,11 @@ def self_test() -> None:
     good = _fixture()
     validate_launcher_text(good)
 
+    if _console_safe("Świr", encoding="cp1252") != r"\u015awir":
+        raise ContractError("console-safe path rendering failed for cp1252")
+    if _console_safe("Świr", encoding="utf-8") != "Świr":
+        raise ContractError("console-safe path rendering altered UTF-8 text")
+
     _expect_failure(good.replace(ROUTE, "rem M1 route removed"), "missing route")
 
     lines = good.splitlines()
@@ -163,9 +179,9 @@ def main() -> int:
             print("M1 launcher contract self-test passed")
         else:
             validate_launcher(args.launcher)
-            print(f"M1 launcher contract passed: {args.launcher}")
+            print(f"M1 launcher contract passed: {_console_safe(args.launcher)}")
     except ContractError as exc:
-        print(f"M1 launcher contract failure: {exc}")
+        print(f"M1 launcher contract failure: {_console_safe(exc)}")
         return 1
     return 0
 
