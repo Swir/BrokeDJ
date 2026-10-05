@@ -45,7 +45,7 @@ echo [BrokeDJ Beta] Candidate: %APP%
 echo [BrokeDJ Beta] Evidence:  %BETA_EVIDENCE%
 echo [BrokeDJ Beta] This guided run never auto-starts ordinary playback, microphone input or recording.
 echo.
-"%POWERSHELL%" -NoLogo -NoProfile -File "%RUNNER%" -AppPath "%APP%" -EvidenceDirectory "%BETA_EVIDENCE%"
+"%POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%RUNNER%" -AppPath "%APP%" -EvidenceDirectory "%BETA_EVIDENCE%"
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
@@ -83,7 +83,7 @@ echo [BrokeDJ M1] Evidence:  %M1_EVIDENCE%
 echo [BrokeDJ M1] Real Windows 11 hardware is required.
 echo [BrokeDJ M1] This launcher never starts playback, switches devices, disconnects hardware or invents listening evidence.
 echo.
-"%POWERSHELL%" -NoLogo -NoProfile -File "%M1_WITNESS%" -AppPath "%APP%" -EvidencePath "%M1_EVIDENCE%\BrokeDJ-M1-Hardware-Witness.json" -ProbePath "%M1_EVIDENCE%\BrokeDJ-device-probe.json"
+"%POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%M1_WITNESS%" -AppPath "%APP%" -EvidencePath "%M1_EVIDENCE%\BrokeDJ-M1-Hardware-Witness.json" -ProbePath "%M1_EVIDENCE%\BrokeDJ-device-probe.json"
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
