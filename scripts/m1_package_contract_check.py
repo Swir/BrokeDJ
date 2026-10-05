@@ -51,6 +51,8 @@ def validate_launcher_text(text: str) -> None:
     invocation_index = _index(lines, INVOCATION, "M1 witness invocation")
     if binding_index >= invocation_index:
         raise ContractError("M1 witness binding must appear before invocation")
+    if invocation_index + 1 >= len(lines) or lines[invocation_index + 1] != 'set "RC=%ERRORLEVEL%"':
+        raise ContractError("M1 witness invocation must immediately capture ERRORLEVEL")
 
     for variable in ("BETA_EVIDENCE", "M1_EVIDENCE"):
         _assert_sequence(
@@ -91,6 +93,7 @@ def _fixture() -> str:
             ')',
             ')',
             INVOCATION,
+            'set "RC=%ERRORLEVEL%"',
         ]
     )
 
@@ -122,6 +125,10 @@ def self_test() -> None:
     _expect_failure(
         good.replace("BrokeDJ-device-probe.json", "wrong-probe.json"),
         "bad probe binding",
+    )
+    _expect_failure(
+        good.replace('set "RC=%ERRORLEVEL%"', "rem missing RC capture"),
+        "missing immediate M1 result capture",
     )
     _expect_failure(
         good.replace(
