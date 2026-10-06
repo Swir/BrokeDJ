@@ -154,7 +154,9 @@ Only perform this on an interface that genuinely exposes two independent stereo 
 3. With channel gain down, enable CUE on one deck and verify private cue is audible only on 3/4.
 4. Verify the same cue is not folded into master 1/2.
 5. Raise the channel/master path and verify the master remains on 1/2 while CUE stays independently available on 3/4.
-6. Repeat for at least two decks and after the restart/settings-switch checks above.
+6. With CUE still armed, set the BrokeDJ headphone level fully to zero, perform one normal reversible Audio-settings reprepare at safe hardware volume, and confirm there is no audible cue burst on outputs 3/4 when audio resumes.
+7. Restore a conservative headphone level and confirm CUE returns only on 3/4.
+8. Repeat for at least two decks and after the restart/settings-switch checks above.
 
 Do not claim this gate from a two-output device. BrokeDJ deliberately does not fold private cue into the master. The recorder requires both a four-output candidate in the silent probe and an affirmative manual `fourOutputCueIsolation` check; the candidate alone is never treated as proof.
 
