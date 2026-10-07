@@ -71,6 +71,25 @@ public:
         return channels.countNumberOfSetBits();
     }
 
+    // JUCE omits audioDeviceOutChans when the live device uses its default
+    // output-channel set. Bind that live set explicitly before sanitising so a
+    // four-output default device does not reopen as the caller's stereo fallback.
+    [[nodiscard]] static bool bindLiveOutputChannels(juce::XmlElement& state,
+                                                     const juce::BigInteger& liveChannels) {
+        if (state.hasAttribute("audioDeviceOutChans")) {
+            juce::BigInteger parsed;
+            return parseOutputMask(state, parsed);
+        }
+
+        const int active = liveChannels.countNumberOfSetBits();
+        const auto mask = liveChannels.toString(2);
+        if (active < 2 || active > 4 || mask.isEmpty() || mask.length() > 256)
+            return false;
+
+        state.setAttribute("audioDeviceOutChans", mask);
+        return true;
+    }
+
     [[nodiscard]] static bool matchesCurrentSetup(const juce::XmlElement& state,
                                                   const juce::AudioDeviceManager& manager) {
         const auto expectedName = state.getStringAttribute(
@@ -102,7 +121,6 @@ public:
         if (state.hasAttribute("audioDeviceOutChans")) {
             juce::BigInteger expectedChannels;
             if (!parseOutputMask(state, expectedChannels)
-                || setup.useDefaultOutputChannels
                 || setup.outputChannels != expectedChannels) {
                 return false;
             }
@@ -219,6 +237,14 @@ private:
     void persistCurrentState() {
         auto state = deviceManager.createStateXml();
         if (!state) return;
+
+        const auto setup = deviceManager.getAudioDeviceSetup();
+        if (!state->hasAttribute("audioDeviceOutChans")
+            && !AudioDeviceStateStore::bindLiveOutputChannels(*state, setup.outputChannels)) {
+            static_cast<void>(stateStore.clear());
+            return;
+        }
+
         if (AudioDeviceStateStore::matchesCurrentSetup(*state, deviceManager))
             static_cast<void>(stateStore.store(*state));
         else
